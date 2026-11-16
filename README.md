@@ -4,35 +4,17 @@
 
 Zean captures Zig's analyzed intermediate representation (AIR) and emits
 Lean program definitions. You write specifications and proofs in separate
-files, then regenerate the model when the Zig code changes. Translation is
-restricted to supported operations; unsupported code is rejected.
+files, then regenerate the model when the Zig code changes. Our model is
+currently incomplete and translation is restricted to supported operations.
 
 For memory safety, a reusable verification library generates proof obligations
 from the translated program using Lean 4.35's `Std.WP` and `vcgen`. You supply
 contracts and loop invariants, then discharge the remaining obligations in Lean.
-Start with [Ziglings 038 and 054: from fixes to memory contracts](examples/ziglings/README.md).
-It pairs pinned upstream exercises with captured runtime kernels, short
-contract-driven proofs, and counterexamples for missing initialization and
-invented slice bounds. Run `zig build ziglings` to check the demonstration.
 
-Continue with the [buffer update](examples/buffer/README.md), or follow the
-[copy-loop tutorial](examples/copy/README.md) for initialization, framing and
-helper contracts. The [verification guide](docs/verification.md) explains how
-to apply the same machinery to another supported function.
-The [manifest-based client](examples/client/README.md) captures and verifies
-your own function without adding a new tutorial command or changing the verifier.
-Its [caller/helper variant](examples/client/calls/README.md) uses the explicit
-call-stack interpreter and verifies a caller from a separately checked helper
-contract, with readable generated function tables.
-The [byte-scanning client](examples/client/scan/README.md) adds a loop invariant,
-early returns, and a helper call inside the loop.
-For runtime helper calls, the [call-chain example](examples/calls/README.md)
-shows a caller reusing checked callee contracts across actual runtime calls.
-The [standard-library example](examples/stdlib_replace/README.md) goes beyond
-the tutorials: it verifies an unchanged `std.mem.replaceScalar(u32)` specialization,
-with a separately checked AIR-to-model correspondence certificate.
-The [compatibility probes](examples/compatibility/README.md) also show examples
-that still reject, so these results should not be read as general Zig support.
+Note: This initial release of this project was written with AI assistance mostly
+using GPT-6 Astra over the course of two months. It is extracted from our formal 
+verification work for [oksolc](https://github.com/okcontract/oksolc), a Solidity 
+compiler written in Zig.
 
 ## Try the Ziglings memory-safety demo
 
@@ -59,6 +41,27 @@ The formal proofs cover the captured runtime kernels described in the tutorial.
 The original exercises, including their printing code, receive separate native
 compatibility checks. Retained captures let you run the demo without building
 an instrumented compiler.
+
+## More demos
+
+Continue with the [buffer update](examples/buffer/README.md), or follow the
+[copy-loop tutorial](examples/copy/README.md) for initialization, framing and
+helper contracts. The [verification guide](docs/verification.md) explains how
+to apply the same machinery to another supported function.
+The [manifest-based client](examples/client/README.md) captures and verifies
+your own function without adding a new tutorial command or changing the verifier.
+Its [caller/helper variant](examples/client/calls/README.md) uses the explicit
+call-stack interpreter and verifies a caller from a separately checked helper
+contract, with readable generated function tables.
+The [byte-scanning client](examples/client/scan/README.md) adds a loop invariant,
+early returns, and a helper call inside the loop.
+For runtime helper calls, the [call-chain example](examples/calls/README.md)
+shows a caller reusing checked callee contracts across actual runtime calls.
+The [standard-library example](examples/stdlib_replace/README.md) goes beyond
+the tutorials: it verifies an unchanged `std.mem.replaceScalar(u32)` specialization,
+with a separately checked AIR-to-model correspondence certificate.
+The [compatibility probes](examples/compatibility/README.md) also show examples
+that still reject, so these results should not be read as general Zig support.
 
 ## Follow a small program update
 
