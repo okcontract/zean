@@ -1,0 +1,20 @@
+{
+  "captureComplete": true,
+  "compilerVerified": false,
+  "description": "Hand-built capture-format example; not native capture evidence.",
+  "functions": {
+    "scalar.choose": {
+      "file": "scalar.choose.json",
+      "requested": true,
+      "sha256": "597672a20710eff70b8d62eb0be28e138a5b54c0f9e7b4d1803eb99148d45785"
+    }
+  },
+  "inputKind": "synthetic",
+  "schema": "oksolc.fresh-air-capture.v1",
+  "semanticExportImplemented": false,
+  "sourceClosureComplete": false,
+  "sourceSha256": "8a39fe34798203c9fa8c9fc1a4503c2ec61bff66ea46219047b4d0814b7c2135",
+  "status": "captured",
+  "zigRevision": "be248cc1fdc3cc654f9ec8ba68514bcb93b204fe",
+  "zigVersion": "0.17.1"
+}

@@ -1,0 +1,175 @@
+{
+  "body": [
+    0,
+    1,
+    7
+  ],
+  "bodyTraversal": "supported-structured-containers-only",
+  "capturePoint": "after-sema-before-legalize",
+  "configuration": {
+    "isTest": false,
+    "optimize": "ReleaseFast",
+    "useLlvm": true
+  },
+  "instructions": [
+    {
+      "index": 0,
+      "payloadVisited": true,
+      "tag": "arg",
+      "type": {
+        "bits": 8,
+        "kind": "int",
+        "signedness": "unsigned"
+      },
+      "zirParameterIndex": 0
+    },
+    {
+      "body": [
+        2,
+        3
+      ],
+      "index": 1,
+      "payloadVisited": true,
+      "tag": "block",
+      "type": {
+        "bits": 8,
+        "kind": "int",
+        "signedness": "unsigned"
+      }
+    },
+    {
+      "index": 2,
+      "lhs": {
+        "index": 0,
+        "kind": "instruction"
+      },
+      "payloadVisited": true,
+      "rhs": {
+        "kind": "constant",
+        "type": {
+          "bits": 8,
+          "kind": "int",
+          "signedness": "unsigned"
+        },
+        "value": 128
+      },
+      "tag": "cmp_lt",
+      "type": {
+        "kind": "bool"
+      }
+    },
+    {
+      "condition": {
+        "index": 2,
+        "kind": "instruction"
+      },
+      "elseBody": [
+        6
+      ],
+      "index": 3,
+      "payloadVisited": true,
+      "tag": "cond_br",
+      "thenBody": [
+        4,
+        5
+      ],
+      "type": {
+        "kind": "noreturn"
+      }
+    },
+    {
+      "index": 4,
+      "lhs": {
+        "index": 0,
+        "kind": "instruction"
+      },
+      "payloadVisited": true,
+      "rhs": {
+        "kind": "constant",
+        "type": {
+          "bits": 8,
+          "kind": "int",
+          "signedness": "unsigned"
+        },
+        "value": 1
+      },
+      "tag": "add",
+      "type": {
+        "bits": 8,
+        "kind": "int",
+        "signedness": "unsigned"
+      }
+    },
+    {
+      "index": 5,
+      "operand": {
+        "index": 4,
+        "kind": "instruction"
+      },
+      "payloadVisited": true,
+      "tag": "br",
+      "target": 1,
+      "type": {
+        "kind": "noreturn"
+      }
+    },
+    {
+      "index": 6,
+      "operand": {
+        "index": 0,
+        "kind": "instruction"
+      },
+      "payloadVisited": true,
+      "tag": "br",
+      "target": 1,
+      "type": {
+        "kind": "noreturn"
+      }
+    },
+    {
+      "index": 7,
+      "operand": {
+        "index": 1,
+        "kind": "instruction"
+      },
+      "payloadVisited": true,
+      "tag": "ret",
+      "type": {
+        "kind": "noreturn"
+      }
+    }
+  ],
+  "name": "scalar.choose",
+  "schema": "oksolc.fresh-air.v3",
+  "signature": {
+    "callingConvention": "auto",
+    "genericInstance": false,
+    "noaliasBits": 0,
+    "parameters": [
+      {
+        "bits": 8,
+        "kind": "int",
+        "signedness": "unsigned"
+      }
+    ],
+    "returnType": {
+      "bits": 8,
+      "kind": "int",
+      "signedness": "unsigned"
+    },
+    "varArgs": false
+  },
+  "sourceFile": "scalar.zig",
+  "sourceOperationTags": [
+    "add",
+    "ret_node"
+  ],
+  "sourceSha256": "8a39fe34798203c9fa8c9fc1a4503c2ec61bff66ea46219047b4d0814b7c2135",
+  "sourceValidity": {
+    "complete": false,
+    "coverage": "runtime-slice-results",
+    "schema": "oksolc.source-validity.v1",
+    "slices": []
+  },
+  "sourceValidityConditionsPreserved": false
+}

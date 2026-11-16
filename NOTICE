@@ -1,0 +1,12 @@
+Zean
+Copyright (C) 2026 OKcontract Pte. Ltd.
+
+Licensed under the Apache License, Version 2.0.
+Copyright notices are retained in the individual source files.
+
+Zig and Lean are external tools with their own licenses. Their source trees,
+standard libraries, and binaries are not included.
+
+The pinned Ziglings exercise sources and correction patches under
+examples/ziglings/upstream are distributed under their accompanying MIT license,
+with attribution to Dave Gauer and Chris Boesch.

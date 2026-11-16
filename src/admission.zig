@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 OKcontract Pte. Ltd.
+//! Versioned vocabulary gate, not a claim of complete source-validity capture.
+const std = @import("std");
+const c = @import("common.zig");
+pub const schema = "zean.admission.v1";
+pub const Origin = enum { air, source_and_air, debug_metadata };
+pub const Operation = struct {
+    name: []const u8,
+    tags: []const u8,
+    origin: Origin = .air,
+    obligations: []const u8,
+    interpretation: []const u8,
+    controls: []const u8,
+};
+// Exact tokens, never prefixes. A listed tag still requires all decoder checks.
+pub const operations = [_]Operation{
+    .{ .name = "argument", .tags = "arg", .obligations = "signature, runtime parameter map, SSA ownership", .interpretation = "MemoryAir.Prim.argument", .controls = "test/native/cases/air.zig" },
+    .{ .name = "arithmetic", .tags = "add sub mul add_safe sub_safe mul_safe add_wrap sub_wrap mul_wrap", .obligations = "widths, signedness, overflow mode, reached dead results", .interpretation = "Scalar.Arithmetic.eval", .controls = "test/native/cases/air.zig" },
+    .{ .name = "bitwise", .tags = "bit_and xor shr", .obligations = "unsigned widths and shift count", .interpretation = "Scalar.Prim.eval", .controls = "test/native/cases/air.zig" },
+    .{ .name = "comparison", .tags = "cmp_eq cmp_neq cmp_lt cmp_lte cmp_gt cmp_gte min max", .obligations = "matching integer operands and result type", .interpretation = "Scalar.Prim.eval", .controls = "test/native/bulk_copy.zig" },
+    .{ .name = "integer_cast", .tags = "int_cast int_cast_safe bit_cast trunc", .obligations = "widths, range, signedness; byte contracts for specialized casts", .interpretation = "Scalar.Prim.eval", .controls = "test/native/cases/air.zig" },
+    .{ .name = "boolean", .tags = "not", .obligations = "boolean operand and result", .interpretation = "MemoryAir.Prim.eval", .controls = "test/native/byte_reads.zig" },
+    .{ .name = "stack_allocation", .tags = "alloc", .obligations = "stack kind, complete layout, fresh lifetime, modeled room", .interpretation = "Memory.allocate", .controls = "lean/Compiler/Tests/ZigAir/MemoryResourceControls.lean" },
+    .{ .name = "load", .tags = "load slice_elem_val ptr_elem_val", .obligations = "live provenance, logical extent, alignment, typed initialized storage", .interpretation = "Memory.load", .controls = "test/native/byte_reads.zig" },
+    .{ .name = "store", .tags = "store store_safe", .obligations = "live writable provenance, extent, alignment, stored type", .interpretation = "Memory.store", .controls = "test/native/cases/air.zig" },
+    .{ .name = "byte_copy", .tags = "memcpy", .obligations = "live extents, permission, non-overlap, initialization transport, prefix effects", .interpretation = "Memory.copyBytes", .controls = "test/native/undefined_copy.zig" },
+    .{ .name = "pointer_arithmetic", .tags = "ptr_add ptr_sub ptr_elem_ptr slice_elem_ptr", .obligations = "live allocation, arithmetic range, geometry, logical slice extent", .interpretation = "MemoryAir.Prim.eval", .controls = "test/native/bounded_slices.zig" },
+    .{ .name = "view", .tags = "ptr_cast array_to_slice slice", .origin = .source_and_air, .obligations = "retained source slice bounds and unique anchor, original extent, permissions, complete view; explicit contracts for specialized casts", .interpretation = "Memory.pointerCast / Memory.sourceBounds / MemoryAir.Prim.eval", .controls = "test/native/bounded_slices.zig" },
+    .{ .name = "slice_projection", .tags = "slice_len slice_ptr ptr_slice_len_ptr ptr_slice_ptr_ptr", .obligations = "slice owner, field geometry, permissions, element type", .interpretation = "MemoryAir.Prim.eval", .controls = "test/native/cases/air.zig" },
+    .{ .name = "record_projection", .tags = "struct_field_ptr struct_field_ptr_index_0 struct_field_ptr_index_1 struct_field_ptr_index_2 struct_field_ptr_index_3", .obligations = "complete owner identity and layout, declared index, extent, permission", .interpretation = "Memory.fieldPointer", .controls = "test/native/record_fields.zig" },
+    .{ .name = "direct_call", .tags = "call call_never_inline call_never_tail", .obligations = "declaration owner, exact signature, source closure, specialization, acyclic bodies", .interpretation = "MemoryCall.Prim.eval / MemoryPartialCall.Prim.eval / MemoryCallMachine.step", .controls = "test/native/call_admission.zig" },
+    .{ .name = "structured_control", .tags = "block cond_br br", .obligations = "SSA dominance, unique body ownership, typed targets, operation order", .interpretation = "Control.Machine.step", .controls = "test/native/cases/air.zig" },
+    .{ .name = "loop", .tags = "loop repeat", .obligations = "enabled profile, enclosing target, prefix effects; client invariant for verification", .interpretation = "Control.Machine.step", .controls = "test/native/cases/air.zig" },
+    .{ .name = "return", .tags = "ret ret_safe", .obligations = "signature result, cleanup; result type alone does not establish lifetime", .interpretation = "MemoryAir.Program.finish", .controls = "lean/Compiler/Tests/ZigAir/MemoryCallControls.lean" },
+    .{ .name = "unreachable", .tags = "unreach", .obligations = "retain reached failure and preceding effects", .interpretation = "MemoryAir.Prim.eval", .controls = "test/native/byte_reads.zig" },
+    .{ .name = "debug", .tags = "dbg_stmt dbg_var_val dbg_var_ptr dbg_arg_inline", .origin = .debug_metadata, .obligations = "exact tag, unit type and debugOnly flag", .interpretation = "erased metadata", .controls = "test/native/cases/air.zig" },
+};
+
+pub fn lookup(tag: []const u8) ?*const Operation {
+    for (&operations) |*operation| {
+        var tags = std.mem.tokenizeScalar(u8, operation.tags, ' ');
+        while (tags.next()) |candidate| if (std.mem.eql(u8, tag, candidate)) return operation;
+    }
+    return null;
+}
+
+pub fn require(ctx: *c.Context, tag: []const u8) c.Error!void {
+    if (lookup(tag) == null) return ctx.fail("operation absent from {s}: {s}", .{ schema, tag });
+}
+
+pub fn report(ctx: *c.Context) c.Error!c.Value {
+    return ctx.parse(try ctx.json(.{
+        .schema = schema,
+        .operations = operations,
+        .coverage = "reached AIR vocabulary plus selected pre-elimination slice obligations",
+        .sourceRequirementsComplete = false,
+        .sourceSafetyVerified = false,
+        .nativeRefinementVerified = false,
+        .admissionRequires = "profile, target, type, reference, layout, source-owner and specialization checks in addition to the vocabulary gate",
+        .rejected = [_][]const u8{ "unknown reached tags", "unrecorded or unanchored slice obligations", "indirect or recursive calls", "native allocator vtables", "FFI", "volatile or atomic memory", "unsupported pointer and layout forms" },
+    }));
+}

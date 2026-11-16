@@ -1,0 +1,2 @@
+# Pinned upstream patch fixtures retain significant context-line spaces.
+examples/ziglings/upstream/*.patch -whitespace

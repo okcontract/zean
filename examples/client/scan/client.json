@@ -1,0 +1,12 @@
+{
+  "schema": "zean.client.v1",
+  "source": "scan.zig",
+  "sources": [],
+  "roots": ["scan.all_nonzero"],
+  "profile": "call-loops",
+  "executionModel": "call-machine",
+  "generatedModule": "ByteScan.Generated",
+  "libraries": ["Compiler.ZigAir.Verify.Machine", "Compiler.ZigAir.Verify.Bytes"],
+  "proofs": [{"module": "ByteScan.Proofs", "path": "Proofs.lean"}],
+  "theorems": ["ByteScan.safe"]
+}

@@ -1,0 +1,29 @@
+name: Check
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  portable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      LEAN_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: '0.17.1'
+      - uses: leanprover/lean-action@v1
+        with:
+          auto-config: false
+          build: false
+          test: false
+          lint: false
+      # Keep total verification memory below 8 GiB, including Zig and Lake.
+      - name: Native Debug regressions
+        run: zig build test -Doptimize=Debug --maxrss 7516192768 --summary all
+      - name: Portable release checks
+        run: zig build check -Doptimize=ReleaseFast --maxrss 7516192768 --summary all
