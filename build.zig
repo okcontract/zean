@@ -39,7 +39,7 @@ pub fn build(b: *std.Build) void {
     const run = b.addRunArtifact(executable);
     run.addPassthruArgs();
     b.step("run", "Run the native Zig-to-Lean tool").dependOn(&run.step);
-    inline for (.{ "capture", "toolchain", "check-patch", "audit", "admission", "verify-client", "allocator-evaluate" }) |command| {
+    inline for (.{ "capture", "toolchain", "check-patch", "audit", "admission", "verify-client", "allocator-evaluate", "atomic-publication-check" }) |command| {
         const command_run = b.addRunArtifact(executable);
         command_run.addArg(command);
         command_run.addPassthruArgs();
@@ -224,6 +224,16 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&replace_native_run.step);
     replace_step.dependOn(&replace_native_run.step);
     const lake = b.option([]const u8, "lake", "Lake executable matching lean-toolchain; default uses the pinned elan toolchain");
+    const publication = b.step("atomic-publication", "Run the dispatch-table tests and check the release/acquire proof and counterexamples");
+    const publication_tests = b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("examples/atomic_publication/tests.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "zean", .module = module }},
+    }) }));
+    publication.dependOn(&publication_tests.step);
+    test_step.dependOn(&publication_tests.step);
+    publication.dependOn(&leanBuild(b, lake, &.{ "Compiler.Tests.ZigAir.AtomicPublicationControls", "Compiler.ZigAir.CapturedPublication" }).step);
     const lean = if (lake) |path| b.addSystemCommand(&.{ path, "build", "Contract", "Compiler" }) else b.addSystemCommand(&.{ "elan", "run", lean_toolchain, "lake", "build", "Contract", "Compiler" });
     lean.setEnvironmentVariable("LEAN_NUM_THREADS", "2");
     const core_lean = leanBuild(b, lake, &.{"Compiler.ZigAir.Verify.Core"});

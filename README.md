@@ -44,6 +44,13 @@ an instrumented compiler.
 
 ## More demos
 
+When can one thread safely read a dispatch table that another thread is filling
+in? The writer sets a flag with a release store after it fills both entries.
+The Lean proof shows that a reader can use either entry once its acquire load
+sees that store. Run `zig build atomic-publication` to check the proof and see
+what goes wrong if the writer sets the flag too soon.
+[Dispatch-table example](examples/atomic_publication/README.md)
+
 Continue with the [buffer update](examples/buffer/README.md), or follow the
 [copy-loop tutorial](examples/copy/README.md) for initialization, framing and
 helper contracts. The [verification guide](docs/verification.md) explains how
