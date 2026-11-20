@@ -87,6 +87,7 @@ private def parameters (raw : Raw) (types : List Memory.Ty) (result : Memory.Ty)
   signature.listAt "parameters"
 
 def decode (writer reader : Raw) : Option Protocol := do
+  Captured.require (equal 128 (← writer.get "configuration") (← reader.get "configuration"))
   let ptr (writable : Bool) := Memory.Ty.pointer writable false byteTy
   let wargs ← parameters writer [ptr true, ptr true, ptr true, byteTy, byteTy] (.scalar .unit)
   let rargs ← parameters reader [ptr false, ptr false] byteTy

@@ -66,7 +66,7 @@ completed report and a new output directory:
 ```sh
 zig build release-check -Doptimize=ReleaseFast \
   -Dtoolchain-report=/path/to/instrumented-build/report.json \
-  -Drelease-output=.codex-tmp/new-release-evidence
+  -Drelease-output=/tmp/new-release-evidence
 ```
 
 This gate first runs the portable checks, then fresh memory and validity audits,
@@ -74,6 +74,12 @@ tutorial recaptures, independent AIR correspondence checks, positive proof
 replay, and expected negative clients. It also checks the held-out ASCII call
 rejections and the fixed-length slice admission probe. Stages run sequentially
 and preserve their input identities and actual process outcomes.
+
+The last stage captures fresh AIR for `publish` and `readEntry`. Lean checks
+the two functions against the dispatch-table model, then repeats the comparison
+with six deliberate changes to the AIR. All six must break the match. The
+capture and proof reports are under `atomic-publication/capture` and
+`atomic-publication/proof` in the release output directory.
 
 The retained model checks, synthetic capture fixtures, fresh native capture,
 object comparisons, and whole-compiler verification are distinct claims. See

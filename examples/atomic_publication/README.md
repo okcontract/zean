@@ -48,7 +48,10 @@ zig build atomic-publication-check -- \
 ```
 
 Capture compiles the example twice, with AIR export off and on, and compares
-the object files byte for byte. Replay checks the hashes of the saved files.
+the object files byte for byte. Replay checks the hashes of the saved files
+and counts the instructions, source-validity slice records, and unsupported
+payloads in each function's AIR. Those counts must match the capture report.
+Both replay and Lean require the two functions to have identical build settings.
 
 Lean follows the writer's stores in order. For the reader, it checks which
 pointer the acquire load uses, which branch reads the slot, and what each

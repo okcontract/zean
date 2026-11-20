@@ -7,7 +7,30 @@ const c = z.common;
 const source_name = "publication.zig";
 // Reviewed source for this closed protocol, including its pointer interface.
 pub const source_sha = "af5514f3afe035f38200f8039da66083100fc8016d9473e8149dfc8e320540e1";
-const roots = [_][]const u8{ "publication.publish", "publication.readEntry" };
+const roots = [_]struct { name: []const u8, source_op: []const u8 }{
+    .{ .name = "publication.publish", .source_op = "atomic_store" },
+    .{ .name = "publication.readEntry", .source_op = "atomic_load" },
+};
+
+fn checkObjects(ctx: *c.Context, io: std.Io, directory: []const u8, object_sha: []const u8) !void {
+    for ([_][]const u8{ "ordinary.o", "captured.o" }) |name| {
+        const path = try z.files.closureMember(ctx, io, directory, name);
+        if (!std.mem.eql(u8, &(try z.runtime.fileDigest(ctx, io, path)), object_sha))
+            return ctx.fail("publication object identity mismatch: {s}", .{name});
+    }
+}
+
+pub fn validateMetadata(ctx: *c.Context, functions: c.Value, records: [roots.len]c.Value) !void {
+    try ctx.require(c.equal(try ctx.field(records[0], "configuration"), try ctx.field(records[1], "configuration")), "publication writer and reader build configurations differ");
+    for (roots, records) |root, record| {
+        const entry = try ctx.field(functions, root.name);
+        const tags = try ctx.field(record, "sourceOperationTags");
+        try ctx.require(c.equal(try ctx.field(entry, "sourceOperationTags"), tags), "source operation inventory mismatch");
+        try z.capture.validateSourceOperationTags(ctx, tags, root.source_op);
+        const counts = try z.capture.RecordCounts.inspect(ctx, record);
+        try counts.checkSummary(ctx, entry, root.name);
+    }
+}
 
 // Mutate independent copies of the actual capture. Each example in the replay
 // must lose the positive correspondence, even if the affected result is unused.
@@ -48,32 +71,29 @@ pub fn check(ctx: *c.Context, io: std.Io, report_path: []const u8, output: []con
     const objects = try ctx.field(report, "objects");
     const object_sha = try ctx.str(try ctx.field(objects, "ordinary"));
     try ctx.require(c.isDigest(object_sha) and c.tag(objects, "captured", object_sha), "ordinary and instrumented object identities differ");
-    for ([_][]const u8{ "ordinary.o", "captured.o" }) |name| {
-        const path = try z.files.closureMember(ctx, io, directory, name);
-        try ctx.require(std.mem.eql(u8, &(try z.runtime.fileDigest(ctx, io, path)), object_sha), "publication object identity mismatch");
-    }
+    try checkObjects(ctx, io, directory, object_sha);
     const source_path = try z.files.closureMember(ctx, io, directory, source_name);
     try ctx.require(std.mem.eql(u8, &(try z.runtime.fileDigest(ctx, io, source_path)), source_sha), "archived publication source changed");
     const functions = try ctx.field(report, "functions");
-    var records: [roots.len][]const u8 = undefined;
-    var lifted: [roots.len][]const u8 = undefined;
+    var records: [roots.len]c.Value = undefined;
+    var record_bytes: [roots.len][]const u8 = undefined;
     var identities: [roots.len][64]u8 = undefined;
     var paths: [roots.len][]const u8 = undefined;
     for (roots, 0..) |root, i| {
-        const entry = try ctx.field(functions, root);
+        const entry = try ctx.field(functions, root.name);
         try ctx.require(c.flag(entry, "requested", true), "missing requested publication root");
         paths[i] = try z.translate.capturedPath(ctx, io, report_path, entry);
         const record = try z.files.readJson(ctx, io, paths[i]);
-        records[i] = record.bytes;
+        records[i] = record.value;
+        record_bytes[i] = record.bytes;
         identities[i] = c.digest(record.bytes);
         try ctx.require(c.tag(entry, "sha256", &identities[i]) and c.tag(record.value, "sourceSha256", source_sha) and
-            c.tag(record.value, "sourceFile", source_name) and c.tag(record.value, "name", root), "publication AIR identity mismatch");
-        try ctx.require(c.equal(try ctx.field(entry, "sourceOperationTags"), try ctx.field(record.value, "sourceOperationTags")), "source operation inventory mismatch");
+            c.tag(record.value, "sourceFile", source_name) and c.tag(record.value, "name", root.name), "publication AIR identity mismatch");
         // Validate the ordinary capture envelope, parameter types, target and source conditions.
         // Only the protocol-specific Lean decoder below interprets the instruction bodies.
         _ = try z.air.Decoder.init(ctx, record.value, .memory);
-        lifted[i] = try z.certificate.lift(ctx, record.value, 0);
     }
+    try validateMetadata(ctx, functions, records);
     const module = try ctx.fmt(
         \\import Compiler.ZigAir.CapturedPublication
         \\open Compiler.ZigAir Compiler.ZigAir.AtomicPublication
@@ -94,7 +114,7 @@ pub fn check(ctx: *c.Context, io: std.Io, report_path: []const u8, output: []con
         \\
         \\-- Admission controls over mutated copies of the two records above.
         \\{s}
-    , .{ source_sha, &c.digest(captured.bytes), &identities[0], lifted[0], &identities[1], lifted[1], try rejectionControls(ctx, records) });
+    , .{ source_sha, &c.digest(captured.bytes), &identities[0], try z.certificate.lift(ctx, records[0], 0), &identities[1], try z.certificate.lift(ctx, records[1], 0), try rejectionControls(ctx, record_bytes) });
     const evidence = try z.toolchain.newOutput(ctx, io, output);
     const proof_dir = try z.files.join(ctx, &.{ evidence, "certificate" });
     try z.certificate.checkModule(ctx, io, proof_dir, module, environment, lake, "Compiler.ZigAir.CapturedPublication");
@@ -114,6 +134,7 @@ pub fn check(ctx: *c.Context, io: std.Io, report_path: []const u8, output: []con
         .sourceSafetyVerified = false,
         .nativeRefinementVerified = false,
     }));
+    try checkObjects(ctx, io, directory, object_sha);
     try z.files.write(io, try z.files.join(ctx, &.{ evidence, "report.json" }), try ctx.json(result));
     return result;
 }

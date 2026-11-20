@@ -69,6 +69,48 @@ pub fn sourceFilesAt(ctx: *c.Context, io: std.Io, base: []const u8, root: []cons
     }
     return result;
 }
+pub fn validateSourceOperationTags(ctx: *c.Context, inventory: c.Value, required: ?[]const u8) !void {
+    const tags = try ctx.array(inventory);
+    try ctx.require(tags.len > 0, "missing source-operation inventory");
+    var seen = std.StringHashMap(void).init(ctx.allocator);
+    defer seen.deinit();
+    for (tags) |tag| {
+        const name = try ctx.str(tag);
+        try ctx.require(name.len > 0, "empty source-operation tag");
+        try ctx.require(!(try seen.getOrPut(name)).found_existing, "duplicate source-operation tag");
+    }
+    if (required) |name| {
+        if (!seen.contains(name)) return ctx.fail("missing source-operation tag: {s}", .{name});
+    }
+}
+
+pub const RecordCounts = struct {
+    instructionCount: usize,
+    sourceValiditySliceCount: usize,
+    unsupportedPayloadCount: usize,
+
+    pub fn inspect(ctx: *c.Context, record: c.Value) !RecordCounts {
+        const slices = try ctx.array(try ctx.field(try ctx.field(record, "sourceValidity"), "slices"));
+        const instructions = try ctx.array(try ctx.field(record, "instructions"));
+        var unsupported: usize = 0;
+        for (instructions, 0..) |instruction, index| {
+            try ctx.require(try ctx.nat(try ctx.field(instruction, "index"), 1000000) == index, "malformed AIR instruction index");
+            _ = try ctx.str(try ctx.field(instruction, "tag"));
+            if (c.flag(instruction, "unsupportedPayload", true)) unsupported += 1;
+        }
+        return .{ .instructionCount = instructions.len, .sourceValiditySliceCount = slices.len, .unsupportedPayloadCount = unsupported };
+    }
+
+    pub fn checkSummary(counts: RecordCounts, ctx: *c.Context, entry: c.Value, root: []const u8) !void {
+        inline for (@typeInfo(RecordCounts).@"struct".field_names) |name| {
+            const reported = try ctx.nat(try ctx.field(entry, name), std.math.maxInt(usize));
+            const actual = @field(counts, name);
+            if (reported != actual)
+                return ctx.fail("{s}: {s} is {d} in the capture report, {d} in AIR", .{ root, name, reported, actual });
+        }
+    }
+};
+
 pub fn inspectRecords(ctx: *c.Context, io: std.Io, directory: []const u8, roots: []const []const u8, source_sha: []const u8, mode: []const u8) !c.Value {
     try uniqueRoots(ctx, roots);
     var result: c.Value = .{ .object = .empty };
@@ -85,29 +127,18 @@ pub fn inspectRecords(ctx: *c.Context, io: std.Io, directory: []const u8, roots:
         const validity = try ctx.field(record, "sourceValidity");
         try ctx.fields(validity, "schema coverage complete slices");
         try ctx.require(c.tag(validity, "schema", "oksolc.source-validity.v1") and c.tag(validity, "coverage", "runtime-slice-results") and c.flag(validity, "complete", false), "unsupported source-validity inventory");
-        const slices = try ctx.array(try ctx.field(validity, "slices"));
-        const tags = try ctx.array(try ctx.field(record, "sourceOperationTags"));
-        try ctx.require(tags.len > 0, "missing source-operation inventory");
-        for (tags, 0..) |tag, index| {
-            const text = try ctx.str(tag);
-            for (tags[0..index]) |old| try ctx.require(!std.mem.eql(u8, text, try ctx.str(old)), "duplicate source-operation tag");
-        }
-        const instructions = try ctx.array(try ctx.field(record, "instructions"));
+        const tags = try ctx.field(record, "sourceOperationTags");
+        try validateSourceOperationTags(ctx, tags, null);
+        const counts = try RecordCounts.inspect(ctx, record);
         const body = try ctx.array(try ctx.field(record, "body"));
-        var unsupported: usize = 0;
-        for (instructions, 0..) |instruction, index| {
-            try ctx.require(try ctx.nat(try ctx.field(instruction, "index"), 1000000) == index, "malformed AIR instruction index");
-            _ = try ctx.str(try ctx.field(instruction, "tag"));
-            if (c.flag(instruction, "unsupportedPayload", true)) unsupported += 1;
-        }
-        for (body) |ref| try ctx.require(try ctx.nat(ref, 1000000) < instructions.len, "out-of-range AIR body reference");
+        for (body) |ref| try ctx.require(try ctx.nat(ref, 1000000) < counts.instructionCount, "out-of-range AIR body reference");
         const requested = c.oneOf(name, roots);
         if (requested) {
             try ctx.require(c.tag(record, "sourceSha256", source_sha), "requested root source hash mismatch");
             const config = try ctx.field(record, "configuration");
             try ctx.require(c.tag(config, "optimize", mode) and c.flag(config, "useLlvm", true) and c.flag(config, "isTest", false), "requested root build configuration mismatch");
         }
-        const summary = try ctx.parse(try ctx.json(.{ .file = entry.name, .sha256 = &c.digest(raw), .requested = requested, .instructionCount = instructions.len, .sourceOperationTags = tags, .sourceValiditySliceCount = slices.len, .unsupportedPayloadCount = unsupported }));
+        const summary = try ctx.parse(try ctx.json(.{ .file = entry.name, .sha256 = &c.digest(raw), .requested = requested, .instructionCount = counts.instructionCount, .sourceOperationTags = tags, .sourceValiditySliceCount = counts.sourceValiditySliceCount, .unsupportedPayloadCount = counts.unsupportedPayloadCount }));
         try result.object.put(ctx.allocator, try ctx.allocator.dupe(u8, name), summary);
     }
     for (roots) |name| try ctx.require(result.object.contains(name), "missing requested AIR root");
