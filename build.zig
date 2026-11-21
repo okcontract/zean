@@ -224,6 +224,19 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&replace_native_run.step);
     replace_step.dependOn(&replace_native_run.step);
     const lake = b.option([]const u8, "lake", "Lake executable matching lean-toolchain; default uses the pinned elan toolchain");
+    const publication = b.step("atomic-publication", "Run the dispatch-table tests and check the release/acquire proof and counterexamples");
+    const publication_check = publicationChecker(b, executable, lake);
+    publication_check.addPassthruArgs();
+    b.step("atomic-publication-check", "Check that the captured AIR for publish and readEntry matches the dispatch-table model").dependOn(&publication_check.step);
+    const publication_tests = b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("examples/atomic_publication/tests.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "zean", .module = module }},
+    }) }));
+    publication.dependOn(&publication_tests.step);
+    test_step.dependOn(&publication_tests.step);
+    publication.dependOn(&leanBuild(b, lake, &.{ "Compiler.Tests.ZigAir.AtomicPublicationControls", "Compiler.ZigAir.CapturedPublication" }).step);
     const lean = if (lake) |path| b.addSystemCommand(&.{ path, "build", "Contract", "Compiler" }) else b.addSystemCommand(&.{ "elan", "run", lean_toolchain, "lake", "build", "Contract", "Compiler" });
     lean.setEnvironmentVariable("LEAN_NUM_THREADS", "2");
     const core_lean = leanBuild(b, lake, &.{"Compiler.ZigAir.Verify.Core"});
@@ -445,8 +458,26 @@ pub fn build(b: *std.Build) void {
         ziglings_replay.has_side_effects = true;
         ziglings_replay.step.dependOn(&replace_replay.step);
         compatibility_first.?.dependOn(&ziglings_replay.step);
-        release.dependOn(compatibility);
+        const publication_dir = b.fmt("{s}/atomic-publication/capture", .{release_output.?});
+        const publication_capture = b.addRunArtifact(executable);
+        publication_capture.addArgs(&.{ "capture", "--toolchain", toolchain_report.?, "--source" });
+        publication_capture.addFileArg(b.path("examples/atomic_publication/publication.zig"));
+        publication_capture.addArgs(&.{ "--root", "publication.publish", "--root", "publication.readEntry", "--output", publication_dir });
+        publication_capture.has_side_effects = true;
+        publication_capture.step.dependOn(compatibility);
+        const publication_replay = publicationChecker(b, executable, lake);
+        publication_replay.addArgs(&.{ "--capture", b.fmt("{s}/report.json", .{publication_dir}), "--output", b.fmt("{s}/atomic-publication/proof", .{release_output.?}) });
+        publication_replay.step.dependOn(&publication_capture.step);
+        release.dependOn(&publication_replay.step);
     }
+}
+
+fn publicationChecker(b: *std.Build, executable: *std.Build.Step.Compile, lake: ?[]const u8) *std.Build.Step.Run {
+    const run = b.addRunArtifact(executable);
+    run.addArg("atomic-publication-check");
+    if (lake) |path| run.addArgs(&.{ "--lake", path });
+    run.has_side_effects = true;
+    return run;
 }
 
 fn leanBuild(b: *std.Build, lake: ?[]const u8, modules: []const []const u8) *std.Build.Step.Run {

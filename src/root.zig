@@ -4,6 +4,7 @@
 pub const common = @import("common.zig");
 pub const air = @import("air.zig");
 pub const admission = @import("admission.zig");
+pub const atomic_publication = @import("atomic_publication.zig");
 pub const target = @import("target.zig");
 pub const proof_replay = @import("proof_replay.zig");
 pub const client = @import("client.zig");

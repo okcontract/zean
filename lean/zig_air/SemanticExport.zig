@@ -443,6 +443,19 @@ fn writeInstruction(w: *Writer, air: *const Air, index: Air.Inst.Index, visited:
     try writeType(w, air.typeOfIndex(index, &zcu.intern_pool), zcu);
     switch (inst.tag) {
         .arg => try w.print(",\"zirParameterIndex\":{d}", .{inst.data.arg.zir_param_index}),
+        .atomic_load => {
+            const load = inst.data.atomic_load;
+            try w.writeAll(",\"ordering\":");
+            try json(w, @tagName(load.order));
+            try w.writeAll(",\"operand\":");
+            try writeRef(w, load.ptr, zcu);
+        },
+        .atomic_store_release => {
+            try w.writeAll(",\"ordering\":\"release\",\"lhs\":");
+            try writeRef(w, inst.data.bin_op.lhs, zcu);
+            try w.writeAll(",\"rhs\":");
+            try writeRef(w, inst.data.bin_op.rhs, zcu);
+        },
         .call, .call_always_tail, .call_never_tail, .call_never_inline => {
             const call = air.unwrapCall(index);
             try w.writeAll(",\"callee\":");

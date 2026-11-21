@@ -14,6 +14,12 @@ interpretations and rejection controls, and explicitly retain
 `sourceRequirementsComplete = false`. Listing a tag does not admit arbitrary
 instances of it. Translation manifests record the inventory schema.
 
+The sequential profiles reject atomic operations. The dispatch-table example
+uses its own checker for two functions in `publication.zig`. It checks that
+`publish` fills both slots before setting the flag with a release store. It
+also checks that `readEntry` reads a slot only if its acquire load sees `1`.
+[Publication proof and assumptions](../examples/atomic_publication/README.md)
+
 The semantic interpretation of the supported memory fragment is specified in
 [`Captured.lean`](../lean/Compiler/ZigAir/Captured.lean), independently of the Zig
 emitter. `translate --profile memory|loops --certify /tmp/check-evidence` emits
