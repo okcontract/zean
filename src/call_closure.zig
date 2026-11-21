@@ -5,6 +5,7 @@ const std = @import("std");
 const c = @import("common.zig");
 const air = @import("air.zig");
 const files = @import("files.zig");
+const declaration_source = @import("declaration_source.zig");
 const translation = @import("translate.zig");
 
 pub const Unit = struct {
@@ -13,8 +14,6 @@ pub const Unit = struct {
     record: c.Value,
     path: []const u8,
     sha: []const u8,
-    source_path: []const u8,
-    source_sha: []const u8,
     called: bool = false,
 };
 
@@ -45,11 +44,13 @@ pub const Closure = struct {
     units: std.ArrayList(Unit) = .empty,
     active: std.StringHashMap(Active),
     names: std.StringHashMap(void),
+    sources: std.StringHashMap(struct { path: []const u8, file: declaration_source.File }),
     root_source: ?[]const u8 = null,
+    root_bytes: ?[]const u8 = null,
     allow_recursion: bool = false,
 
     pub fn init(ctx: *c.Context, io: std.Io, capture: []const u8, report: c.Value) Closure {
-        return .{ .ctx = ctx, .io = io, .capture = capture, .report = report, .active = .init(ctx.allocator), .names = .init(ctx.allocator) };
+        return .{ .ctx = ctx, .io = io, .capture = capture, .report = report, .active = .init(ctx.allocator), .names = .init(ctx.allocator), .sources = .init(ctx.allocator) };
     }
 
     pub fn visit(self: *Closure, root: []const u8, identity: ?c.Value, depth: usize) !void {
@@ -79,11 +80,11 @@ pub const Closure = struct {
         const source = try ctx.str(try ctx.field(record, "sourceFile"));
         const sources = try ctx.field(self.report, "sourceFiles");
         try ctx.require(c.equal(try ctx.field(sources, source), try ctx.field(record, "sourceSha256")), "callee is outside the explicit captured source closure");
-        _ = try @import("declaration_source.zig").ownerPrefix(ctx, source);
-        const source_path = if (self.root_source != null and std.mem.eql(u8, source, std.fs.path.basename(self.root_source.?))) self.root_source.? else try files.closureMember(ctx, self.io, std.fs.path.dirname(self.capture) orelse ".", source);
-        try files.regular(ctx, self.io, source_path);
-        const source_bytes = try ctx.read(self.io, source_path, 64 * 1024 * 1024);
-        try @import("declaration_source.zig").select(ctx, record, sources, source, source_bytes);
+        const file = try self.sourceFile(source);
+        declaration_source.selectParsed(ctx, record, sources, file) catch |err| {
+            if (err == error.InvalidInput) return ctx.fail("{s}: {s}", .{ root, ctx.diagnostic });
+            return err;
+        };
         const start = if (std.mem.lastIndexOfScalar(u8, root, '.')) |index| index + 1 else 0;
         const component = root[start..];
         try ctx.require(c.identifier(component, false), "invalid generated function name");
@@ -110,7 +111,36 @@ pub const Closure = struct {
             try self.visit(try ctx.str(try ctx.field(expected, "name")), expected, depth + 1);
         }
         const unit = self.active.fetchRemove(root).?.value;
-        try self.units.append(ctx.allocator, .{ .root = root, .name = name, .record = record, .path = path, .sha = sha, .source_path = source_path, .source_sha = try ctx.str(try ctx.field(record, "sourceSha256")), .called = unit.called });
+        try self.units.append(ctx.allocator, .{ .root = root, .name = name, .record = record, .path = path, .sha = sha, .called = unit.called });
+    }
+
+    fn sourceFile(self: *Closure, name: []const u8) !*const declaration_source.File {
+        const cached = try self.sources.getOrPut(name);
+        if (cached.found_existing) return &cached.value_ptr.file;
+        errdefer _ = self.sources.remove(name);
+        const selected = self.root_source != null and std.mem.eql(u8, name, std.fs.path.basename(self.root_source.?));
+        const path = if (selected) self.root_source.? else try files.closureMember(self.ctx, self.io, std.fs.path.dirname(self.capture) orelse ".", name);
+        try files.regular(self.ctx, self.io, path);
+        const bytes = if (selected and self.root_bytes != null) self.root_bytes.? else try self.ctx.read(self.io, path, 64 * 1024 * 1024);
+        cached.value_ptr.* = .{ .path = path, .file = try declaration_source.File.init(self.ctx, name, bytes) };
+        return &cached.value_ptr.file;
+    }
+
+    pub fn deinit(self: *Closure) void {
+        var sources = self.sources.valueIterator();
+        while (sources.next()) |cached| cached.file.declarations.deinit();
+        self.sources.deinit();
+        self.names.deinit();
+        self.active.deinit();
+        self.units.deinit(self.ctx.allocator);
+    }
+
+    pub fn revalidateSources(self: *Closure) !void {
+        var sources = self.sources.valueIterator();
+        while (sources.next()) |cached| {
+            const bytes = try self.ctx.read(self.io, cached.path, 64 * 1024 * 1024);
+            try self.ctx.require(std.mem.eql(u8, &c.digest(bytes), &cached.file.sha), "declaration source changed during translation");
+        }
     }
 
     fn bindIdentity(self: *Closure, record: c.Value, identity: c.Value) !void {

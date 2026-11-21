@@ -55,7 +55,9 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
     var identities: std.ArrayList(struct { path: []const u8, sha: []const u8 }) = .empty;
     const entries = try ctx.field(report, "functions");
     var closure = @import("call_closure.zig").Closure.init(ctx, io, options.capture, report);
+    defer closure.deinit();
     closure.root_source = options.declaration_source;
+    closure.root_bytes = declaration_bytes;
     closure.allow_recursion = options.profile.capabilities().recursive_calls;
     var callees: std.ArrayList(air.Callee) = .empty;
     var machine_names: std.ArrayList([]const u8) = .empty;
@@ -76,7 +78,10 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
             const profile: air.Profile = if (closure.allow_recursion or !unit.called) options.profile else if (options.profile == .nested_calls) try @import("call_closure.zig").interpreter(ctx, unit.record, callees.items) else .calls;
             var decoder = try air.Decoder.initWith(ctx, unit.record, profile, .{ .callees = callees.items, .call_machine = call_machine });
             const program = try decoder.program();
-            try lines.append(ctx.allocator, try ctx.fmt("-- Zig declaration: {s}\n", .{unit.root}));
+            // Instantiated owner names contain compiler-rendered argument text.
+            // The manifest retains the full name for every declaration.
+            if (c.identifier(unit.root, true))
+                try lines.append(ctx.allocator, try ctx.fmt("-- Zig declaration: {s}\n", .{unit.root}));
             const machine_label = if (closure.allow_recursion) callees.items[machine_index].machine_label.? else try ctx.fmt("FunctionId.{s}", .{unit.name});
             if (!closure.allow_recursion) try lines.append(ctx.allocator, try ctx.fmt("def {s} : Nat := {d}\n\n", .{ machine_label, machine_index }));
             try lines.append(ctx.allocator, try ctx.fmt("-- AIR SHA-256: {s}\ndef {s} : Function :=\n{s}\n\n", .{ unit.sha, unit.name, program }));
@@ -91,7 +96,6 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
             const summary = try ctx.parse(try ctx.json(.{ .declaration = try ctx.fmt("{s}.{s}", .{ options.namespace, unit.name }), .airSha256 = unit.sha, .sourceSha256 = try ctx.field(unit.record, "sourceSha256"), .callee = unit.called, .interpreter = "call-machine", .machineIndex = machine_index, .configuration = try ctx.field(unit.record, "configuration") }));
             try functions.object.put(ctx.allocator, unit.root, summary);
             try identities.append(ctx.allocator, .{ .path = unit.path, .sha = unit.sha });
-            try identities.append(ctx.allocator, .{ .path = unit.source_path, .sha = unit.source_sha });
             if (!closure.allow_recursion and unit.called) try callees.append(ctx.allocator, .{ .record = unit.record, .declaration = unit.name, .profile = profile, .machine_index = machine_index, .machine_label = machine_label });
         }
         {
@@ -181,7 +185,9 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
         try ctx.require(std.mem.eql(u8, &c.digest(bytes), identity.sha), "capture inputs changed during translation");
     }
     if (specialized_bytes) |bytes| try ctx.require(std.mem.eql(u8, bytes, try ctx.read(io, options.specialized_source.?, 64 * 1024 * 1024)), "specialization source changed during translation");
-    if (declaration_bytes) |bytes| try ctx.require(std.mem.eql(u8, bytes, try ctx.read(io, options.declaration_source.?, 64 * 1024 * 1024)), "declaration source changed during translation");
+    if (options.profile.hasCalls()) {
+        try closure.revalidateSources();
+    } else if (declaration_bytes) |bytes| try ctx.require(std.mem.eql(u8, bytes, try ctx.read(io, options.declaration_source.?, 64 * 1024 * 1024)), "declaration source changed during translation");
     try files.publish(ctx, io, options.output, &.{ .{ .name = "Generated.lean", .bytes = lean }, .{ .name = "manifest.json", .bytes = try ctx.fmt("{s}\n", .{try ctx.json(manifest)}) } });
     return manifest;
 }

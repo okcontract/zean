@@ -569,7 +569,9 @@ pub fn captureFunction(pt: Zcu.PerThread, func_index: InternPool.Index, air: *co
     const nav = ip.getNav(func.owner_nav);
     const name = nav.fqn.toSlice(ip);
     const declaration = if (func.generic_owner == .none) nav else ip.getNav(zcu.funcInfo(func.generic_owner).owner_nav);
-    const file = zcu.fileByIndex(declaration.analysis.?.zir_index.resolveFile(ip));
+    const origin = declaration.srcInst(ip).resolveFull(ip) orelse return error.SourceUnavailable;
+    const file = zcu.fileByIndex(origin.file);
+    const declaration_node = (file.zir orelse return error.SourceUnavailable).getDeclaration(origin.inst).src_node;
     const mod = file.mod.?;
     const target = mod.resolved_target.result;
     const signature = zcu.typeToFunc(.fromInterned(func.ty)).?;
@@ -596,6 +598,7 @@ pub fn captureFunction(pt: Zcu.PerThread, func_index: InternPool.Index, air: *co
     std.crypto.hash.sha2.Sha256.hash(file.source orelse return error.SourceUnavailable, &hash, .{});
     const hex = std.fmt.bytesToHex(hash, .lower);
     try json(w, @as([]const u8, &hex));
+    try w.print(",\"sourceDeclarationNode\":{d}", .{@backingInt(declaration_node)});
     try w.writeAll(",\"configuration\":");
     try json(w, .{
         .optimize = switch (mod.optimize_mode) {

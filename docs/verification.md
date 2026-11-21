@@ -166,7 +166,10 @@ a caller may have loops with `call-loops`.
 Use `--declaration-source path/to/imported.zig` to select ordinary functions
 captured from an imported file. Every selected root and callee is resolved in
 its actual source owner; cached callees selected later as roots must also pass
-the root checks. `--certify /tmp/call-certificate` checks an independent Lean
+the root checks. New capture records carry the compiler's source prototype
+node. A concrete method in a type factory's instantiated namespace requires
+this anchor to match a named function inside that factory in the hashed source.
+`--certify /tmp/call-certificate` checks an independent Lean
 interpretation of the entire emitted call closure, including the captured
 callee bodies. The certificate checks AIR-to-model correspondence; source
 hashes and declaration checks do not prove frontend correctness.

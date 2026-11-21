@@ -117,7 +117,13 @@ pub const Decoder = struct {
         return initWith(ctx, record, profile, .{});
     }
     pub fn initWith(ctx: *Context, record: Value, profile: Profile, options: Options) Error!Decoder {
-        try ctx.fields(record, if (options.explicit_type_specialization) "schema capturePoint name sourceFile sourceSha256 configuration signature specialization sourceOperationTags sourceValidityConditionsPreserved sourceValidity body bodyTraversal instructions" else "schema capturePoint name sourceFile sourceSha256 configuration signature sourceOperationTags sourceValidityConditionsPreserved sourceValidity body bodyTraversal instructions");
+        const base_fields = "schema capturePoint name sourceFile sourceSha256 configuration signature sourceOperationTags sourceValidityConditionsPreserved sourceValidity body bodyTraversal instructions";
+        const ordinary_fields = if (options.explicit_type_specialization) base_fields ++ " specialization" else base_fields;
+        const fields = if (c.get(record, "sourceDeclarationNode")) |node| blk: {
+            _ = try ctx.nat(node, std.math.maxInt(u32));
+            break :blk if (options.explicit_type_specialization) base_fields ++ " specialization sourceDeclarationNode" else base_fields ++ " sourceDeclarationNode";
+        } else ordinary_fields;
+        try ctx.fields(record, fields);
         try ctx.require(c.tag(record, "schema", "oksolc.fresh-air.v3") and c.tag(record, "capturePoint", "after-sema-before-legalize") and c.tag(record, "bodyTraversal", "supported-structured-containers-only") and c.flag(record, "sourceValidityConditionsPreserved", false), "wrong AIR schema, phase or source-validity claim");
         const config = try ctx.field(record, "configuration");
         _ = try @import("target.zig").admit(ctx, config, profile.capabilities().memory);

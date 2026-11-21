@@ -81,6 +81,13 @@ pub fn controls() !void {
             .child_declaration = "fn_parent_1",
             .accepted = true,
         },
+        .{
+            .input = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/name", f.s("fixture.Factory(u8).child"))}),
+            // Prototype index captured by the pinned Zig compiler for this source.
+            .callee = f.derive(&leaf, &.{ f.set("/name", f.s("fixture.Factory(u8).child")), f.add("/sourceDeclarationNode", f.n("8")) }),
+            .source = "fn Factory(comptime T: type) type { _ = T; return struct { noinline fn child() void {} }; } export fn parent() void { Factory(u8).child(); }",
+            .accepted = true,
+        },
         .{ .input = nested_caller, .callee = nested_leaf, .filename = "nested/fixture.zig", .accepted = true },
         .{ .input = nested_caller, .callee = nested_leaf, .filename = "nested/fixture.zig", .linked = true },
         .{ .input = nested_caller, .callee = nested_leaf, .filename = "nested/fixture.zig", .source = "pub fn parent() void {} const Decoy = struct { pub fn child() void {} };" },
@@ -177,6 +184,10 @@ pub fn controls() !void {
             };
             const generated = try ctx.read(std.testing.io, try ctx.fmt("{s}/Generated.lean", .{options.output}), 16384);
             try std.testing.expect(std.mem.indexOf(u8, generated, try ctx.fmt("(.call FunctionId.{s} [])", .{case.child_declaration})) != null);
+            if (std.mem.indexOfScalar(u8, child_name, '(') != null) {
+                try std.testing.expect(std.mem.indexOf(u8, generated, "-- Zig declaration: fixture.Factory(") == null);
+                try std.testing.expect(std.mem.indexOf(u8, generated, "-- Zig declaration: fixture.parent\n") != null);
+            }
             if (case.profile != .recursive_calls)
                 try std.testing.expect(std.mem.indexOf(u8, generated, try ctx.fmt("def {s} :", .{case.child_declaration})).? < std.mem.indexOf(u8, generated, "def fn_parent :").?);
         } else {

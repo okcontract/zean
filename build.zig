@@ -361,7 +361,7 @@ pub fn build(b: *std.Build) void {
     const ziglings_init = rejectExampleProof(b, lake, "examples/ziglings/InitializationProof.lean", &ziglings_lean.step);
     const ziglings_bounds = rejectExampleProof(b, lake, "examples/ziglings/BoundsProof.lean", &ziglings_init.step);
     ziglings_step.dependOn(&ziglings_bounds.step);
-    const fmt = b.addFmt(.{ .paths = b.pathList(&.{ "build.zig", "src", "test/native", "test/lean", "examples/counter", "examples/buffer", "examples/copy", "examples/calls", "examples/client", "examples/allocator", "examples/stdlib_replace", "examples/compatibility", "examples/ziglings/upstream.zig", "examples/ziglings/tests.zig", "examples/ziglings/ziglings.zig" }), .check = true });
+    const fmt = b.addFmt(.{ .paths = b.pathList(&.{ "build.zig", "src", "lean/zig_air", "test/native", "test/lean", "examples/counter", "examples/buffer", "examples/copy", "examples/calls", "examples/client", "examples/allocator", "examples/stdlib_replace", "examples/compatibility", "examples/ziglings/upstream.zig", "examples/ziglings/tests.zig", "examples/ziglings/ziglings.zig" }), .check = true });
     b.step("fmt-check", "Check Zig formatting").dependOn(&fmt.step);
     const check = b.step("check", "Run portable release checks, including freshly emitted Lean");
     check.dependOn(&fmt.step);
