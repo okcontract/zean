@@ -163,6 +163,12 @@ indirect calls, tail-call requests, missing bodies, unsupported specializations
 and callees outside the explicit source closure reject. A callee must be finite;
 a caller may have loops with `call-loops`.
 
+A file-level callee or a method with explicit `comptime T: type` parameters can use the
+same checked source parameter mapping as a standalone specialization. When
+resolving these calls, the translator checks the instantiated signature and
+replays the captured body using the runtime arguments. Implicit `anytype`
+parameters and comptime values still reject.
+
 Use `--declaration-source path/to/imported.zig` to select ordinary functions
 captured from an imported file. Every selected root and callee is resolved in
 its actual source owner; cached callees selected later as roots must also pass

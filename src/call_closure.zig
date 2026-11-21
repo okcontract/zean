@@ -14,6 +14,7 @@ pub const Unit = struct {
     record: c.Value,
     path: []const u8,
     sha: []const u8,
+    source_parameters: ?[]const usize = null,
     called: bool = false,
 };
 
@@ -81,7 +82,7 @@ pub const Closure = struct {
         const sources = try ctx.field(self.report, "sourceFiles");
         try ctx.require(c.equal(try ctx.field(sources, source), try ctx.field(record, "sourceSha256")), "callee is outside the explicit captured source closure");
         const file = try self.sourceFile(source);
-        declaration_source.selectParsed(ctx, record, sources, file) catch |err| {
+        const source_parameters = bindDeclaration(ctx, record, sources, file) catch |err| {
             if (err == error.InvalidInput) return ctx.fail("{s}: {s}", .{ root, ctx.diagnostic });
             return err;
         };
@@ -111,7 +112,7 @@ pub const Closure = struct {
             try self.visit(try ctx.str(try ctx.field(expected, "name")), expected, depth + 1);
         }
         const unit = self.active.fetchRemove(root).?.value;
-        try self.units.append(ctx.allocator, .{ .root = root, .name = name, .record = record, .path = path, .sha = sha, .called = unit.called });
+        try self.units.append(ctx.allocator, .{ .root = root, .name = name, .record = record, .path = path, .sha = sha, .source_parameters = source_parameters, .called = unit.called });
     }
 
     fn sourceFile(self: *Closure, name: []const u8) !*const declaration_source.File {
@@ -143,12 +144,22 @@ pub const Closure = struct {
         }
     }
 
+    fn bindDeclaration(ctx: *c.Context, record: c.Value, sources: c.Value, file: *const declaration_source.File) !?[]const usize {
+        if (c.flag(try ctx.field(record, "signature"), "genericInstance", true)) {
+            const mapped = try @import("specialized_source.zig").selectForCall(ctx, record, file, sources);
+            return mapped.indices;
+        }
+        try declaration_source.selectParsed(ctx, record, sources, file);
+        return null;
+    }
+
     fn bindIdentity(self: *Closure, record: c.Value, identity: c.Value) !void {
         for ([_][]const u8{ "name", "sourceFile", "sourceSha256" }) |key| try self.ctx.require(c.equal(try self.ctx.field(record, key), try self.ctx.field(identity, key)), "callee declaration/source identity mismatch");
     }
 
     fn bindRoot(self: *Closure, record: c.Value, entry: c.Value) !void {
         const ctx = self.ctx;
+        try ctx.require(c.flag(try ctx.field(record, "signature"), "genericInstance", false), "a call-profile root must be an ordinary declaration; use --specialized-source for a standalone specialization");
         if (self.root_source) |selected| {
             try ctx.require(c.tag(record, "sourceFile", std.fs.path.basename(selected)), "imported call root has a different source owner");
         } else {

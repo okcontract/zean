@@ -39,6 +39,31 @@ const caller = f.derive(&leaf, &.{
     })),
 });
 const recursive_caller = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/name", f.s("fixture.parent"))});
+const generic_leaf = f.derive(&leaf, &.{
+    f.set("/name", f.s("fixture.child__func_1")),
+    f.set("/signature/genericInstance", f.b(true)),
+    f.add("/specialization", f.obj(&.{
+        .{ "schema", f.s("oksolc.generic-instance.v1") },
+        .{ "owner", identity },
+        .{ "sourceNoaliasBits", f.n("0") },
+        .{ "sourceComptimeBits", f.n("1") },
+        .{ "sourceParameterCount", f.n("1") },
+        .{ "arguments", f.arr(&.{f.obj(&.{
+            .{ "kind", f.s("type") },
+            .{ "value", f.obj(&.{ .{ "kind", f.s("int") }, .{ "signedness", f.s("unsigned") }, .{ "bits", f.n("8") } }) },
+        })}) },
+    })),
+});
+const generic_caller = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/name", f.s("fixture.child__func_1"))});
+const method_name = "fixture.Factory(u8).child__func_0";
+const method_caller = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/name", f.s(method_name))});
+const method_leaf = f.derive(&generic_leaf, &.{
+    f.set("/name", f.s(method_name)),
+    f.set("/specialization/owner/name", f.s("fixture.Factory(u8).child")),
+    f.set("/specialization/arguments/0/value/bits", f.n("16")),
+    f.add("/sourceDeclarationNode", f.n("8")),
+});
+const method_source = "fn Factory(comptime T: type) type { _ = T; return struct { noinline fn child(comptime U: type) void { _ = U; } }; } export fn parent() void { Factory(u8).child(u16); }";
 const loop_leaf = f.derive(&leaf, &.{
     f.set("/instructions", f.arr(&.{
         f.obj(&.{ .{ "index", f.n("0") }, .{ "tag", f.s("loop") }, .{ "payloadVisited", f.b(true) }, .{ "type", never }, .{ "body", f.arr(&.{f.n("1")}) } }),
@@ -72,7 +97,7 @@ const nested_caller = f.derive(&caller, &.{
 
 pub fn controls() !void {
     const definition = "pub fn child() void {} pub fn parent() void { child(); }";
-    const cases = [_]struct { input: f.Value = caller, callee: f.Value = leaf, source: []const u8 = definition, filename: []const u8 = "fixture.zig", child_declaration: []const u8 = "fn_child", linked: bool = false, profile: z.air.Profile = .calls, imported: bool = false, include: bool = true, extra_root: bool = false, accepted: bool = false }{
+    const cases = [_]struct { input: f.Value = caller, callee: f.Value = leaf, source: []const u8 = definition, filename: []const u8 = "fixture.zig", child_declaration: []const u8 = "fn_child", linked: bool = false, profile: z.air.Profile = .calls, imported: bool = false, include: bool = true, extra_root: bool = false, child_root: bool = false, accepted: bool = false }{
         .{ .accepted = true },
         .{
             .input = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/name", f.s("fixture.Helper.parent"))}),
@@ -94,6 +119,8 @@ pub fn controls() !void {
         .{ .input = nested_caller, .callee = leaf, .filename = "nested/fixture.zig" },
         .{ .accepted = true, .imported = true },
         .{ .extra_root = true },
+        .{ .input = generic_caller, .callee = generic_leaf, .source = "pub fn child(comptime T: type) void { _ = T; } pub fn parent() void { child(u8); }", .imported = true, .child_root = true },
+        .{ .input = generic_caller, .callee = generic_leaf, .source = "pub fn child(comptime T: type) void { _ = T; } pub fn parent() void { child(u8); }", .imported = true, .extra_root = true },
         .{ .extra_root = true, .imported = true, .accepted = true },
         .{ .input = f.derive(&caller, &.{f.set("/instructions/0/tag", f.s("call_never_inline"))}), .accepted = true },
         .{ .include = false },
@@ -108,6 +135,21 @@ pub fn controls() !void {
         .{ .input = f.derive(&caller, &.{f.set("/instructions/0/arguments", f.arr(&.{f.obj(&.{.{ "kind", f.s("unit") }})}))}) },
         .{ .callee = f.derive(&leaf, &.{f.set("/instructions/0/tag", f.s("unreach"))}) },
         .{ .callee = f.derive(&leaf, &.{f.set("/signature/genericInstance", f.b(true))}) },
+        .{
+            .input = generic_caller,
+            .callee = generic_leaf,
+            .source = "pub fn child(comptime T: type) void { _ = T; } pub fn parent() void { child(u8); }",
+            .child_declaration = "fn_child__func_1",
+            .accepted = true,
+        },
+        .{
+            .input = generic_caller,
+            .callee = generic_leaf,
+            .source = "pub fn child(comptime T: u8) void { _ = T; } pub fn parent() void { child(0); }",
+        },
+        .{ .input = method_caller, .callee = method_leaf, .source = method_source, .child_declaration = "fn_child__func_0", .accepted = true },
+        .{ .input = method_caller, .callee = f.derive(&method_leaf, &.{f.set("/sourceDeclarationNode", f.n("19"))}), .source = method_source },
+        .{ .input = method_caller, .callee = f.derive(&method_leaf, &.{f.remove("/sourceDeclarationNode")}), .source = method_source },
         .{ .callee = f.derive(&leaf, &.{f.set("/signature/noaliasBits", f.n("1"))}) },
         .{ .callee = f.derive(&leaf, &.{f.set("/sourceFile", f.s("decoy.zig"))}) },
         .{ .source = "pub fn parent() void {} const Decoy = struct { pub fn child() void {} };" },
@@ -133,6 +175,13 @@ pub fn controls() !void {
         var child_value = try f.load(ctx.allocator, case.callee);
         try parent_value.object.put(ctx.allocator, "sourceSha256", .{ .string = sha });
         try child_value.object.put(ctx.allocator, "sourceSha256", .{ .string = sha });
+        if (z.common.get(child_value, "specialization")) |specialization_value| {
+            var spec = specialization_value;
+            var owner = try ctx.field(spec, "owner");
+            try owner.object.put(ctx.allocator, "sourceSha256", .{ .string = sha });
+            try spec.object.put(ctx.allocator, "owner", owner);
+            try child_value.object.put(ctx.allocator, "specialization", spec);
+        }
         const instructions = try ctx.array(try ctx.field(parent_value, "instructions"));
         var target = try ctx.field(try ctx.field(instructions[0], "callee"), "identity");
         if (z.common.tag(target, "sourceSha256", source_sha)) try target.object.put(ctx.allocator, "sourceSha256", .{ .string = sha });
@@ -172,7 +221,7 @@ pub fn controls() !void {
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "report.json", .data = report });
         const options: z.translate.Options = .{
             .capture = try ctx.fmt("{s}/report.json", .{path}),
-            .roots = if (case.extra_root) &.{ parent_name, child_name } else &.{parent_name},
+            .roots = if (case.child_root) &.{child_name} else if (case.extra_root) &.{ parent_name, child_name } else &.{parent_name},
             .output = try ctx.fmt("{s}/output", .{path}),
             .profile = case.profile,
             .declaration_source = if (case.imported) try ctx.fmt("{s}/fixture.zig", .{path}) else null,

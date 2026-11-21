@@ -76,7 +76,12 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
         }
         for (closure.units.items, 0..) |unit, machine_index| {
             const profile: air.Profile = if (closure.allow_recursion or !unit.called) options.profile else if (options.profile == .nested_calls) try @import("call_closure.zig").interpreter(ctx, unit.record, callees.items) else .calls;
-            var decoder = try air.Decoder.initWith(ctx, unit.record, profile, .{ .callees = callees.items, .call_machine = call_machine });
+            var decoder = try air.Decoder.initWith(ctx, unit.record, profile, .{
+                .source_parameters = unit.source_parameters,
+                .explicit_type_specialization = unit.source_parameters != null,
+                .callees = callees.items,
+                .call_machine = call_machine,
+            });
             const program = try decoder.program();
             // Instantiated owner names contain compiler-rendered argument text.
             // The manifest retains the full name for every declaration.
@@ -106,7 +111,7 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
             }
             if (options.certify != null) {
                 const decoder = if (closure.allow_recursion) "decodeRecursive" else "decode";
-                try lines.append(ctx.allocator, try ctx.fmt("set_option maxRecDepth 8192 in\nset_option maxHeartbeats 2000000 in\ntheorem functions_correspondence :\n  Compiler.ZigAir.CapturedCallMachine.{s} [{s}] = some functions := rfl\n\n", .{ decoder, try std.mem.join(ctx.allocator, ", ", machine_records.items) }));
+                try lines.append(ctx.allocator, try ctx.fmt("set_option maxRecDepth 8192 in\nset_option maxHeartbeats 2000000 in\ntheorem functions_correspondence :\n  Compiler.ZigAir.CapturedCallMachine.{s} [{s}] = some functions := by rfl'\n\n", .{ decoder, try std.mem.join(ctx.allocator, ", ", machine_records.items) }));
             }
         }
     }
