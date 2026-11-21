@@ -60,7 +60,8 @@ pub fn controls() !void {
 
 fn instantiated(ctx: *z.common.Context) !void {
     const bytes = "pub fn Factory(comptime T: type) type { _ = T; return struct { " ++
-        definition ++ " }; } const Decoy = struct { " ++ definition ++ " };";
+        "fn Nested(comptime U: type) type { _ = U; return struct { " ++
+        definition ++ " }; } }; } const Decoy = struct { " ++ definition ++ " };";
     var declarations = try z.source.Declarations.init(ctx, bytes);
     defer declarations.deinit();
     const tree = &declarations.tree;
@@ -71,14 +72,16 @@ fn instantiated(ctx: *z.common.Context) !void {
     for (tree.nodes.items(.tag), 0..) |tag, index| {
         if (tag != .fn_decl) continue;
         const node: std.zig.Ast.Node.Index = @fromBackingInt(@intCast(index));
+        const function = tree.fullFnProto(&buffer, node).?;
+        if (!std.mem.eql(u8, tree.tokenSlice(function.name_token.?), "choose")) continue;
         if (tree.firstToken(factory) < tree.firstToken(node) and tree.lastToken(node) < tree.lastToken(factory)) {
             try std.testing.expect(member == null);
-            member = @backingInt(tree.fullFnProto(&buffer, node).?.ast.proto_node);
+            member = @backingInt(function.ast.proto_node);
         }
     }
     var record = try f.load(ctx.allocator, shared.air_memory_program_2_input_13);
     const sha = try ctx.allocator.dupe(u8, &z.common.digest(bytes));
-    try record.object.put(ctx.allocator, "name", .{ .string = "fixture.Factory(u8).choose" });
+    try record.object.put(ctx.allocator, "name", .{ .string = "fixture.Factory(u8).Nested(u16).choose" });
     try record.object.put(ctx.allocator, "sourceFile", .{ .string = "fixture.zig" });
     try record.object.put(ctx.allocator, "sourceSha256", .{ .string = sha });
     var sources: z.common.Value = .{ .object = .empty };
@@ -89,7 +92,7 @@ fn instantiated(ctx: *z.common.Context) !void {
     try record.object.put(ctx.allocator, "sourceDeclarationNode", .{ .integer = @backingInt(decoy.ast.proto_node) });
     try std.testing.expectError(error.InvalidInput, z.declaration_source.select(ctx, record, sources, "fixture.zig", bytes));
     try record.object.put(ctx.allocator, "sourceDeclarationNode", .{ .integer = member.? });
-    try record.object.put(ctx.allocator, "name", .{ .string = "fixture.Factory(u8).wrongName" });
+    try record.object.put(ctx.allocator, "name", .{ .string = "fixture.Factory(u8).Nested(u16).wrongName" });
     try std.testing.expectError(error.InvalidInput, z.declaration_source.select(ctx, record, sources, "fixture.zig", bytes));
 }
 

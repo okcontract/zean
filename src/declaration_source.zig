@@ -59,19 +59,14 @@ pub fn selectParsed(ctx: *c.Context, record: c.Value, sources: c.Value, file: *c
 pub fn functionProto(ctx: *c.Context, record: c.Value, declarations: *const source.Declarations, relative: []const u8, buffer: *[1]std.zig.Ast.Node.Index) c.Error!std.zig.Ast.full.FnProto {
     const tree = &declarations.tree;
     const anchor = c.get(record, "sourceDeclarationNode");
-    const node = if (std.mem.indexOfScalar(u8, relative, '(')) |arguments| blk: {
-        try ctx.require(anchor != null, "instantiated declaration owner requires a captured source anchor");
-        break :blk try instantiatedMember(ctx, declarations, relative, arguments);
-    } else blk: {
-        const selected = try namedOwner(ctx, declarations.root(), relative);
-        break :blk try selected.scope.functionNode(selected.member);
-    };
+    if (anchor == null) try ctx.require(std.mem.indexOfScalar(u8, relative, '(') == null, "instantiated declaration owner requires a captured source anchor");
+    const node = try resolve(ctx, declarations.root(), relative, 0);
     const function = tree.fullFnProto(buffer, node) orelse return ctx.fail("unsupported function declaration", .{});
     if (anchor) |index| try ctx.require(try ctx.nat(index, tree.nodes.len - 1) == @backingInt(function.ast.proto_node), "captured declaration anchor changed");
     return function;
 }
 
-fn namedOwner(ctx: *c.Context, root: source.Scope, name: []const u8) !struct { scope: source.Scope, member: []const u8 } {
+fn namedOwner(ctx: *c.Context, root: source.Scope, name: []const u8) c.Error!struct { scope: source.Scope, member: []const u8 } {
     var owner = root;
     var parts = std.mem.splitScalar(u8, name, '.');
     var component = parts.next().?;
@@ -86,18 +81,22 @@ fn namedOwner(ctx: *c.Context, root: source.Scope, name: []const u8) !struct { s
     return .{ .scope = owner, .member = component };
 }
 
-// The compiler's instantiated namespace includes the displayed comptime
-// arguments. Bind the method to the captured AST node inside the lexical
-// factory rather than guessing among methods with the same name.
-fn instantiatedMember(ctx: *c.Context, declarations: *const source.Declarations, name: []const u8, arguments: usize) c.Error!std.zig.Ast.Node.Index {
+fn resolve(ctx: *c.Context, root: source.Scope, name: []const u8, depth: usize) c.Error!std.zig.Ast.Node.Index {
+    const tree = &root.source.tree;
+    const arguments = std.mem.indexOfScalar(u8, name, '(') orelse {
+        const selected = try namedOwner(ctx, root, name);
+        return selected.scope.functionNode(selected.member);
+    };
+    // The compiler prints comptime arguments between lexical owner components.
+    // Balance the complete argument list before descending to the next owner.
+    try ctx.require(depth < 32, "instantiated declaration nesting limit");
     const tokens = try source.tokenize(ctx, name[arguments..]);
     const close = try source.balanced(ctx, tokens, 0);
     const suffix = name[arguments + tokens[close].end ..];
     try ctx.require(std.mem.startsWith(u8, suffix, "."), "invalid instantiated declaration path");
 
-    const selected = try namedOwner(ctx, declarations.root(), name[0..arguments]);
+    const selected = try namedOwner(ctx, root, name[0..arguments]);
     const factory = try selected.scope.functionNode(selected.member);
-    const tree = &declarations.tree;
     var factory_buffer: [1]std.zig.Ast.Node.Index = undefined;
     const factory_proto = tree.fullFnProto(&factory_buffer, factory) orelse return ctx.fail("unsupported type factory", .{});
     const return_type = factory_proto.ast.return_type.unwrap() orelse return ctx.fail("type factory has no return type", .{});
@@ -112,6 +111,5 @@ fn instantiatedMember(ctx: *c.Context, declarations: *const source.Declarations,
     try ctx.require(tree.nodeTag(last) == .@"return", "type factory must end in a direct return");
     const result = tree.nodeData(last).opt_node.unwrap() orelse return ctx.fail("type factory has no returned container", .{});
     const scope = try selected.scope.containerValue(result);
-    const owner = try namedOwner(ctx, scope, suffix[1..]);
-    return owner.scope.functionNode(owner.member);
+    return resolve(ctx, scope, suffix[1..], depth + 1);
 }

@@ -64,6 +64,12 @@ const method_leaf = f.derive(&generic_leaf, &.{
     f.add("/sourceDeclarationNode", f.n("8")),
 });
 const method_source = "fn Factory(comptime T: type) type { _ = T; return struct { noinline fn child(comptime U: type) void { _ = U; } }; } export fn parent() void { Factory(u8).child(u16); }";
+const nested_method_name = "fixture.Factory(u8).Nested(u32).child__func_0";
+const nested_method_leaf = f.derive(&method_leaf, &.{
+    f.set("/name", f.s(nested_method_name)),
+    f.set("/specialization/owner/name", f.s("fixture.Factory(u8).Nested(u32).child")),
+    f.set("/sourceDeclarationNode", f.n("15")),
+});
 const loop_leaf = f.derive(&leaf, &.{
     f.set("/instructions", f.arr(&.{
         f.obj(&.{ .{ "index", f.n("0") }, .{ "tag", f.s("loop") }, .{ "payloadVisited", f.b(true) }, .{ "type", never }, .{ "body", f.arr(&.{f.n("1")}) } }),
@@ -146,6 +152,13 @@ pub fn controls() !void {
             .input = generic_caller,
             .callee = generic_leaf,
             .source = "pub fn child(comptime T: u8) void { _ = T; } pub fn parent() void { child(0); }",
+        },
+        .{
+            .input = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/name", f.s(nested_method_name))}),
+            .callee = nested_method_leaf,
+            .source = "fn Factory(comptime T: type) type { _ = T; return struct { fn Nested(comptime V: type) type { _ = V; return struct { noinline fn child(comptime U: type) void { _ = U; } }; } }; } export fn parent() void { Factory(u8).Nested(u32).child(u16); }",
+            .child_declaration = "fn_child__func_0",
+            .accepted = true,
         },
         .{ .input = method_caller, .callee = method_leaf, .source = method_source, .child_declaration = "fn_child__func_0", .accepted = true },
         .{ .input = method_caller, .callee = f.derive(&method_leaf, &.{f.set("/sourceDeclarationNode", f.n("19"))}), .source = method_source },
