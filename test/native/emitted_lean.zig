@@ -70,7 +70,7 @@ fn run(ctx: *z.common.Context, init: std.process.Init) !void {
             std.debug.print("Checked scalar certificate and {d} rejection controls.\n", .{@import("certificate.zig").scalar_mutations.len});
             return;
         }
-        const lean = if (std.mem.eql(u8, label, "certificate")) try @import("certificate.zig").emitted(ctx, null) else if (std.mem.eql(u8, label, "byte-element-reads")) try @import("byte_reads.zig").emitted(ctx) else if (std.mem.eql(u8, label, "record-fields")) try @import("record_fields.zig").emitted(ctx) else if (std.mem.eql(u8, label, "bounded-length-slices")) try @import("bounded_slices.zig").emitted(ctx) else if (std.mem.eql(u8, label, "calls")) try @import("call_admission.zig").emitted(ctx) else return ctx.fail("unknown emitted control: {s}", .{label});
+        const lean = if (std.mem.eql(u8, label, "certificate")) try @import("certificate.zig").emitted(ctx, null) else if (std.mem.eql(u8, label, "byte-element-reads")) try @import("byte_reads.zig").emitted(ctx) else if (std.mem.eql(u8, label, "record-fields")) try @import("record_fields.zig").emitted(ctx) else if (std.mem.eql(u8, label, "bounded-length-slices")) try @import("bounded_slices.zig").emitted(ctx) else if (std.mem.eql(u8, label, "specialization-certificate")) try @import("specialized_source.zig").emitted(ctx) else if (std.mem.eql(u8, label, "calls")) try @import("call_admission.zig").emitted(ctx) else return ctx.fail("unknown emitted control: {s}", .{label});
         try checker.check(label, lean);
         std.debug.print("Compiled emitted control: {s}.\n", .{label});
         return;

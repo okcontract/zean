@@ -166,8 +166,15 @@ a caller may have loops with `call-loops`.
 A file-level callee or a method with explicit `comptime T: type` parameters can use the
 same checked source parameter mapping as a standalone specialization. When
 resolving these calls, the translator checks the instantiated signature and
-replays the captured body using the runtime arguments. Implicit `anytype`
-parameters and comptime values still reject.
+replays the captured body using the runtime arguments. Calls can also use a
+concrete `anytype` instance when the source parameter and AIR mapping both
+keep that argument at runtime. The exporter marks these arguments as
+`runtimeAnytype` from the generic owner's ZIR parameter tags. The standalone
+Lean decoder rejects marked arguments. A type passed to a comptime `anytype`
+parameter carries the distinct `anytypeType` kind and rejects in both Lean
+decoders. Only an ordinary declaration can serve as a call-profile root.
+For earlier unmarked captures the source declaration supplies the parameter
+shape. Comptime values and variadic calls still reject.
 
 Use `--declaration-source path/to/imported.zig` to select ordinary functions
 captured from an imported file. Every selected root and callee is resolved in

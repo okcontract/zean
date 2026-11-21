@@ -41,7 +41,7 @@ private def entries (records : List Raw) : Option (List Entry) := do
   let reversed ← records.zipIdx.foldlM (init := []) fun (seen : List Entry) (raw, index) => do
     let identity ← readIdentity raw
     require (!seen.any (·.identity == identity))
-    pure (⟨identity, index, ← prepare raw⟩ :: seen)
+    pure (⟨identity, index, ← prepare raw .directCall⟩ :: seen)
   pure reversed.reverse
 
 private def functionWithTargets (targets : List Entry) (entry : Entry) (allowRecursion : Bool) :

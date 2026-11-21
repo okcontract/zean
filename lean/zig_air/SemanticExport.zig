@@ -323,7 +323,7 @@ fn writeFunctionIdentity(w: *Writer, func: InternPool.Key.Func, zcu: *Zcu) Write
     try json(w, .{ .name = nav.fqn.toSlice(ip), .sourceFile = file.sub_file_path, .sourceSha256 = @as([]const u8, &hex) });
 }
 
-fn writeSpecialization(w: *Writer, func: InternPool.Key.Func, zcu: *Zcu) Writer.Error!void {
+fn writeSpecialization(w: *Writer, func: InternPool.Key.Func, zcu: *Zcu) !void {
     const ip = &zcu.intern_pool;
     const owner = zcu.funcInfo(func.generic_owner);
     const signature = zcu.typeToFunc(.fromInterned(owner.ty)).?;
@@ -333,15 +333,29 @@ fn writeSpecialization(w: *Writer, func: InternPool.Key.Func, zcu: *Zcu) Writer.
         signature.noalias_bits, signature.comptime_bits, signature.param_types.len,
     });
     var runtime_index: usize = 0;
-    for (func.comptime_args.get(ip), 0..) |arg, i| {
-        if (i != 0) try w.writeByte(',');
+    const origin = owner.zir_body_inst.resolveFull(ip) orelse return error.SourceUnavailable;
+    const zir = zcu.fileByIndex(origin.file).zir orelse return error.SourceUnavailable;
+    const args = func.comptime_args.get(ip);
+    var index: usize = 0;
+    for (zir.getParamBody(origin.inst)) |inst| {
+        const tag = zir.instructions.items(.tag)[@backingInt(inst)];
+        switch (tag) {
+            .param, .param_comptime, .param_anytype, .param_anytype_comptime => {},
+            else => continue,
+        }
+        if (index >= args.len) return error.InvalidParameterInventory;
+        const arg = args[index];
+        if (index != 0) try w.writeByte(',');
+        index += 1;
         if (arg == .none) {
-            try json(w, .{ .kind = "runtime", .runtimeIndex = runtime_index });
+            const kind: []const u8 = if (tag == .param_anytype) "runtimeAnytype" else "runtime";
+            try json(w, .{ .kind = kind, .runtimeIndex = runtime_index });
             runtime_index += 1;
         } else {
             const value: Value = .fromInterned(arg);
             if (value.typeOf(zcu).zigTypeTag(zcu) == .type) {
-                try w.writeAll("{\"kind\":\"type\",\"value\":");
+                const anytype_param = tag == .param_anytype or tag == .param_anytype_comptime;
+                try w.writeAll(if (anytype_param) "{\"kind\":\"anytypeType\",\"value\":" else "{\"kind\":\"type\",\"value\":");
                 try writeType(w, value.toType(), zcu);
                 try w.writeByte('}');
             } else {
@@ -351,6 +365,7 @@ fn writeSpecialization(w: *Writer, func: InternPool.Key.Func, zcu: *Zcu) Writer.
             }
         }
     }
+    if (index != args.len) return error.InvalidParameterInventory;
     try w.writeAll("]}");
 }
 
