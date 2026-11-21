@@ -12,7 +12,7 @@ coverage work, evaluation criteria and relevant literature.
 | --- | --- |
 | Scalar AIR | Zig 0.17.1 native counter captures and exact execution/safety proofs, including the `u32` example |
 | Memory, loops, aggregates and word-byte AIR | Restricted typed models; all six decoders have output/rejection controls and emitted Lean compilation checks; the buffer tutorial adds native captures with universal safety, update and preservation proofs |
-| Direct-call AIR | Three call profiles support acyclic closures, including looping callees; declarations and owners are checked throughout the closure and independent Lean decoders check AIR correspondence |
+| Direct-call AIR | Call profiles support acyclic closures, looping callees and opt-in recursive direct calls; declarations and owners are checked throughout the closure and independent Lean decoders check AIR correspondence |
 | Native memory and slice export | Debug and ReleaseFast fixture audits with ordinary/instrumented/bootstrap object comparison; the memory oracle requires AArch64/macOS |
 | Source ownership and specialization | AST-selected declarations, explicit captured source closures, checked type arguments and runtime parameter mappings |
 | Standard-library replacement and word swap | Restricted captured specializations with explicit initialization, permission and aliasing contracts |

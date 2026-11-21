@@ -52,28 +52,38 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
     if (options.certify != null) try lines.append(ctx.allocator, if (options.profile == .scalar) "import Compiler.ZigAir.CapturedScalar\n" else if (call_machine) "import Compiler.ZigAir.CapturedCallMachine\n" else "import Compiler.ZigAir.Captured\n");
     try lines.append(ctx.allocator, try ctx.fmt("import Compiler.ZigAir.{s}\n\nnamespace {s}\nopen Compiler.ZigAir.{s}\n\n", .{ module, lean_namespace, vocabulary }));
     var functions: c.Value = .{ .object = .empty };
-    var names: std.StringHashMap(void) = .init(ctx.allocator);
     var identities: std.ArrayList(struct { path: []const u8, sha: []const u8 }) = .empty;
     const entries = try ctx.field(report, "functions");
     var closure = @import("call_closure.zig").Closure.init(ctx, io, options.capture, report);
     closure.root_source = options.declaration_source;
+    closure.allow_recursion = options.profile.capabilities().recursive_calls;
     var callees: std.ArrayList(air.Callee) = .empty;
     var machine_names: std.ArrayList([]const u8) = .empty;
     var machine_records: std.ArrayList([]const u8) = .empty;
     var machine_captures: std.ArrayList([]const u8) = .empty;
     if (options.profile.hasCalls()) {
         for (options.roots) |root| try closure.visit(root, null, 0);
+        if (closure.allow_recursion) {
+            // All indices are in scope before any body references them.
+            for (closure.units.items, 0..) |unit, machine_index| {
+                const label = try ctx.fmt("FunctionId.{s}", .{unit.name});
+                try lines.append(ctx.allocator, try ctx.fmt("def {s} : Nat := {d}\n", .{ label, machine_index }));
+                try callees.append(ctx.allocator, .{ .record = unit.record, .declaration = unit.name, .profile = options.profile, .machine_index = machine_index, .machine_label = label });
+            }
+            try lines.append(ctx.allocator, "\n");
+        }
         for (closure.units.items, 0..) |unit, machine_index| {
-            const profile: air.Profile = if (!unit.called) options.profile else if (options.profile == .nested_calls) try @import("call_closure.zig").interpreter(ctx, unit.record, callees.items) else .calls;
+            const profile: air.Profile = if (closure.allow_recursion or !unit.called) options.profile else if (options.profile == .nested_calls) try @import("call_closure.zig").interpreter(ctx, unit.record, callees.items) else .calls;
             var decoder = try air.Decoder.initWith(ctx, unit.record, profile, .{ .callees = callees.items, .call_machine = call_machine });
             const program = try decoder.program();
-            const machine_label = try ctx.fmt("FunctionId.{s}", .{unit.name});
-            try lines.append(ctx.allocator, try ctx.fmt("-- Zig declaration: {s}\ndef {s} : Nat := {d}\n\n", .{ unit.root, machine_label, machine_index }));
+            try lines.append(ctx.allocator, try ctx.fmt("-- Zig declaration: {s}\n", .{unit.root}));
+            const machine_label = if (closure.allow_recursion) callees.items[machine_index].machine_label.? else try ctx.fmt("FunctionId.{s}", .{unit.name});
+            if (!closure.allow_recursion) try lines.append(ctx.allocator, try ctx.fmt("def {s} : Nat := {d}\n\n", .{ machine_label, machine_index }));
             try lines.append(ctx.allocator, try ctx.fmt("-- AIR SHA-256: {s}\ndef {s} : Function :=\n{s}\n\n", .{ unit.sha, unit.name, program }));
             {
                 try machine_names.append(ctx.allocator, unit.name);
                 if (options.certify != null) {
-                    const record_name = try ctx.fmt("{s}_captured", .{unit.name});
+                    const record_name = try ctx.fmt("CapturedRecords.{s}", .{unit.name});
                     try machine_records.append(ctx.allocator, record_name);
                     try machine_captures.append(ctx.allocator, try ctx.fmt("def {s} : Compiler.ZigAir.Captured.Raw :=\n{s}\n\n", .{ record_name, try @import("certificate.zig").lift(ctx, unit.record, 0) }));
                 }
@@ -82,7 +92,7 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
             try functions.object.put(ctx.allocator, unit.root, summary);
             try identities.append(ctx.allocator, .{ .path = unit.path, .sha = unit.sha });
             try identities.append(ctx.allocator, .{ .path = unit.source_path, .sha = unit.source_sha });
-            if (unit.called) try callees.append(ctx.allocator, .{ .record = unit.record, .declaration = unit.name, .profile = profile, .machine_index = machine_index, .machine_label = machine_label });
+            if (!closure.allow_recursion and unit.called) try callees.append(ctx.allocator, .{ .record = unit.record, .declaration = unit.name, .profile = profile, .machine_index = machine_index, .machine_label = machine_label });
         }
         {
             try lines.append(ctx.allocator, try ctx.fmt("def functions : Program := [{s}]\n\n", .{try std.mem.join(ctx.allocator, ", ", machine_names.items)}));
@@ -90,16 +100,21 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
                 try lines.append(ctx.allocator, "-- Captured AIR and independent decoding certificate.\n\n");
                 try lines.appendSlice(ctx.allocator, machine_captures.items);
             }
-            if (options.certify != null) try lines.append(ctx.allocator, try ctx.fmt("set_option maxRecDepth 8192 in\nset_option maxHeartbeats 2000000 in\ntheorem functions_correspondence :\n  Compiler.ZigAir.CapturedCallMachine.decode [{s}] = some functions := rfl\n\n", .{try std.mem.join(ctx.allocator, ", ", machine_records.items)}));
+            if (options.certify != null) {
+                const decoder = if (closure.allow_recursion) "decodeRecursive" else "decode";
+                try lines.append(ctx.allocator, try ctx.fmt("set_option maxRecDepth 8192 in\nset_option maxHeartbeats 2000000 in\ntheorem functions_correspondence :\n  Compiler.ZigAir.CapturedCallMachine.{s} [{s}] = some functions := rfl\n\n", .{ decoder, try std.mem.join(ctx.allocator, ", ", machine_records.items) }));
+            }
         }
     }
-    for (options.roots) |root| {
-        if (options.profile.hasCalls()) break;
+    var standalone: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
+    if (!options.profile.hasCalls()) for (options.roots) |root| {
         const start = if (std.mem.lastIndexOfScalar(u8, root, '.')) |index| index + 1 else 0;
         const component = root[start..];
         const name = try ctx.fmt("fn_{s}", .{component});
-        try ctx.require(c.identifier(component, false) and !names.contains(name), "invalid or duplicate generated function name");
-        try names.put(name, {});
+        try ctx.require(c.identifier(component, false) and !standalone.contains(name), "invalid or duplicate generated function name");
+        try standalone.put(ctx.allocator, name, root);
+    };
+    for (standalone.keys(), standalone.values()) |name, root| {
         const entry = try ctx.field(entries, root);
         if (specialized_bytes == null and declaration_bytes == null) try ctx.require(c.flag(entry, "requested", true), "root was not requested in the capture");
         const path = try capturedPath(ctx, io, options.capture, entry);
@@ -113,7 +128,12 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
         var decoder = try air.Decoder.initWith(ctx, record, options.profile, .{ .source_parameters = if (mapping) |mapped| mapped.indices else null, .explicit_type_specialization = mapping != null });
         const program = try decoder.program();
         try lines.append(ctx.allocator, try ctx.fmt("-- AIR SHA-256: {s}\ndef {s} : Program{s} :=\n{s}\n\n", .{ sha, name, if (options.profile.hasLoops()) " true" else "", program }));
-        if (options.certify != null) try lines.append(ctx.allocator, if (options.profile == .scalar) try @import("certificate.zig").scalarDeclaration(ctx, record, name) else try @import("certificate.zig").declaration(ctx, record, name, options.profile.hasLoops()));
+        if (options.certify != null) {
+            const certificate = if (options.profile == .scalar) try @import("certificate.zig").scalarDeclaration(ctx, record, name) else try @import("certificate.zig").declaration(ctx, record, name, options.profile.hasLoops());
+            // Preserve existing certificate names wherever the source leaves them available.
+            const collision = standalone.contains(try ctx.fmt("{s}_captured", .{name})) or standalone.contains(try ctx.fmt("{s}_correspondence", .{name}));
+            try lines.append(ctx.allocator, if (collision) try ctx.fmt("namespace Certificate.{s}\n{s}\nend Certificate.{s}\n\n", .{ name, certificate, name }) else certificate);
+        }
         var body_instructions: usize = 0;
         for (decoder.visited) |visited| if (visited) {
             body_instructions += 1;

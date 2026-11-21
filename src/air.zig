@@ -290,6 +290,7 @@ pub const Decoder = struct {
     fn callPrimitive(self: *Decoder, inst: Value, ty: *const Ty, env: Env) Error![]const u8 {
         const ctx = self.ctx;
         try ctx.fields(inst, "index tag payloadVisited type callee arguments");
+        try ctx.require(!self.profile.capabilities().recursive_calls or self.options.call_machine, "recursive calls require the call machine");
         const function = try ctx.field(inst, "callee");
         try ctx.fields(function, "kind identity");
         try ctx.require(c.tag(function, "kind", "function"), "indirect or unsupported callee");
@@ -308,6 +309,13 @@ pub const Decoder = struct {
                 try ctx.require(Ty.same(ref.ty, try types.parse(ctx, parameter, .memory, 0)), "call argument type mismatch");
                 try texts.append(ctx.allocator, ref.text);
             }
+            const arguments_text = try std.mem.join(ctx.allocator, ", ", texts.items);
+            if (self.options.call_machine) {
+                try ctx.require(self.profile.capabilities().looping_callees or callee.profile == .calls, "a looping callee requires nested-calls");
+                const index = callee.machine_index orelse return ctx.fail("callee has no checked table index", .{});
+                const label = callee.machine_label orelse try ctx.fmt("{d}", .{index});
+                return ctx.fmt("(.call {s} [{s}])", .{ label, arguments_text });
+            }
             const target = if (self.profile == .nested_calls) switch (callee.profile) {
                 .calls => try ctx.fmt("(Compiler.ZigAir.MemoryPartialCall.Target.finite {s}.target)", .{callee.declaration}),
                 .call_loops => try ctx.fmt("(Compiler.ZigAir.MemoryPartialCall.Target.loop {s})", .{callee.declaration}),
@@ -317,12 +325,7 @@ pub const Decoder = struct {
                 try ctx.require(callee.profile == .calls, "a looping callee requires nested-calls");
                 break :blk try ctx.fmt("{s}.target", .{callee.declaration});
             };
-            if (self.options.call_machine) {
-                const index = callee.machine_index orelse return ctx.fail("callee has no checked table index", .{});
-                const label = callee.machine_label orelse try ctx.fmt("{d}", .{index});
-                return ctx.fmt("(.call {s} [{s}])", .{ label, try std.mem.join(ctx.allocator, ", ", texts.items) });
-            }
-            return ctx.fmt("(.call {s} [{s}])", .{ target, try std.mem.join(ctx.allocator, ", ", texts.items) });
+            return ctx.fmt("(.call {s} [{s}])", .{ target, arguments_text });
         }
         return ctx.fail("call target is missing from the admitted closure", .{});
     }

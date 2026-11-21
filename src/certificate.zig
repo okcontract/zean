@@ -111,10 +111,15 @@ pub fn check(ctx: *c.Context, io: std.Io, output: []const u8, lean: []const u8, 
 
 pub fn checkWith(ctx: *c.Context, io: std.Io, output: []const u8, lean: []const u8, environment: *const std.process.Environ.Map, lake: ?[]const u8, profile: z.air.Profile, call_machine: bool) !void {
     const decoder = if (profile == .scalar) "Compiler.ZigAir.CapturedScalar" else if (call_machine) "Compiler.ZigAir.CapturedCallMachine" else if (profile == .nested_calls) "Compiler.ZigAir.CapturedNestedCalls" else if (profile.hasCalls()) "Compiler.ZigAir.CapturedCalls" else "Compiler.ZigAir.Captured";
-    return checkModule(ctx, io, output, lean, environment, lake, decoder);
+    if (profile.capabilities().recursive_calls) try ctx.require(call_machine, "recursive correspondence requires the call machine");
+    return checkModuleDecoder(ctx, io, output, lean, environment, lake, decoder, if (profile.capabilities().recursive_calls) "decodeRecursive" else "decode");
 }
 
 pub fn checkModule(ctx: *c.Context, io: std.Io, output: []const u8, lean: []const u8, environment: *const std.process.Environ.Map, lake: ?[]const u8, decoder: []const u8) !void {
+    return checkModuleDecoder(ctx, io, output, lean, environment, lake, decoder, "decode");
+}
+
+fn checkModuleDecoder(ctx: *c.Context, io: std.Io, output: []const u8, lean: []const u8, environment: *const std.process.Environ.Map, lake: ?[]const u8, decoder: []const u8, entry: []const u8) !void {
     const evidence = try z.toolchain.newOutput(ctx, io, output);
     try z.provenance.verifyWorkspace(ctx, io);
     var env = try environment.clone(ctx.allocator);
@@ -129,5 +134,5 @@ pub fn checkModule(ctx: *c.Context, io: std.Io, output: []const u8, lean: []cons
     try runner.run("certificate", try std.mem.concat(ctx.allocator, []const u8, &.{ prefix, &.{ "env", "lean", "-j", "1", "-M", "4096", path } }), .{ .cwd = z.project_root, .environ = &env });
     try ctx.require(std.mem.eql(u8, lean, try ctx.read(io, path, c.max_json_bytes)), "certificate changed during checking");
     try z.provenance.verifyWorkspace(ctx, io);
-    try files.write(io, try files.join(ctx, &.{ evidence, "report.json" }), try ctx.json(.{ .schema = "zean.air-certificate.v1", .status = "passed", .leanSha256 = &c.digest(lean), .interpretation = try ctx.fmt("{s}.decode", .{decoder}), .provenance = try z.provenance.identity(ctx), .leanWorkers = 1, .libraryWorkers = 2, .sourceSafetyVerified = false, .nativeRefinementVerified = false, .jsonLiftingVerified = false }));
+    try files.write(io, try files.join(ctx, &.{ evidence, "report.json" }), try ctx.json(.{ .schema = "zean.air-certificate.v1", .status = "passed", .leanSha256 = &c.digest(lean), .interpretation = try ctx.fmt("{s}.{s}", .{ decoder, entry }), .provenance = try z.provenance.identity(ctx), .leanWorkers = 1, .libraryWorkers = 2, .sourceSafetyVerified = false, .nativeRefinementVerified = false, .jsonLiftingVerified = false }));
 }

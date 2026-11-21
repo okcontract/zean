@@ -187,6 +187,11 @@ caller stack and reached state, without producing a return value or performing
 cleanup. Safety quantifies over every finite observation. Termination requires
 a separate proof; finite closures can use the checked structural certificate.
 
+The `recursive-calls` profile admits direct self and mutual calls while retaining
+the same invocation semantics. A proof must justify recursive hypotheses by
+induction or an execution invariant. The finite structural termination
+certificate still rejects a recursive cycle.
+
 The earlier `MemoryCall` and `MemoryPartialCall` interpreters and their controls
 are retained for regression coverage. Production translation does not select
 them. Their semantics are not assumed equivalent to the canonical machine.

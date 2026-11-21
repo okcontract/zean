@@ -6,7 +6,7 @@ const Arguments = z.Arguments;
 const help =
     \\Zean: native Zig 0.17.1 to Lean tools
     \\Usage: zig build run -- [translate] --capture REPORT --root FUNCTION --output NEW_DIRECTORY
-    \\  --profile scalar|memory|loops|aggregate|word-bytes|word-byte-loops|calls|call-loops|nested-calls
+    \\  --profile scalar|memory|loops|aggregate|word-bytes|word-byte-loops|calls|call-loops|nested-calls|recursive-calls
     \\  --namespace NAME            Generated Lean namespace (default Zean.Generated)
     \\  --certify NEW_DIRECTORY     Check supported AIR correspondence before publication; retain evidence
     \\  --specialized-source FILE  Bind a standalone captured type specialization to its source owner

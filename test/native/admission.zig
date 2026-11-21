@@ -49,12 +49,16 @@ pub fn controls() !void {
         .{ .name = "calls", .loops = false, .calls = true, .bytes = false, .certificate = true },
         .{ .name = "call-loops", .loops = true, .calls = true, .bytes = false, .certificate = true },
         .{ .name = "nested-calls", .loops = true, .calls = true, .bytes = false, .certificate = true },
+        .{ .name = "recursive-calls", .loops = true, .calls = true, .bytes = false, .certificate = true },
     }) |expected| {
         const profile = z.air.Profile.parse(expected.name).?;
         try std.testing.expectEqual(expected.loops, profile.hasLoops());
         try std.testing.expectEqual(expected.calls, profile.hasCalls());
+        const graph = if (std.mem.eql(u8, expected.name, "recursive-calls")) "recursive" else if (expected.calls) "acyclic" else "unsupported";
+        try std.testing.expect(z.common.tag(try ctx.field(report, "directCallGraphs"), expected.name, graph));
         try std.testing.expectEqual(expected.bytes, profile.hasBytes());
         try std.testing.expectEqual(expected.certificate, profile.capabilities().correspondence);
+        try std.testing.expectEqual(std.mem.eql(u8, expected.name, "recursive-calls"), profile.capabilities().recursive_calls);
     }
     try std.testing.expect(z.air.Profile.parse("calls+bytes") == null);
 }

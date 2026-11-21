@@ -208,6 +208,7 @@ how to organize those files and update them after a source change.
 | `calls` | Finite memory programs with an admitted direct-call closure |
 | `call-loops` | Looping callers with finite, separately verified callees |
 | `nested-calls` | Acyclic calls to looping callees, with safety over all finite observation budgets |
+| `recursive-calls` | Direct recursion over a checked call table, including mutual calls |
 
 These profiles describe admitted AIR, rather than general Zig language support.
 Standalone translation currently admits ReleaseFast AIR. Memory profiles

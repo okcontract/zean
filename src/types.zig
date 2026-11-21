@@ -12,6 +12,7 @@ pub const Capabilities = struct {
     loops: bool = false,
     calls: bool = false,
     looping_callees: bool = false,
+    recursive_calls: bool = false,
     byte_views: bool = false,
     correspondence: bool = true,
 };
@@ -26,8 +27,9 @@ pub const Profile = enum {
     calls,
     call_loops,
     nested_calls,
+    recursive_calls,
     pub fn parse(value: []const u8) ?Profile {
-        inline for (.{ Profile.scalar, Profile.memory, Profile.loops, Profile.aggregate, Profile.word_bytes, Profile.word_byte_loops, Profile.calls, Profile.call_loops, Profile.nested_calls }) |item| {
+        inline for (std.meta.tags(Profile)) |item| {
             if (std.mem.eql(u8, value, item.name())) return item;
         }
         return null;
@@ -38,6 +40,7 @@ pub const Profile = enum {
             .word_byte_loops => "word-byte-loops",
             .call_loops => "call-loops",
             .nested_calls => "nested-calls",
+            .recursive_calls => "recursive-calls",
             else => @tagName(self),
         };
     }
@@ -61,6 +64,7 @@ pub const Profile = enum {
             .calls => .{ .memory = true, .calls = true },
             .call_loops => .{ .memory = true, .calls = true, .loops = true },
             .nested_calls => .{ .memory = true, .calls = true, .loops = true, .looping_callees = true },
+            .recursive_calls => .{ .memory = true, .calls = true, .loops = true, .looping_callees = true, .recursive_calls = true },
         };
     }
     pub fn module(self: Profile) []const u8 {
@@ -68,7 +72,7 @@ pub const Profile = enum {
             .scalar => "Scalar",
             .aggregate => "AggregateAir",
             .loops, .word_byte_loops => "MemoryExecution",
-            .calls, .call_loops, .nested_calls => "MemoryCallMachine",
+            .calls, .call_loops, .nested_calls, .recursive_calls => "MemoryCallMachine",
             else => "MemoryAir",
         };
     }

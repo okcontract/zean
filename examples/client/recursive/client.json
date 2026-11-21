@@ -1,0 +1,11 @@
+{
+  "schema": "zean.client.v1",
+  "source": "parity.zig",
+  "sources": [],
+  "roots": ["parity.is_even"],
+  "profile": "recursive-calls",
+  "generatedModule": "Parity.Generated",
+  "libraries": ["Compiler.ZigAir.MemoryCallMachine"],
+  "proofs": [{"module": "Parity.Proofs", "path": "Proofs.lean"}],
+  "theorems": ["Parity.even_four", "Parity.odd_five"]
+}
