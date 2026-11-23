@@ -24,6 +24,6 @@ jobs:
           lint: false
       # Keep total verification memory below 8 GiB, including Zig and Lake.
       - name: Native Debug regressions
-        run: zig build test -Doptimize=Debug --maxrss 7516192768 --summary all
+        run: zig build test -Doptimize=debug --maxrss 7516192768 --summary all
       - name: Portable release checks
-        run: zig build check -Doptimize=ReleaseFast --maxrss 7516192768 --summary all
+        run: zig build check -Doptimize=fast --maxrss 7516192768 --summary all

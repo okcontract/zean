@@ -8,6 +8,8 @@ pub const atomic_publication = @import("atomic_publication.zig");
 pub const target = @import("target.zig");
 pub const proof_replay = @import("proof_replay.zig");
 pub const client = @import("client.zig");
+pub const project = @import("project.zig");
+pub const bundled_compiler = @import("bundled_compiler.zig");
 
 pub const component = @import("component.zig");
 pub const translate = @import("translate.zig");

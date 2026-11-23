@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 OKcontract Pte. Ltd.
+const std = @import("std");
+const z = @import("zean");
+
+const manifest =
+    \\{"schema":"zean.client.v1","source":"wrapper.zig","sources":["shared.zig"],
+    \\ "roots":["wrapper.selected"],"profile":"scalar","generatedModule":"Example.Generated",
+    \\ "libraries":[],"proofs":[],"theorems":[]}
+;
+
+pub fn controls() !void {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "verification", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "verification/client.json", .data = manifest });
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx: z.common.Context = .{ .allocator = arena.allocator() };
+
+    var map: z.client.SourceMap = .empty;
+    try map.put(ctx.allocator, "verification/shared.zig", .{ .path = "src/shared.zig" });
+    const plan = try z.client.load(&ctx, io, tmp.dir, "verification/client.json", &map);
+    try std.testing.expectEqualStrings("verification/wrapper.zig", plan.inputs[0].actual);
+    try std.testing.expectEqualStrings("src/shared.zig", plan.inputs[1].actual);
+    try std.testing.expectEqualStrings("shared.zig", plan.inputs[1].logical);
+    try std.testing.expect(map.get("verification/shared.zig").?.used);
+    try std.testing.expectError(error.InvalidInput, z.client.load(&ctx, io, tmp.dir, "verification/client.json", null));
+    try std.testing.expectError(error.InvalidInput, z.client.load(&ctx, io, tmp.dir, "verification/../client.json", &map));
+
+    const args = try z.Arguments.project(&ctx, &.{ "--check", "one directory", "--evidence", "run" });
+    try std.testing.expectEqualStrings("one directory", args.directory.?);
+    try std.testing.expect(args.flag("--check"));
+    try std.testing.expectEqualStrings("run", try args.one("--evidence"));
+    try std.testing.expectError(error.InvalidInput, z.Arguments.project(&ctx, &.{ "first", "second" }));
+    try std.testing.expectError(error.InvalidInput, z.Arguments.project(&ctx, &.{ "--evidence", "--check" }));
+
+    const baseline =
+        \\{"schema":"zean.project.v1","clients":["verification/client.json"],
+        \\ "sourceMap":{"verification/shared.zig":"src/shared.zig"}}
+    ;
+    try tmp.dir.writeFile(io, .{ .sub_path = "zean.json", .data = baseline });
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const length = try tmp.dir.realPath(io, &buffer);
+    const options: z.project.Options = .{ .directory = buffer[0..length] };
+    var env: std.process.Environ.Map = .init(ctx.allocator);
+    var output_buffer: [1024]u8 = undefined;
+    var output: std.Io.Writer = .fixed(&output_buffer);
+    try std.testing.expectError(error.InvalidInput, z.project.run(&ctx, io, std.testing.allocator, options, &env, &output));
+    try std.testing.expect(std.mem.containsAtLeast(u8, ctx.diagnostic, 1, "standalone"));
+
+    try tmp.dir.createDirPath(io, "lean/Example");
+    const handwritten = "-- handwritten proof\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "lean/Example/Generated.lean", .data = handwritten });
+    try std.testing.expectError(error.InvalidInput, z.project.run(&ctx, io, std.testing.allocator, options, &env, &output));
+    try std.testing.expect(std.mem.containsAtLeast(u8, ctx.diagnostic, 1, "is not a Zean-generated file"));
+    try std.testing.expectEqualStrings(handwritten, try tmp.dir.readFileAlloc(io, "lean/Example/Generated.lean", ctx.allocator, .limited(128)));
+
+    try tmp.dir.symLink(io, "lean", "linked", .{ .is_directory = true });
+    var linked = try ctx.parse(baseline);
+    try linked.object.put(ctx.allocator, "leanDir", .{ .string = "linked" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "zean.json", .data = try ctx.json(linked) });
+    try std.testing.expectError(error.InvalidInput, z.project.run(&ctx, io, std.testing.allocator, options, &env, &output));
+    try std.testing.expect(std.mem.containsAtLeast(u8, ctx.diagnostic, 1, "cannot read generated destination"));
+
+    var overlap = try ctx.parse(baseline);
+    try overlap.object.put(ctx.allocator, "leanDir", .{ .string = "verification" });
+    try overlap.object.put(ctx.allocator, "clients", try ctx.parse("[\"verification/client.json\",\"verification/other.json\"]"));
+    try tmp.dir.writeFile(io, .{ .sub_path = "zean.json", .data = try ctx.json(overlap) });
+    var other = try ctx.parse(manifest);
+    try other.object.put(ctx.allocator, "generatedModule", .{ .string = "Other.Generated" });
+    try other.object.put(ctx.allocator, "proofs", try ctx.parse(
+        \\[{"module":"Example.Proofs","path":"Example/Generated.lean"}]
+    ));
+    try other.object.put(ctx.allocator, "theorems", try ctx.parse("[\"Example.safe\"]"));
+    try tmp.dir.writeFile(io, .{ .sub_path = "verification/other.json", .data = try ctx.json(other) });
+    try tmp.dir.createDirPath(io, "verification/Example");
+    const managed = "-- Autogenerated by Zean. Do not edit.\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "verification/Example/Generated.lean", .data = managed });
+    try std.testing.expectError(error.InvalidInput, z.project.run(&ctx, io, std.testing.allocator, options, &env, &output));
+    try std.testing.expectEqualStrings("generated destination verification/Example/Generated.lean overlaps a client input", ctx.diagnostic);
+    try std.testing.expectEqualStrings(managed, try tmp.dir.readFileAlloc(io, "verification/Example/Generated.lean", ctx.allocator, .limited(128)));
+}

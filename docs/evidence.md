@@ -1,26 +1,21 @@
 # Verification evidence
 
-Checked-in generated modules record the source, AIR, and capture identities
-available for their program data. Those hashes identify inputs; they do not
-authenticate the producer or establish native compiler correctness.
+Read each result against the inputs it names.
 
-The portable examples build from files included in this repository. Their
-native tests check source/model bindings, and Lean checks the supplied program
-definitions, contracts, correspondence certificates where present, and fault
-controls. A current successful build does not refresh a retained capture.
+| Check | What it establishes |
+| --- | --- |
+| Retained-model build | Lean accepts the checked-in definitions, proofs, and any correspondence certificates they contain. |
+| Fresh native capture | The requested AIR roots were captured from the recorded sources and toolchain. Ordinary and instrumented objects matched for those compilations. |
+| AIR correspondence | Lean's independent interpretation of the captured data agrees with the emitted model. |
+| Proof replay | The named theorems hold for that model and their stated assumptions. The report records the proof inputs and axiom checks. |
 
-To produce fresh evidence, build the instrumented compiler using the public
-pinned release described in [the toolchain guide](toolchain.md), then run the
-relevant `*-regenerate -- ... --check` target or a manifest-based
-[`verify-client`](../examples/client/README.md) workflow. The
-[validation guide](validation.md) describes the complete release gate.
+`zean --check` compares fresh models with the generated files. Check their
+correspondence theorems and handwritten proofs with Lake. To retain capture
+and proof receipts from one run, use `verify-client` or an example's
+`*-regenerate` target. [Client guide](../examples/client/README.md) ·
+[Release gate](validation.md#fresh-capture-release-gate)
 
-Fresh outputs retain source snapshots, captured AIR, ordinary/instrumented object
-comparisons, generated models, proof inputs, checked theorem dependencies,
-diagnostics, and process receipts. The report binds each result to those exact
-inputs. Reusing a report after changing an input does not verify the new input.
-
-Model proofs establish their stated contracts in the selected interpreter.
-Source validity, capture completeness, target ABI adequacy, native resource
-correspondence, and backend preservation require their own evidence. See
-[architecture and trust](architecture.md).
+Evidence directories retain inputs, hashes, generated data, diagnostics and
+process receipts. Hashes identify bytes. Producer authentication, full
+source-validity coverage, ABI adequacy, native resources, and backend
+preservation need separate evidence. [Trust boundaries](architecture.md)

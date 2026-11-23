@@ -1,35 +1,22 @@
-# Held-out compatibility checks
-
-The [ASCII callers](ascii_driver.zig) exercise two unchanged standard-library routines
-that are outside the supported verification route. They are deliberately kept
-as rejection controls rather than modified into verified examples.
+# Compatibility probes
 
 ```sh
 zig build compatibility-check \
-  -Dtoolchain-report=/path/to/instrumented-build/report.json \
+  -Dtoolchain-report=/path/to/toolchain/report.json \
   -Drelease-output=/tmp/compatibility-evidence
 ```
 
-Use a new output directory. The gate captures both callers with the pinned
-compiler, checks ordinary and captured object equality, and requires `loops`
-translation of each caller to reject with `unsupported AIR operation: call`.
-It also captures the [fixed-length many-pointer conversion](ziglings_slice.zig)
-used in Ziglings 054 and requires certified `memory` translation to succeed.
-Its static extent survives `array_to_slice`; this admission check does not supply
-a caller's memory-safety contract. The [Ziglings tutorial](../ziglings/README.md)
-proves a kernel with a runtime extent. The full `release-check` target includes
-these gates.
+Use a fresh evidence directory. The gate compares ordinary and instrumented
+objects for three cases.
 
-| Component | Current outcome |
+| Probe | Expected translation result |
 | --- | --- |
-| `std.mem.replaceScalar(u32)` | Standalone concrete specialization admitted, independently certified and verified under an initialization/write contract |
-| Caller of `std.ascii.upperString` | Captured; rejected by the `loops` profile at a runtime call |
-| Caller of `std.ascii.lowerString` | Captured; rejected by the `loops` profile at a runtime call |
-| Fixed-length many-pointer to slice conversion | Captured and admitted with an independently checked AIR correspondence certificate; no safety theorem for this probe |
+| Caller of `std.ascii.upperString` | `loops` rejects `unsupported AIR operation: call` |
+| Caller of `std.ascii.lowerString` | `loops` rejects the same runtime call operation |
+| Fixed-length pointer-to-slice conversion from Ziglings 054 | `memory` admits `array_to_slice`, preserves the static extent, and passes correspondence |
 
-The call profiles require an explicit acyclic source closure; `nested-calls`
-also admits looping callees. These ASCII wrappers do not establish support for library-wide call
-graphs. Their captured dependencies also contain operations outside the present
-memory fragment. Admission rejection is not a finding that the Zig code is
-unsafe. This small sample is a compatibility boundary, not a representative
-coverage study or an end-to-end native safety claim.
+The ASCII probes exercise a limit of the `loops` profile. The slice probe
+checks representation and lowering. The Ziglings tutorial proves a separate
+kernel with a runtime length. The release gate runs these probes.
+[ASCII drivers](ascii_driver.zig) · [Slice probe](ziglings_slice.zig) ·
+[Ziglings proof](../ziglings/README.md) · [Release gate](../../docs/validation.md)

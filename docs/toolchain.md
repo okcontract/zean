@@ -1,11 +1,11 @@
-# Instrumented Zig 0.17.1
+# Build the instrumented Zig compiler
 
-The exact release revision is
-`be248cc1fdc3cc654f9ec8ba68514bcb93b204fe`. Use a clean checkout at that commit,
-a Zig 0.17.1 bootstrap compiler, LLVM 22.x, LLD and CMake/Ninja.
-Native process orchestration currently supports macOS and Linux.
+Use a clean Zig checkout at `be248cc1fdc3cc654f9ec8ba68514bcb93b204fe`
+(the 0.17.1 release), Zig 0.17.1 for bootstrapping, LLVM and LLD 22.x, and
+CMake with Ninja or Unix Makefiles. Build on macOS or Linux and keep the
+compiler build and capture outputs outside the Zean checkout.
 
-First check the release anchors without rebuilding the compiler:
+Check the patch against the release before building, if needed.
 
 ```sh
 zig build check-patch -- \
@@ -13,12 +13,7 @@ zig build check-patch -- \
   --output /tmp/zean-patch-check
 ```
 
-The command validates the revision and clean worktree, copies the reached
-compiler files to a new directory, and applies the complete instrumentation
-there. It leaves the original checkout intact. A successful applicability
-check does not establish that an instrumented compiler builds or captures AIR.
-
-Build the isolated instrumented compiler:
+Build the compiler with AIR capture enabled.
 
 ```sh
 zig build toolchain -- \
@@ -26,64 +21,36 @@ zig build toolchain -- \
   --bootstrap /path/to/zig-0.17.1 \
   --llvm-prefix /path/to/llvm-22 \
   --lld-prefix /path/to/lld-22 \
-  --fresh-air \
-  --jobs 2 \
-  --output /tmp/zean-toolchain
+  --fresh-air --jobs 2 --output /tmp/zean-toolchain
 ```
 
-`--bootstrap-zig` and `--fresh-air-capture` are accepted aliases.
-Use `--cmake` to choose CMake and `--cmake-generator` to choose `Ninja` or
-`Unix Makefiles`. Repeat `--search-prefix` for explicit dependency prefixes,
-such as a required zstd installation. On macOS, `--system-libcpp` can select
-the SDK `libc++.tbd`; its isolated build-only patch and file hash are retained.
+`--bootstrap-zig` and `--fresh-air-capture` are aliases. Use
+`--cmake-generator 'Unix Makefiles'` if you use Make. Set `--cmake` to choose
+the executable, and repeat `--search-prefix` for dependencies such as zstd.
+On macOS, pass the SDK's `usr/lib/libc++.tbd` to `--system-libcpp` when
+linking against the system C++ library.
 
-The native builder:
+The builder archives the clean revision and patches that copy. It checks the
+compiler version, source and tool hashes, and compares a smoke-test object
+with the bootstrap compiler's output. Inspect `report.json` and the retained
+stdout, stderr, and process receipts for the result.
 
-1. Validates the clean pinned checkout, bootstrap version and LLVM major.
-2. Creates and validates a Git source archive, rejecting traversal and links.
-3. Hashes the source tree and applies opt-in AIR/validity hooks to the copy.
-4. Builds LLVM support and the stripped ReleaseFast compiler, preserving Zig's
-   existing 8 GB build memory limit.
-5. Checks diagnostics even after a zero exit code, verifies the compiler version,
-   and compares LLVM smoke-object bytes with the bootstrap compiler.
-6. Rechecks the source tree, bootstrap, link input and original checkout.
-
-Every subprocess gets literal argv, file-backed stdout/stderr and a JSON receipt
-with cwd, elapsed time and actual terminal status. Timeouts, interruption and
-cancellation clean up the child process group. Failed runs keep their evidence
-and a failed report in the requested new output directory.
-
-Capture through `build.zig`:
+## Package Zean
 
 ```sh
-zig build capture -- \
-  --toolchain /tmp/zean-toolchain/report.json \
-  --source examples/scalar.zig \
-  --root scalar.choose \
-  --output /tmp/zean-capture
+zig build standalone -Doptimize=safe -Dtoolchain-report=/tmp/zean-toolchain/report.json
 ```
 
-`--mode` accepts `Debug`, `ReleaseSafe` or `ReleaseFast`. The standalone semantic
-translation profiles currently admit ReleaseFast. Repeat `--source-file` for
-the explicit local import closure and `--module NAME=relative/path.zig` for
-named leaf modules. Every module receives its own mode settings after Zig's
-`-M` reset. Local imports are inspected with Zig's tokenizer and AST.
-Use `--source-base DIRECTORY` when relative source paths belong to an external
-checkout; it defaults to the current directory.
+The resulting `zig-out/bin/zean` bundles the compiler, its source tree, and
+native libraries for the current host ABI. Packaging collects dependencies
+with `otool` on macOS or `ldd` on Linux. The executable extracts its compiler
+into private run storage and saves the original report with the capture
+evidence. [Generate a model](../examples/client/README.md) ·
+[Capture AIR directly](native-tooling.md#capture-and-translate)
 
-When captured AIR reaches standard-library declarations, capture also archives
-their exact source files from the pinned toolchain's `lib/std` tree. Their hashes
-must match the AIR identities. A missing source, a changed hash or a conflicting
-path rejects capture. This records the declarations actually captured; it does
-not make the manifest a complete transitive import inventory.
+## Check capture fixtures
 
-Capture checks toolchain/source identities before and after compilation,
-requires all requested AIR roots, and compares ordinary/captured native object
-bytes. Completion and hash checks do not establish frontend, instrumentation,
-source-validity or backend correctness. The generated manifests preserve those
-open evidence boundaries.
-
-Run the independent exporter fixture gates with the same toolchain report:
+Use the same report to run the exporter audit.
 
 ```sh
 zig build audit -- \
@@ -92,13 +59,10 @@ zig build audit -- \
   --output /tmp/zean-memory-audit
 ```
 
-The memory gate checks the complete memory fixture signatures, retained typed
-operands, pointer attributes, undefined stores and required operation coverage
-in ReleaseFast and Debug. It also runs the validity gate, which checks exact
-source spans, SSA dominance, branch positions, retained bounds and explicitly
-unsupported sentinel/C-pointer slices. Negative controls reject erased packed
-pointer attributes and invalid source operands. `--profile validity` runs that
-gate alone. The gates compare ordinary, captured and bootstrap object bytes,
-retain observations and failed reports, and recheck their source/tool identities.
-They audit capture metadata and native artifacts; their safety and whole-compiler
-proof flags remain false.
+The AArch64 macOS memory audit checks signatures, typed operands, pointer
+attributes, undefined stores, and operation coverage in Debug and ReleaseFast.
+It includes the validity audit for source spans, SSA dominance, branch
+positions, retained bounds, and rejected sentinel and C-pointer slices.
+`--profile validity` runs that audit alone. The audits compare ordinary,
+captured, and bootstrap object bytes and retain observations and failures.
+[Validation and release gate](validation.md)

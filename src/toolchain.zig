@@ -16,7 +16,7 @@ pub fn absolute(ctx: *c.Context, path: []const u8) ![]const u8 {
     return std.fs.path.resolve(ctx.allocator, &.{path});
 }
 pub fn newOutput(ctx: *c.Context, io: std.Io, path: []const u8) ![]const u8 {
-    const output = try absolute(ctx, path);
+    const output = try files.absolute(ctx, io, path);
     if (std.fs.path.dirname(output)) |parent| try std.Io.Dir.cwd().createDirPath(io, parent);
     try std.Io.Dir.cwd().createDir(io, output, .default_dir);
     return output;

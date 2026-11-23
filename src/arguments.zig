@@ -4,22 +4,45 @@ const std = @import("std");
 const c = @import("common.zig");
 pub const Arguments = struct {
     ctx: *c.Context,
-    values: std.StringHashMap([]const []const u8),
+    values: std.StringHashMapUnmanaged([]const []const u8) = .empty,
+    directory: ?[]const u8 = null,
+
     pub fn parse(ctx: *c.Context, args: []const []const u8, allowed: []const []const u8, toggles: []const []const u8) !Arguments {
-        var result: Arguments = .{ .ctx = ctx, .values = std.StringHashMap([]const []const u8).init(ctx.allocator) };
+        return parseWith(ctx, args, allowed, toggles, false);
+    }
+
+    pub fn project(ctx: *c.Context, args: []const []const u8) !Arguments {
+        return parseWith(ctx, args, &.{ "--toolchain", "--evidence" }, &.{"--check"}, true);
+    }
+
+    fn parseWith(ctx: *c.Context, args: []const []const u8, allowed: []const []const u8, toggles: []const []const u8, allow_directory: bool) !Arguments {
+        var result: Arguments = .{ .ctx = ctx };
         var index: usize = 0;
+        var positional_only = false;
         while (index < args.len) : (index += 1) {
             const key = args[index];
-            try ctx.require(c.oneOf(key, allowed) or c.oneOf(key, toggles), "unknown command argument");
+            if (allow_directory and !positional_only and std.mem.eql(u8, key, "--")) {
+                positional_only = true;
+                continue;
+            }
+            if (allow_directory and (positional_only or !std.mem.startsWith(u8, key, "-"))) {
+                if (result.directory != null) return ctx.fail("expected one project directory, got {s}", .{key});
+                result.directory = key;
+                continue;
+            }
             const toggle = c.oneOf(key, toggles);
-            if (!toggle) index += 1;
-            try ctx.require(index < args.len, "missing argument value");
+            if (!toggle) {
+                if (!c.oneOf(key, allowed)) return ctx.fail("unknown option {s}; see zean --help", .{key});
+                index += 1;
+                if (index == args.len or (allow_directory and std.mem.startsWith(u8, args[index], "--")))
+                    return ctx.fail("missing value for {s}", .{key});
+            }
             const value = if (toggle) "true" else args[index];
             const old = result.values.get(key) orelse &.{};
             const entries = try ctx.allocator.alloc([]const u8, old.len + 1);
             @memcpy(entries[0..old.len], old);
             entries[old.len] = value;
-            try result.values.put(key, entries);
+            try result.values.put(ctx.allocator, key, entries);
         }
         return result;
     }

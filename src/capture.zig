@@ -8,7 +8,32 @@ const source = @import("source.zig");
 const runtime = @import("runtime.zig");
 const toolchain = @import("toolchain.zig");
 const z = @import("root.zig");
-pub const Options = struct { toolchain: []const u8, source: []const u8, output: []const u8, roots: []const []const u8, extra_sources: []const []const u8 = &.{}, source_base: []const u8 = ".", modules: []const []const u8 = &.{}, mode: []const u8 = "ReleaseFast", environment: ?*const std.process.Environ.Map = null };
+pub const Options = struct { toolchain: []const u8, compiler: ?Compiler = null, source: []const u8, output: []const u8, roots: []const []const u8, extra_sources: []const []const u8 = &.{}, source_base: []const u8 = ".", modules: []const []const u8 = &.{}, mode: []const u8 = "ReleaseFast", environment: ?*const std.process.Environ.Map = null };
+
+/// Relocated copies must match the compiler and source identities in the original report.
+pub const Compiler = struct {
+    executable: []const u8,
+    zig_lib: []const u8,
+    libraries: ?[]const u8 = null,
+
+    pub fn source(self: Compiler) ?[]const u8 {
+        return std.fs.path.dirname(self.zig_lib);
+    }
+};
+
+pub fn validateCompiler(ctx: *c.Context, io: std.Io, report: c.Value, relocated: ?Compiler) !Compiler {
+    try ctx.require(c.oneOf(try ctx.str(try ctx.field(report, "status")), &.{ "built", "built-with-diagnostics" }) and c.flag(report, "freshAirCaptureImplemented", true) and c.tag(report, "zigRevision", z.revision), "toolchain has no completed pinned fresh-AIR build");
+    const compiler = try ctx.field(report, "compiler");
+    try ctx.require(c.tag(compiler, "version", z.version), "toolchain compiler version mismatch");
+    const paths: Compiler = relocated orelse .{
+        .executable = try ctx.str(try ctx.field(compiler, "path")),
+        .zig_lib = try ctx.str(try ctx.field(compiler, "zigLibDir")),
+    };
+    const source_dir = paths.source() orelse return ctx.fail("invalid compiler library path", .{});
+    const compiler_hash = try runtime.fileDigest(ctx, io, paths.executable);
+    try ctx.require(c.tag(compiler, "sha256", &compiler_hash) and c.equal(try runtime.sourceIdentity(ctx, io, source_dir), try ctx.field(report, "sourceTree")), "toolchain input hash mismatch");
+    return paths;
+}
 fn relativeZig(path: []const u8) bool {
     return runtime.safeArchiveName(path) and std.mem.endsWith(u8, path, ".zig");
 }
@@ -163,15 +188,21 @@ fn captureInto(ctx: *c.Context, io: std.Io, options: Options, output: []const u8
     try ctx.require(c.oneOf(options.mode, &.{ "Debug", "ReleaseSafe", "ReleaseFast" }), "unsupported build mode");
     const toolchain_bytes = try ctx.read(io, options.toolchain, c.max_json_bytes);
     const provenance = try ctx.parse(toolchain_bytes);
-    try ctx.require(c.oneOf(try ctx.str(try ctx.field(provenance, "status")), &.{ "built", "built-with-diagnostics" }) and c.flag(provenance, "freshAirCaptureImplemented", true) and c.tag(provenance, "zigRevision", z.revision), "toolchain has no completed pinned fresh-AIR build");
-    const compiler_record = try ctx.field(provenance, "compiler");
-    try ctx.require(c.tag(compiler_record, "version", z.version), "toolchain compiler version mismatch");
-    const compiler = try ctx.str(try ctx.field(compiler_record, "path"));
-    const lib = try ctx.str(try ctx.field(compiler_record, "zigLibDir"));
-    const compiler_hash = try runtime.fileDigest(ctx, io, compiler);
-    try ctx.require(c.tag(compiler_record, "sha256", &compiler_hash) and c.equal(try runtime.sourceIdentity(ctx, io, std.fs.path.dirname(lib).?), try ctx.field(provenance, "sourceTree")), "toolchain input hash mismatch");
+    const paths = try validateCompiler(ctx, io, provenance, options.compiler);
+    const compiler = paths.executable;
+    const lib = paths.zig_lib;
+    const compiler_hash = try ctx.str(try ctx.field(try ctx.field(provenance, "compiler"), "sha256"));
+    var bundled_env: std.process.Environ.Map = undefined;
+    const environment = if (paths.libraries) |libraries| blk: {
+        const env = options.environment orelse return ctx.fail("bundled Zig requires the process environment", .{});
+        bundled_env = try env.clone(ctx.allocator);
+        const native_os = @import("builtin").target.os.tag;
+        const key = if (native_os == .macos) "DYLD_LIBRARY_PATH" else "LD_LIBRARY_PATH";
+        try bundled_env.put(key, libraries);
+        break :blk &bundled_env;
+    } else options.environment;
     try toolchain.set(ctx, report, "toolchainReportSha256", &c.digest(toolchain_bytes));
-    try toolchain.set(ctx, report, "compilerSha256", &compiler_hash);
+    try toolchain.set(ctx, report, "compilerSha256", compiler_hash);
     const modules = try moduleBindings(ctx, options.modules);
     const sources = try sourceFilesAt(ctx, io, options.source_base, options.source, options.extra_sources, modules);
     if (modules.object.count() > 0) try toolchain.set(ctx, report, "sourceModules", modules);
@@ -205,7 +236,7 @@ fn captureInto(ctx: *c.Context, io: std.Io, options: Options, output: []const u8
     var captured: std.ArrayList([]const u8) = .empty;
     try captured.appendSlice(ctx.allocator, common.items);
     try captured.appendSlice(ctx.allocator, &.{ "--cache-dir", try files.join(ctx, &.{ output, "capture-cache" }), try ctx.fmt("-femit-bin={s}/captured.o", .{output}), try ctx.fmt("--semantic-export={s}", .{directory}) });
-    try runner.run("capture", captured.items, .{ .environ = options.environment });
+    try runner.run("capture", captured.items, .{ .environ = environment });
     const functions = try inspectRecords(ctx, io, directory, options.roots, &source_sha, options.mode);
     try toolchain.set(ctx, report, "functions", functions);
     try @import("capture_stdlib.zig").collect(ctx, io, lib, output, functions, &hashes);
@@ -213,12 +244,13 @@ fn captureInto(ctx: *c.Context, io: std.Io, options: Options, output: []const u8
     var ordinary: std.ArrayList([]const u8) = .empty;
     try ordinary.appendSlice(ctx.allocator, common.items);
     try ordinary.appendSlice(ctx.allocator, &.{ "--cache-dir", try files.join(ctx, &.{ output, "ordinary-cache" }), try ctx.fmt("-femit-bin={s}/ordinary.o", .{output}) });
-    try runner.run("ordinary", ordinary.items, .{ .environ = options.environment });
+    try runner.run("ordinary", ordinary.items, .{ .environ = environment });
     const ordinary_hash = try runtime.fileDigest(ctx, io, try files.join(ctx, &.{ output, "ordinary.o" }));
     const captured_hash = try runtime.fileDigest(ctx, io, try files.join(ctx, &.{ output, "captured.o" }));
     try toolchain.set(ctx, report, "objects", .{ .ordinary = &ordinary_hash, .captured = &captured_hash });
     try ctx.require(std.mem.eql(u8, &ordinary_hash, &captured_hash), "capture changed native object bytes");
-    try ctx.require(c.equal(sources, try sourceFilesAt(ctx, io, options.source_base, options.source, options.extra_sources, modules)) and c.equal(try runtime.sourceIdentity(ctx, io, std.fs.path.dirname(lib).?), try ctx.field(provenance, "sourceTree")) and std.mem.eql(u8, &compiler_hash, &(try runtime.fileDigest(ctx, io, compiler))), "capture inputs changed during compilation");
+    try ctx.require(c.equal(sources, try sourceFilesAt(ctx, io, options.source_base, options.source, options.extra_sources, modules)), "capture inputs changed during compilation");
+    _ = try validateCompiler(ctx, io, provenance, options.compiler);
     source_iter = sources.object.iterator();
     while (source_iter.next()) |entry| try ctx.require(std.mem.eql(u8, entry.value_ptr.string, try ctx.read(io, try files.join(ctx, &.{ output, entry.key_ptr.* }), 64 * 1024 * 1024)), "copied capture input changed during compilation");
     var hash_iter = hashes.object.iterator();
