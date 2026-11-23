@@ -36,6 +36,26 @@ test "project workflows retain explicit paths and protect existing Lean sources"
     try @import("project.zig").controls();
 }
 
+test "project freshness reports obsolete outputs and keeps evidence outside the checkout" {
+    try @import("project.zig").inventoryControls();
+}
+
+test "the project inventory detects restored retired modules after regeneration" {
+    try @import("project.zig").retiredControls();
+}
+
+test "output inventory migration respects nested project ownership" {
+    try @import("project.zig").nestedControls();
+}
+
+test "the bundle inspects ELF architecture and linkage before calling ldd" {
+    try @import("bundle.zig").elfControls();
+}
+
+test "standalone library names must have distinct archive paths" {
+    try @import("bundle.zig").archiveNameControls();
+}
+
 test "component inventories include private and nested function declarations" {
     try @import("component.zig").controls();
 }
@@ -238,6 +258,18 @@ test "translation publishes escaped namespace components and rejects malformed n
         try std.testing.expectError(error.InvalidInput, z.translate.run(&ctx, std.testing.io, .{ .capture = capture, .roots = &.{"fixture.choose"}, .output = output, .namespace = name }));
         try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, relative, .{}));
     }
+    for ([_][]const u8{
+        "{}",
+        \\{"fixture.zig":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}
+    }, 0..) |inventory, index| {
+        var changed = try ctx.parse(report);
+        try changed.object.put(ctx.allocator, "sourceFiles", try ctx.parse(inventory));
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "report.json", .data = try ctx.json(changed) });
+        const relative = try ctx.fmt("bad-inventory-{d}", .{index});
+        const output = try std.fs.path.join(ctx.allocator, &.{ path, relative });
+        try std.testing.expectError(error.InvalidInput, z.translate.run(&ctx, std.testing.io, .{ .capture = capture, .roots = &.{"fixture.choose"}, .output = output }));
+        try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, relative, .{}));
+    }
 }
 
 test "capture record inspection retains unsupported payloads and rejects corrupted provenance" {
@@ -433,7 +465,14 @@ test "capture orchestration binds toolchain and source bytes, compares objects, 
         var environment = std.process.Environ.Map.init(ctx.allocator);
         try environment.put("ZEAN_FIXTURE_MODE", behavior);
         const output = try std.fs.path.join(ctx.allocator, &.{ path, behavior });
-        const result = z.capture.run(&ctx, std.testing.io, .{ .toolchain = report_path, .source = source_path, .output = output, .roots = &.{"fixture.add"}, .environment = &environment });
+        const result = z.capture.run(&ctx, std.testing.io, .{
+            .toolchain = report_path,
+            .source = source_path,
+            .output = output,
+            .roots = &.{"fixture.add"},
+            .environment = &environment,
+            .target = .{ .triple = "aarch64-macos.15.0...15.0", .cpu = "apple_m1" },
+        });
         if (std.mem.eql(u8, behavior, "success")) {
             const report = try result;
             try std.testing.expect(z.common.tag(report, "status", "captured") and z.common.flag(report, "captureComplete", true) and z.common.flag(report, "compilerVerified", false));
@@ -442,6 +481,13 @@ test "capture orchestration binds toolchain and source bytes, compares objects, 
         try std.testing.expect(z.common.tag(saved, "status", if (std.mem.eql(u8, behavior, "success")) "captured" else "failed"));
         const receipt = try ctx.parse(try ctx.read(std.testing.io, try std.fs.path.join(ctx.allocator, &.{ output, "ordinary.process.json" }), 65536));
         try std.testing.expect(z.common.tag(receipt, "status", "completed") and try ctx.integer(try ctx.field(receipt, "exitCode")) == 0);
+        for ([_][]const u8{ "ordinary.process.json", "capture.process.json" }) |name| {
+            const child_receipt = try ctx.parse(try ctx.read(std.testing.io, try std.fs.path.join(ctx.allocator, &.{ output, name }), 65536));
+            const command = try ctx.array(try ctx.field(child_receipt, "command"));
+            try std.testing.expectEqualStrings("-target", try ctx.str(command[8]));
+            try std.testing.expectEqualStrings("aarch64-macos.15.0...15.0", try ctx.str(command[9]));
+            try std.testing.expectEqualStrings("-mcpu=apple_m1", try ctx.str(command[10]));
+        }
     }
 }
 

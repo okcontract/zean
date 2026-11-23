@@ -42,10 +42,11 @@ zig build standalone -Doptimize=safe -Dtoolchain-report=/tmp/zean-toolchain/repo
 ```
 
 The resulting `zig-out/bin/zean` bundles the compiler, its source tree, and
-native libraries for the current host ABI. Packaging collects dependencies
-with `otool` on macOS or `ldd` on Linux. The executable extracts its compiler
-into private run storage and saves the original report with the capture
-evidence. [Generate a model](../examples/client/README.md) ·
+native libraries for the current host ABI. On macOS, packaging reads
+Mach-O load commands with `otool` and checks which images dyld loads. On
+Linux it checks the ELF before using `ldd`. Packaging rejects library names
+that would collide in the bundle's library directory. Capture retains the original
+compiler report and records the bundle's SHA-256. [Generate a model](../examples/client/README.md) ·
 [Capture AIR directly](native-tooling.md#capture-and-translate)
 
 ## Check capture fixtures

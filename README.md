@@ -33,11 +33,13 @@ zean /path/to/project
 
 Run `zean` from the target project to use the current directory. Put a
 `client.json` at the root for one client or use `zean.json` to list several.
-Commit the generated Lean files with the Zig sources and handwritten proofs.
+Commit the generated Lean files and `zean.outputs.json` with the Zig sources
+and handwritten proofs.
 
 Add Zean's Lean library as a Lake dependency and run `LEAN_NUM_THREADS=2 lake build`
-to check correspondence and proofs. Use `zean --check` in CI to catch stale
-generated files. [Client setup and Lake example](examples/client/README.md)
+to check correspondence and proofs. Pin the capture target in `zean.json` for
+reproducible CI, then use `zean --check` to catch stale or obsolete generated
+files. [Client setup and Lake example](examples/client/README.md)
 
 ## Examples
 

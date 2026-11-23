@@ -39,6 +39,7 @@ pub const Bundle = struct {
                 .executable = try files.join(ctx, &.{ directory, executable }),
                 .zig_lib = try files.join(ctx, &.{ directory, source, "lib" }),
                 .libraries = try files.join(ctx, &.{ directory, libraries }),
+                .bundle_sha256 = c.digest(payload),
             },
         };
     }

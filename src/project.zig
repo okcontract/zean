@@ -5,8 +5,10 @@ const std = @import("std");
 const c = @import("common.zig");
 const client = @import("client.zig");
 const Bundle = @import("bundled_compiler.zig").Bundle;
+const capture = @import("capture.zig");
 const files = @import("files.zig");
-const toolchain = @import("toolchain.zig");
+const project_outputs = @import("project_outputs.zig");
+const checkout = @import("root.zig").project_root;
 const Dir = std.Io.Dir;
 
 pub const Options = struct {
@@ -21,13 +23,14 @@ const Config = struct {
     clients: []const []const u8,
     lean_dir: []const u8 = "lean",
     source_map: client.SourceMap = .empty,
+    capture_target: ?capture.Target = null,
 };
 
 fn parseConfig(ctx: *c.Context, bytes: []const u8) !Config {
     const value = try ctx.parse(bytes);
     try ctx.require(c.tag(value, "schema", "zean.project.v1"), "zean.json requires schema zean.project.v1");
     for (value.object.keys()) |key| {
-        if (!c.oneOf(key, &.{ "schema", "clients", "leanDir", "sourceMap" })) return ctx.fail("unknown zean.json field {s}", .{key});
+        if (!c.oneOf(key, &.{ "schema", "clients", "leanDir", "sourceMap", "captureTarget" })) return ctx.fail("unknown zean.json field {s}", .{key});
     }
     const entries = try ctx.array(try ctx.field(value, "clients"));
     try ctx.require(entries.len > 0 and entries.len <= 256, "zean.json requires 1-256 client manifests");
@@ -55,22 +58,39 @@ fn parseConfig(ctx: *c.Context, bytes: []const u8) !Config {
             try config.source_map.put(ctx.allocator, logical, .{ .path = actual });
         }
     }
+    if (c.get(value, "captureTarget")) |entry| {
+        try ctx.fields(entry, "triple cpu");
+        const target: capture.Target = .{
+            .triple = try ctx.str(try ctx.field(entry, "triple")),
+            .cpu = try ctx.str(try ctx.field(entry, "cpu")),
+        };
+        try target.validate(ctx);
+        config.capture_target = target;
+    }
     return config;
 }
+
+const Snapshot = struct { identity: files.Identity, sha: [64]u8 };
 
 const Model = struct {
     plan: client.Plan,
     destination: []const u8,
-    previous_sha: ?[64]u8 = null,
+    previous: ?Snapshot = null,
     bytes: []const u8 = &.{},
     input_hashes: []const client.InputHash = &.{},
     changed: bool = false,
 };
 
 pub fn run(ctx: *c.Context, io: std.Io, gpa: std.mem.Allocator, options: Options, environment: *const std.process.Environ.Map, output: *std.Io.Writer) !void {
-    const repo = Dir.cwd().openDir(io, options.directory, .{}) catch |err|
+    // Linux opens path-only descriptors unless directory iteration is enabled.
+    const repo = Dir.cwd().openDir(io, options.directory, .{ .iterate = true }) catch |err|
         return ctx.fail("cannot open project directory {s} ({s})", .{ options.directory, @errorName(err) });
     defer repo.close(io);
+    // Keep the lock stable even when clients switch between client.json and zean.json.
+    const lock: std.Io.File = .{ .handle = repo.handle, .flags = .{ .nonblocking = false } };
+    if (!try lock.tryLock(io, .exclusive))
+        return ctx.fail("another Zean run is using {s}", .{options.directory});
+    defer lock.unlock(io);
 
     var config_path: []const u8 = "zean.json";
     const config_file = files.openRegular(io, repo, config_path, .exclusive) catch |err| fallback: {
@@ -102,21 +122,22 @@ pub fn run(ctx: *c.Context, io: std.Io, gpa: std.mem.Allocator, options: Options
         }
         model.* = .{ .plan = plan, .destination = relative };
     }
-    for (models) |*model| {
-        const destination = model.destination;
-        for (models) |other| {
-            if (std.ascii.eqlIgnoreCase(destination, other.plan.path))
-                return ctx.fail("generated destination {s} overlaps a client manifest", .{destination});
-            for (other.plan.inputs) |input| {
-                if (std.ascii.eqlIgnoreCase(destination, input.actual))
-                    return ctx.fail("generated destination {s} overlaps a client input", .{destination});
-            }
-        }
-        if (try existingModel(ctx, io, repo, destination)) |bytes| {
-            defer ctx.allocator.free(bytes);
-            model.previous_sha = c.digest(bytes);
+    const paths = try ctx.allocator.alloc([]const u8, models.len);
+    for (models, paths) |*model, *path| {
+        path.* = model.destination;
+        if (try existingModel(ctx, io, repo, model.destination)) |previous| {
+            defer ctx.allocator.free(previous.bytes);
+            model.previous = previous.snapshot;
         }
     }
+    try protectClientInputs(ctx, io, repo, models);
+    const inventory = try project_outputs.Inventory.load(ctx, io, repo);
+    try inventory.checkObsolete(ctx, io, repo, config.lean_dir, paths);
+    const inventory_bytes = try inventory.encode(ctx, paths);
+    const inventory_changed = !project_outputs.matches(inventory.previous, inventory_bytes);
+    if (options.check and inventory_changed)
+        return ctx.fail(project_outputs.name ++ " needs regeneration. Run zean without --check", .{});
+
     var mappings = config.source_map.iterator();
     while (mappings.next()) |entry| {
         if (!entry.value_ptr.used) return ctx.fail("sourceMap entry {s} is absent from the client source lists", .{entry.key_ptr.*});
@@ -129,7 +150,7 @@ pub fn run(ctx: *c.Context, io: std.Io, gpa: std.mem.Allocator, options: Options
         files.regular(ctx, io, path) catch |err|
             return ctx.fail("cannot open toolchain report {s} ({s})", .{ path, @errorName(err) });
     }
-    const evidence = try newEvidence(ctx, io, options.evidence, environment);
+    const evidence = try newEvidence(ctx, io, repo, options.evidence, environment);
     try output.print("Evidence in {s}\n", .{evidence});
     try output.flush();
     try files.write(io, try files.join(ctx, &.{ evidence, config_path }), config_bytes);
@@ -146,6 +167,7 @@ pub fn run(ctx: *c.Context, io: std.Io, gpa: std.mem.Allocator, options: Options
         const result = client.execute(&replay_ctx, io, repo, model.plan, .{
             .toolchain = external_report orelse bundle.?.report_path,
             .compiler = if (bundle) |compiler| compiler.compiler else null,
+            .capture_target = config.capture_target,
             .output = run_dir,
         }, environment) catch |err| {
             const detail = if (err == error.InvalidInput) replay_ctx.diagnostic else @errorName(err);
@@ -156,14 +178,25 @@ pub fn run(ctx: *c.Context, io: std.Io, gpa: std.mem.Allocator, options: Options
     }
 
     try client.revalidate(ctx, io, repo, &.{.{ .path = config_path, .sha = c.digest(config_bytes) }});
+    if (std.mem.eql(u8, config_path, "client.json")) {
+        const new_config = repo.statFile(io, "zean.json", .{ .follow_symlinks = false });
+        if (new_config) |_| {
+            return ctx.fail("zean.json appeared during generation. Run zean again", .{});
+        } else |err| if (err != error.FileNotFound) return err;
+    }
     for (models) |*model| {
         try client.revalidate(ctx, io, repo, model.input_hashes);
         const previous = try existingModel(ctx, io, repo, model.destination);
-        defer if (previous) |bytes| ctx.allocator.free(bytes);
-        try requireUnchanged(ctx, model.*, previous);
-        model.changed = if (previous) |bytes| !sameModel(bytes, model.bytes) else true;
+        defer if (previous) |file| ctx.allocator.free(file.bytes);
+        try requireUnchanged(ctx, model.*, if (previous) |file| file.snapshot else null);
+        model.changed = if (previous) |file| !sameModel(file.bytes, model.bytes) else true;
         if (options.check and model.changed) return ctx.fail("{s} needs regeneration. Run zean without --check", .{model.destination});
     }
+    try protectClientInputs(ctx, io, repo, models);
+    try inventory.verify(ctx, io, repo);
+    try inventory.checkObsolete(ctx, io, repo, config.lean_dir, paths);
+    // Record all destinations before publishing any of them so a partial run can be retried.
+    if (inventory_changed) try inventory.publish(ctx, io, repo, inventory_bytes);
     for (models) |model| {
         if (model.changed) try publishModel(ctx, io, repo, model);
         try output.print("{s} {s}\n", .{ if (model.changed) "Updated" else "Up to date", model.destination });
@@ -176,51 +209,131 @@ fn configError(ctx: *c.Context, path: []const u8, err: anyerror) c.Error {
     return ctx.fail("cannot read {s} ({s})", .{ path, @errorName(err) });
 }
 
-fn newEvidence(ctx: *c.Context, io: std.Io, requested: ?[]const u8, environment: *const std.process.Environ.Map) ![]const u8 {
-    if (requested) |path| return toolchain.newOutput(ctx, io, path) catch |err|
-        return ctx.fail("cannot create a new evidence directory at {s} ({s})", .{ path, @errorName(err) });
-    const temp = environment.get("TMPDIR") orelse "/tmp";
-    const parent = try files.absolute(ctx, io, if (temp.len == 0) "/tmp" else temp);
-    var nonce: [16]u8 = undefined;
-    io.random(&nonce);
-    const evidence = try ctx.fmt("{s}/zean-{s}", .{ parent, std.fmt.bytesToHex(nonce, .lower) });
+const Destinations = std.AutoHashMapUnmanaged(files.Identity, []const u8);
+
+fn protectClientInputs(ctx: *c.Context, io: std.Io, repo: Dir, models: []const Model) !void {
+    var destinations: Destinations = .empty;
+    defer destinations.deinit(ctx.allocator);
+    for (models) |model| {
+        if (model.previous) |previous| {
+            const entry = try destinations.getOrPut(ctx.allocator, previous.identity);
+            if (entry.found_existing) return ctx.fail("multiple clients generate {s}", .{model.destination});
+            entry.value_ptr.* = model.destination;
+        }
+    }
+    for (models) |model| {
+        try protectPath(ctx, io, repo, models, destinations, model.plan.path, "manifest");
+        for (model.plan.inputs) |input| try protectPath(ctx, io, repo, models, destinations, input.actual, "input");
+    }
+}
+
+fn protectPath(ctx: *c.Context, io: std.Io, repo: Dir, models: []const Model, destinations: Destinations, path: []const u8, kind: []const u8) !void {
+    for (models) |model| {
+        if (std.ascii.eqlIgnoreCase(model.destination, path))
+            return ctx.fail("generated destination {s} overlaps a client {s}", .{ model.destination, kind });
+    }
+    if (destinations.count() == 0) return;
+    const file = files.openContained(io, repo, path) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return ctx.fail("cannot inspect client {s} {s} ({s})", .{ kind, path, @errorName(err) }),
+    };
+    defer file.close(io);
+    if (destinations.get(try files.Identity.of(file, io))) |destination|
+        return ctx.fail("generated destination {s} overlaps a client {s}", .{ destination, kind });
+}
+
+fn within(root: []const u8, path: []const u8) bool {
+    return std.mem.startsWith(u8, path, root) and
+        (path.len == root.len or std.mem.endsWith(u8, root, "/") or path[root.len] == '/');
+}
+
+fn insideCheckout(ctx: *c.Context, io: std.Io, repo: []const u8, path: []const u8) !bool {
+    if (within(repo, path) or within(checkout, path)) return true;
+    var directory = path;
+    while (true) {
+        const marker = try files.join(ctx, &.{ directory, ".git" });
+        defer ctx.allocator.free(marker);
+        if (try files.exists(io, marker)) return true;
+        directory = Dir.path.dirname(directory) orelse return false;
+    }
+}
+
+/// Resolve aliases through the last existing directory, leaving fresh components to create later.
+fn canonicalParent(ctx: *c.Context, io: std.Io, path: []const u8) ![]const u8 {
+    const absolute = try files.absolute(ctx, io, path);
+    var ancestor = absolute;
+    while (true) {
+        const real = Dir.realPathFileAbsoluteAlloc(io, ancestor, ctx.allocator) catch |err| switch (err) {
+            error.FileNotFound => {
+                ancestor = Dir.path.dirname(ancestor) orelse return err;
+                continue;
+            },
+            else => return err,
+        };
+        if (ancestor.len == absolute.len) return real;
+        defer ctx.allocator.free(real);
+        return files.join(ctx, &.{ real, std.mem.trimStart(u8, absolute[ancestor.len..], "/") });
+    }
+}
+
+fn newEvidence(ctx: *c.Context, io: std.Io, repo: Dir, requested: ?[]const u8, environment: *const std.process.Environ.Map) ![]const u8 {
+    var root_buffer: [Dir.max_path_bytes]u8 = undefined;
+    const repo_path = root_buffer[0..try repo.realPath(io, &root_buffer)];
+    const evidence = if (requested) |path| named: {
+        const absolute = try files.absolute(ctx, io, path);
+        const parent = try canonicalParent(ctx, io, Dir.path.dirname(absolute) orelse
+            return ctx.fail("choose a new external evidence directory", .{}));
+        break :named try files.join(ctx, &.{ parent, Dir.path.basename(absolute) });
+    } else temporary: {
+        const temp = environment.get("TMPDIR") orelse "";
+        var parent = try canonicalParent(ctx, io, if (temp.len == 0) "/tmp" else temp);
+        if (try insideCheckout(ctx, io, repo_path, parent)) parent = try canonicalParent(ctx, io, "/tmp");
+        var nonce: [16]u8 = undefined;
+        io.random(&nonce);
+        break :temporary try files.join(ctx, &.{ parent, try ctx.fmt("zean-{s}", .{std.fmt.bytesToHex(nonce, .lower)}) });
+    };
+    try ctx.require(!try insideCheckout(ctx, io, repo_path, evidence), "choose an --evidence directory outside the project and Zean checkout");
+    const root = try Dir.openDirAbsolute(io, "/", .{});
+    defer root.close(io);
+    // Walk the canonical path without following links that might have appeared since the check.
+    const parent = try files.openParent(io, root, std.mem.trimStart(u8, evidence, "/"), true);
+    defer parent.close(io);
     const permissions: Dir.Permissions = if (@hasDecl(Dir.Permissions, "fromMode")) .fromMode(0o700) else .default_dir;
-    Dir.cwd().createDir(io, evidence, permissions) catch |err|
+    parent.createDir(io, Dir.path.basename(evidence), permissions) catch |err|
         return ctx.fail("cannot create evidence directory {s} ({s})", .{ evidence, @errorName(err) });
     return evidence;
 }
 
-fn existingModel(ctx: *c.Context, io: std.Io, repo: Dir, path: []const u8) !?[]const u8 {
-    const bytes = files.readContained(ctx, io, repo, path) catch |err| switch (err) {
+fn existingModel(ctx: *c.Context, io: std.Io, repo: Dir, path: []const u8) !?struct { bytes: []const u8, snapshot: Snapshot } {
+    const file = files.openContained(io, repo, path) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return ctx.fail("cannot read generated destination {s} ({s})", .{ path, @errorName(err) }),
     };
+    defer file.close(io);
+    const bytes = try files.readFile(ctx, io, file);
+    errdefer ctx.allocator.free(bytes);
     if (!std.mem.startsWith(u8, bytes, files.generated_lean_header)) {
-        ctx.allocator.free(bytes);
         return ctx.fail("{s} is not a Zean-generated file. Choose a different leanDir or generatedModule", .{path});
     }
-    return bytes;
+    return .{ .bytes = bytes, .snapshot = .{ .identity = try files.Identity.of(file, io), .sha = c.digest(bytes) } };
 }
 
-fn requireUnchanged(ctx: *c.Context, model: Model, previous: ?[]const u8) !void {
-    const matches = if (model.previous_sha) |sha|
-        previous != null and std.mem.eql(u8, &sha, &c.digest(previous.?))
-    else
-        previous == null;
-    if (!matches) return ctx.fail("{s} changed during verification. Run zean again", .{model.destination});
+fn requireUnchanged(ctx: *c.Context, model: Model, previous: ?Snapshot) !void {
+    if (!std.meta.eql(model.previous, previous))
+        return ctx.fail("{s} changed during generation. Run zean again", .{model.destination});
 }
 
 fn publishModel(ctx: *c.Context, io: std.Io, repo: Dir, model: Model) !void {
     const parent = try files.openParent(io, repo, model.destination, true);
     defer parent.close(io);
     const name = Dir.path.basenamePosix(model.destination);
-    const exists = model.previous_sha != null;
+    const exists = model.previous != null;
     var file = try parent.createFileAtomic(io, name, .{ .replace = exists });
     defer file.deinit(io);
     try file.file.writeStreamingAll(io, model.bytes);
     const previous = try existingModel(ctx, io, parent, name);
-    defer if (previous) |bytes| ctx.allocator.free(bytes);
-    try requireUnchanged(ctx, model, previous);
+    defer if (previous) |file_state| ctx.allocator.free(file_state.bytes);
+    try requireUnchanged(ctx, model, if (previous) |file_state| file_state.snapshot else null);
     if (exists) try file.replace(io) else try file.link(io);
 }
 

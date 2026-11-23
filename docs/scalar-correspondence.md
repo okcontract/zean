@@ -1,7 +1,7 @@
 # Scalar AIR correspondence
 
-`translate --profile scalar --certify` checks the generated program against
-`CapturedScalar.decode`. The decoder uses the raw structured AIR readers, then
+`zig build run -- translate --profile scalar --certify` checks the generated
+program against `CapturedScalar.decode`. The decoder reads structured AIR, then
 projects each type, reference, and primitive to scalar code. It retains both
 branches, block continuations, and operation order. Memory effects, source
 slice guards, and generic scalar specializations reject.

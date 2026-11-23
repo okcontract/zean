@@ -2,7 +2,6 @@
 // Copyright (C) 2026 OKcontract Pte. Ltd.
 //! Build-time producer for the standalone executable's compiler archive.
 const std = @import("std");
-const builtin = @import("builtin");
 const z = @import("zean");
 const bundle = z.bundled_compiler;
 const Dir = std.Io.Dir;
@@ -20,11 +19,8 @@ pub fn main(init: std.process.Init) !void {
 fn pack(ctx: *z.common.Context, io: std.Io, report_path: []const u8, output: []const u8) !void {
     const report = try z.files.readJson(ctx, io, report_path);
     const compiler = try z.capture.validateCompiler(ctx, io, report.value, null);
-    const dependencies = switch (builtin.target.os.tag) {
-        .macos => try macLibraries(ctx, io, compiler.executable, report.value),
-        .linux => try linuxLibraries(ctx, io, compiler.executable),
-        else => return ctx.fail("standalone packaging supports macOS and Linux", .{}),
-    };
+    const dependencies = try z.bundle_dependencies.collect(ctx, io, compiler.executable, z.version);
+    try z.bundle_dependencies.checkArchiveNames(ctx, dependencies.keys());
 
     const file = try Dir.cwd().createFile(io, output, .{});
     defer file.close(io);
@@ -76,92 +72,4 @@ fn copy(io: std.Io, archive: *std.tar.Writer, member: []const u8, path: []const 
     var buffer: [64 * 1024]u8 = undefined;
     var reader = file.reader(io, &buffer);
     try archive.writeFileStream(member, stat.size, &reader.interface, .{ .mode = mode });
-}
-
-const Libraries = std.StringArrayHashMapUnmanaged([]const u8);
-
-fn addLibrary(ctx: *z.common.Context, io: std.Io, result: *Libraries, name: []const u8, path: []const u8) !void {
-    try ctx.require(Dir.path.isAbsolute(path) and std.mem.eql(u8, name, Dir.path.basename(name)), "invalid native library path");
-    const real = try Dir.cwd().realPathFileAlloc(io, path, ctx.allocator);
-    const entry = try result.getOrPut(ctx.allocator, name);
-    if (entry.found_existing) {
-        try ctx.require(std.mem.eql(u8, entry.value_ptr.*, real), "native libraries use the same filename for different dependencies");
-    } else {
-        entry.value_ptr.* = real;
-    }
-}
-
-fn macLibraries(ctx: *z.common.Context, io: std.Io, executable: []const u8, report: z.common.Value) !Libraries {
-    var result: Libraries = .empty;
-    const llvm = try ctx.field(report, "llvm");
-    const prefixes = [2][]const u8{ try ctx.str(try ctx.field(llvm, "prefix")), try ctx.str(try ctx.field(llvm, "lldPrefix")) };
-    try addMacDependencies(ctx, io, &result, executable, &prefixes);
-    var index: usize = 0;
-    while (index < result.count()) : (index += 1) {
-        try addMacDependencies(ctx, io, &result, result.values()[index], &prefixes);
-    }
-    return result;
-}
-
-fn addMacDependencies(ctx: *z.common.Context, io: std.Io, result: *Libraries, path: []const u8, prefixes: []const []const u8) !void {
-    const listing = try dependencyList(ctx, io, &.{ "/usr/bin/otool", "-L", path });
-    var lines = std.mem.splitScalar(u8, listing, '\n');
-    _ = lines.next(); // image name
-    while (lines.next()) |line| {
-        const dependency = nameBeforeVersion(line) orelse continue;
-        if (std.mem.startsWith(u8, dependency, "/usr/lib/") or std.mem.startsWith(u8, dependency, "/System/Library/")) continue;
-        const name = Dir.path.basename(dependency);
-        if (Dir.path.isAbsolute(dependency)) {
-            try addLibrary(ctx, io, result, name, dependency);
-        } else if (std.mem.startsWith(u8, dependency, "@rpath/")) {
-            if (result.contains(name)) continue;
-            for (prefixes) |prefix| {
-                const candidate = try z.files.join(ctx, &.{ prefix, "lib", name });
-                if (!try z.files.exists(io, candidate)) continue;
-                try addLibrary(ctx, io, result, name, candidate);
-                break;
-            } else return ctx.fail("could not resolve native library {s}", .{dependency});
-        } else return ctx.fail("unsupported native library reference {s}", .{dependency});
-    }
-}
-
-fn nameBeforeVersion(line: []const u8) ?[]const u8 {
-    const trimmed = std.mem.trim(u8, line, " \t\r");
-    const end = std.mem.lastIndexOf(u8, trimmed, " (") orelse return null;
-    return trimmed[0..end];
-}
-
-fn linuxLibraries(ctx: *z.common.Context, io: std.Io, executable: []const u8) !Libraries {
-    var result: Libraries = .empty;
-    const listing = try dependencyList(ctx, io, &.{ "ldd", executable });
-    var lines = std.mem.splitScalar(u8, listing, '\n');
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        const separator = std.mem.indexOf(u8, trimmed, " => ") orelse {
-            if (trimmed.len == 0 or std.mem.startsWith(u8, trimmed, "linux-vdso") or
-                std.mem.startsWith(u8, Dir.path.basename(trimmed), "ld-linux") or
-                std.mem.eql(u8, trimmed, "statically linked")) continue;
-            return ctx.fail("unsupported ldd entry {s}", .{trimmed});
-        };
-        const name = trimmed[0..separator];
-        const dependency = nameBeforeVersion(trimmed[separator + " => ".len ..]) orelse
-            return ctx.fail("could not resolve native library {s}", .{name});
-        if (z.common.oneOf(name, &.{ "libc.so.6", "libm.so.6", "libpthread.so.0", "librt.so.1", "libdl.so.2" })) continue;
-        try addLibrary(ctx, io, &result, name, dependency);
-    }
-    return result;
-}
-
-fn dependencyList(ctx: *z.common.Context, io: std.Io, argv: []const []const u8) ![]const u8 {
-    const result = try std.process.run(ctx.allocator, io, .{
-        .argv = argv,
-        .stdout_limit = .limited(1024 * 1024),
-        .stderr_limit = .limited(1024 * 1024),
-    });
-    if (result.term != .exited or result.term.exited != 0) {
-        if (std.mem.eql(u8, argv[0], "ldd") and std.mem.indexOf(u8, result.stderr, "not a dynamic executable") != null)
-            return "statically linked";
-        return ctx.fail("{s} failed for {s} ({s})", .{ argv[0], argv[argv.len - 1], result.stderr });
-    }
-    return result.stdout;
 }

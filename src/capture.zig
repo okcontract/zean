@@ -8,13 +8,40 @@ const source = @import("source.zig");
 const runtime = @import("runtime.zig");
 const toolchain = @import("toolchain.zig");
 const z = @import("root.zig");
-pub const Options = struct { toolchain: []const u8, compiler: ?Compiler = null, source: []const u8, output: []const u8, roots: []const []const u8, extra_sources: []const []const u8 = &.{}, source_base: []const u8 = ".", modules: []const []const u8 = &.{}, mode: []const u8 = "ReleaseFast", environment: ?*const std.process.Environ.Map = null };
+pub const Options = struct {
+    toolchain: []const u8,
+    compiler: ?Compiler = null,
+    target: ?Target = null,
+    source: []const u8,
+    output: []const u8,
+    roots: []const []const u8,
+    extra_sources: []const []const u8 = &.{},
+    source_base: []const u8 = ".",
+    modules: []const []const u8 = &.{},
+    mode: []const u8 = "ReleaseFast",
+    environment: ?*const std.process.Environ.Map = null,
+};
+
+pub const Target = struct {
+    triple: []const u8,
+    cpu: []const u8,
+
+    pub fn validate(self: Target, ctx: *c.Context) !void {
+        const query = std.Target.Query.parse(.{ .arch_os_abi = self.triple, .cpu_features = self.cpu }) catch
+            return ctx.fail("invalid capture target {s} or CPU {s}", .{ self.triple, self.cpu });
+        const os = query.os_tag orelse return ctx.fail("captureTarget must specify an OS", .{});
+        try ctx.require(query.cpu_arch != null and query.cpu_model != .native, "captureTarget requires an explicit architecture and CPU");
+        if (os.versionRangeTag() != .none)
+            try ctx.require(query.os_version_min != null, "captureTarget must specify an OS version");
+    }
+};
 
 /// Relocated copies must match the compiler and source identities in the original report.
 pub const Compiler = struct {
     executable: []const u8,
     zig_lib: []const u8,
     libraries: ?[]const u8 = null,
+    bundle_sha256: ?[64]u8 = null,
 
     pub fn source(self: Compiler) ?[]const u8 {
         return std.fs.path.dirname(self.zig_lib);
@@ -186,6 +213,10 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
 fn captureInto(ctx: *c.Context, io: std.Io, options: Options, output: []const u8, report: *c.Value) !c.Value {
     try uniqueRoots(ctx, options.roots);
     try ctx.require(c.oneOf(options.mode, &.{ "Debug", "ReleaseSafe", "ReleaseFast" }), "unsupported build mode");
+    if (options.target) |target| {
+        try target.validate(ctx);
+        try toolchain.set(ctx, report, "captureTarget", target);
+    }
     const toolchain_bytes = try ctx.read(io, options.toolchain, c.max_json_bytes);
     const provenance = try ctx.parse(toolchain_bytes);
     const paths = try validateCompiler(ctx, io, provenance, options.compiler);
@@ -203,6 +234,7 @@ fn captureInto(ctx: *c.Context, io: std.Io, options: Options, output: []const u8
     } else options.environment;
     try toolchain.set(ctx, report, "toolchainReportSha256", &c.digest(toolchain_bytes));
     try toolchain.set(ctx, report, "compilerSha256", compiler_hash);
+    if (paths.bundle_sha256) |sha| try toolchain.set(ctx, report, "compilerBundleSha256", &sha);
     const modules = try moduleBindings(ctx, options.modules);
     const sources = try sourceFilesAt(ctx, io, options.source_base, options.source, options.extra_sources, modules);
     if (modules.object.count() > 0) try toolchain.set(ctx, report, "sourceModules", modules);
@@ -225,11 +257,16 @@ fn captureInto(ctx: *c.Context, io: std.Io, options: Options, output: []const u8
     try std.Io.Dir.cwd().createDir(io, directory, .default_dir);
     var common: std.ArrayList([]const u8) = .empty;
     try common.appendSlice(ctx.allocator, &.{ compiler, "build-obj", "--zig-lib-dir", lib, "-fllvm", "-fno-incremental", "-fstrip", try ctx.fmt("-O{s}", .{options.mode}) });
+    if (options.target) |target| try common.appendSlice(ctx.allocator, &.{ "-target", target.triple, try ctx.fmt("-mcpu={s}", .{target.cpu}) });
     if (modules.object.count() == 0) try common.append(ctx.allocator, fixture) else {
         for (modules.object.keys()) |name| try common.appendSlice(ctx.allocator, &.{ "--dep", name });
         try common.append(ctx.allocator, try ctx.fmt("-Mroot={s}", .{fixture}));
         var iter = modules.object.iterator();
-        while (iter.next()) |entry| try common.appendSlice(ctx.allocator, &.{ try ctx.fmt("-O{s}", .{options.mode}), "-fstrip", try ctx.fmt("-M{s}={s}", .{ entry.key_ptr.*, try files.join(ctx, &.{ output, entry.value_ptr.string }) }) });
+        while (iter.next()) |entry| {
+            try common.appendSlice(ctx.allocator, &.{ try ctx.fmt("-O{s}", .{options.mode}), "-fstrip" });
+            if (options.target) |target| try common.appendSlice(ctx.allocator, &.{ "-target", target.triple, try ctx.fmt("-mcpu={s}", .{target.cpu}) });
+            try common.append(ctx.allocator, try ctx.fmt("-M{s}={s}", .{ entry.key_ptr.*, try files.join(ctx, &.{ output, entry.value_ptr.string }) }));
+        }
     }
     try common.appendSlice(ctx.allocator, &.{ "--global-cache-dir", try files.join(ctx, &.{ output, "global-cache" }) });
     const runner: runtime.Runner = .{ .ctx = ctx, .io = io, .output = output };

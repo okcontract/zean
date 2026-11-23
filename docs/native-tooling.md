@@ -32,8 +32,9 @@ the working directory. Capture accepts `--mode Debug`, `ReleaseSafe`, and
 
 Translation publishes `Generated.lean` and `manifest.json` together after
 every selected root passes. The default namespace is `Zean.Generated`.
-`--certify` checks the emitted theorem before publication. See the supported
-profiles before selecting source owners or generic instances. [Admission](admission.md)
+With `zig build run` from the Zean checkout, `--certify` checks the emitted
+theorem before publication. Standalone project generation emits certificates
+for the caller to check with Lake. [Admission](admission.md)
 
 ## Inspect and replay
 

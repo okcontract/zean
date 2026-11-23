@@ -63,9 +63,9 @@ profiles reject volatile and atomic accesses. [Call machine](call-machine.md) ·
 
 ## Correspondence checks
 
-`zean` emits a certificate for each configured model. For low-level
-translation, pass `--certify /tmp/check-evidence` to check the certificate
-before publishing the bundle. An unsupported profile rejects the request.
+`zean` emits a certificate for each configured model. Use
+`zig build run -- translate` with `--certify /tmp/check-evidence` to check a
+certificate before publication. An unsupported profile rejects the request.
 
 The lifter turns the full parsed JSON into inert Lean data. It preserves
 integers and UTF-8 strings and rejects floating-point numbers, unsupported

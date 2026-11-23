@@ -9,7 +9,9 @@ pub const target = @import("target.zig");
 pub const proof_replay = @import("proof_replay.zig");
 pub const client = @import("client.zig");
 pub const project = @import("project.zig");
+pub const project_outputs = @import("project_outputs.zig");
 pub const bundled_compiler = @import("bundled_compiler.zig");
+pub const bundle_dependencies = @import("bundle_dependencies.zig");
 
 pub const component = @import("component.zig");
 pub const translate = @import("translate.zig");

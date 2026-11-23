@@ -50,6 +50,8 @@ pub fn build(b: *std.Build) void {
                 .optimize = .safe,
                 .imports = &.{.{ .name = "zean", .module = module }},
             }) });
+            if (b.graph.host.result.os.tag == .macos)
+                packer.root_module.linkFramework("CoreFoundation", .{});
             const pack = b.addRunArtifact(packer);
             pack.addFileArg(b.graph.cwdRelativePath(report));
             const archive = pack.addOutputFileArg("compiler.tar.gz");
@@ -84,6 +86,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{ .{ .name = "zean", .module = module }, .{ .name = "test_options", .module = test_options.createModule() } },
     });
+    if (target.result.os.tag == .macos)
+        test_module.linkFramework("CoreFoundation", .{});
     const tests = b.addTest(.{ .root_module = test_module });
     const test_run = b.addRunArtifact(tests);
     // Source profiles, checked-in models and process fixtures are runtime inputs.

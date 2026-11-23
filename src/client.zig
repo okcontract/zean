@@ -23,9 +23,7 @@ pub const Manifest = struct {
 };
 
 pub fn relative(ctx: *c.Context, path: []const u8) !void {
-    try ctx.require(runtime.safeArchiveName(path) and std.mem.indexOfScalar(u8, path, 0) == null, "client path must be relative and contained");
-    var parts = std.mem.splitScalar(u8, path, '/');
-    while (parts.next()) |part| try ctx.require(part.len > 0 and !std.mem.eql(u8, part, "."), "client path must be normalized");
+    try ctx.require(files.validRelativePath(path), "client path must be relative, normalized, and contained");
 }
 
 fn strings(ctx: *c.Context, value: c.Value) ![]const []const u8 {
@@ -136,6 +134,7 @@ pub const RunOptions = struct {
     toolchain: []const u8,
     output: []const u8,
     compiler: ?z.capture.Compiler = null,
+    capture_target: ?z.capture.Target = null,
     verify: bool = false,
     lake: ?[]const u8 = null,
 };
@@ -167,7 +166,17 @@ pub fn execute(ctx: *c.Context, io: std.Io, base: Dir, plan: Plan, options: RunO
     }
     try z.toolchain.set(ctx, &report, "inputs", inputHashes);
     const captureDir = try files.join(ctx, &.{ output, "capture" });
-    const captured = try z.capture.run(ctx, io, .{ .toolchain = options.toolchain, .compiler = options.compiler, .source = manifest.source, .source_base = retained_inputs, .extra_sources = manifest.sources, .roots = manifest.roots, .output = captureDir, .environment = environment });
+    const captured = try z.capture.run(ctx, io, .{
+        .toolchain = options.toolchain,
+        .compiler = options.compiler,
+        .target = options.capture_target,
+        .source = manifest.source,
+        .source_base = retained_inputs,
+        .extra_sources = manifest.sources,
+        .roots = manifest.roots,
+        .output = captureDir,
+        .environment = environment,
+    });
     try z.toolchain.set(ctx, &report, "nativeObjectComparisons", c.equal(try ctx.field(try ctx.field(captured, "objects"), "ordinary"), try ctx.field(try ctx.field(captured, "objects"), "captured")));
     const capturedSources = try ctx.field(captured, "sourceFiles");
     const source_count = manifest.sources.len + 1;

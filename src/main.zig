@@ -8,17 +8,17 @@ const help =
     \\Zean generates Lean models from Zig 0.17.1 AIR.
     \\Usage: zean [DIRECTORY] [--check] [--toolchain REPORT] [--evidence NEW_DIRECTORY]
     \\  Read zean.json or client.json in DIRECTORY (default .).
-    \\  Generate Lean modules under lean/. Check them with Lake and keep them in version control.
-    \\  --check                  Capture and check for stale generated files
+    \\  Generate Lean modules under lean/ and record them in zean.outputs.json.
+    \\  --check                  Capture and check for stale or obsolete generated files
     \\  --toolchain REPORT       Override the bundled compiler or $ZEAN_TOOLCHAIN
-    \\  --evidence NEW_DIRECTORY Retain logs and captures here (default under $TMPDIR or /tmp)
+    \\  --evidence NEW_DIRECTORY Retain logs and captures in a private external directory
     \\  Use zig build run -- [DIRECTORY] to run from the Zean checkout.
     \\
     \\Translate a retained capture:
     \\  zean translate --capture REPORT --root FUNCTION --output NEW_DIRECTORY
     \\  --profile scalar|memory|loops|aggregate|word-bytes|word-byte-loops|calls|call-loops|nested-calls|recursive-calls
     \\  --namespace NAME            Generated Lean namespace (default Zean.Generated)
-    \\  --certify NEW_DIRECTORY     Check supported AIR correspondence before publication; retain evidence
+    \\  --certify NEW_DIRECTORY     Check AIR correspondence with a development build from the Zean checkout
     \\  --specialized-source FILE  Bind a standalone captured type specialization to its source owner
     \\  --declaration-source FILE  Bind an ordinary captured function from the explicit source closure
     \\  --call-machine             Emit data-based functions for the resumable call machine
@@ -109,7 +109,9 @@ fn execute(ctx: *z.common.Context, init: std.process.Init) !void {
     } else if (std.mem.eql(u8, command, "translate") or implicitTranslate(args[1..])) blk: {
         const a = try Arguments.parse(ctx, if (std.mem.eql(u8, command, "translate")) tail else args[1..], &.{ "--capture", "--root", "--output", "--profile", "--namespace", "--certify", "--lake", "--specialized-source", "--declaration-source" }, &.{"--call-machine"});
         const profile = z.air.Profile.parse(try a.default("--profile", "scalar")) orelse return ctx.fail("unknown profile", .{});
-        break :blk try z.translate.run(ctx, init.io, .{ .capture = try a.one("--capture"), .roots = a.many("--root"), .output = try a.one("--output"), .profile = profile, .namespace = try a.default("--namespace", "Zean.Generated"), .certify = try a.optional("--certify"), .lake = try a.optional("--lake"), .environment = init.environ_map, .specialized_source = try a.optional("--specialized-source"), .declaration_source = try a.optional("--declaration-source"), .call_machine = a.flag("--call-machine") });
+        const certify = try a.optional("--certify");
+        try ctx.require(certify == null or compiler_payload.len == 0, "use zig build run -- translate --certify from the Zean checkout or check the generated project with Lake");
+        break :blk try z.translate.run(ctx, init.io, .{ .capture = try a.one("--capture"), .roots = a.many("--root"), .output = try a.one("--output"), .profile = profile, .namespace = try a.default("--namespace", "Zean.Generated"), .certify = certify, .lake = try a.optional("--lake"), .environment = init.environ_map, .specialized_source = try a.optional("--specialized-source"), .declaration_source = try a.optional("--declaration-source"), .call_machine = a.flag("--call-machine") });
     } else return runProject(ctx, init, args[1..], &output.interface);
     try output.interface.print("{s}\n", .{try ctx.json(result)});
 }

@@ -61,9 +61,11 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
         \\
     );
     try lines.append(ctx.allocator, try ctx.fmt("-- Source SHA-256: {s}\n-- Capture report SHA-256: {s}\n", .{ source_sha, &c.digest(captured.bytes) }));
-    if (c.get(report, "sourceFiles")) |source_files| {
-        try ctx.require(source_files == .object, "invalid captured source inventory");
-        for (source_files.object.values()) |identity| {
+    const source_inventory = c.get(report, "sourceFiles");
+    if (source_inventory) |source_files| {
+        try ctx.require(source_files == .object and source_files.object.count() != 0, "invalid captured source inventory");
+        for (source_files.object.keys(), source_files.object.values()) |path, identity| {
+            try ctx.require(files.validRelativePath(path) and std.mem.endsWith(u8, path, ".zig"), "invalid captured source inventory path");
             try ctx.require(c.isDigest(try ctx.str(identity)), "invalid captured source hash");
         }
         const closure_hash = c.digest(try ctx.json(try c.ordered(ctx, source_files)));
@@ -154,6 +156,11 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
         try ctx.require(c.isDigest(sha) and std.mem.eql(u8, &c.digest(record_file.bytes), sha), "AIR identity mismatch");
         const record = record_file.value;
         try ctx.require(c.tag(record, "name", root) and c.tag(record, "sourceSha256", source_sha), "AIR root/source identity mismatch");
+        if (source_inventory) |source_files| {
+            const source_file = try ctx.str(try ctx.field(record, "sourceFile"));
+            if (!c.tag(source_files, source_file, source_sha))
+                return ctx.fail("{s}: AIR source identity differs from the capture inventory", .{root});
+        }
         if (declaration_bytes) |bytes| try @import("declaration_source.zig").select(ctx, record, try ctx.field(report, "sourceFiles"), std.fs.path.basename(options.declaration_source.?), bytes);
         const mapping = if (specialized_bytes) |bytes| try @import("specialized_source.zig").select(ctx, record, std.fs.path.basename(options.specialized_source.?), bytes) else null;
         var decoder = try air.Decoder.initWith(ctx, record, options.profile, .{ .source_parameters = if (mapping) |mapped| mapped.indices else null, .explicit_type_specialization = mapping != null });
