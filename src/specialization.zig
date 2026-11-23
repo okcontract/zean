@@ -57,7 +57,7 @@ pub fn mapping(ctx: *c.Context, record: c.Value, sources: c.Value) c.Error!Mappi
     var remapped: u64 = 0;
     for (arguments, 0..) |arg, index| {
         const bit = @as(u64, 1) << @intCast(index);
-        if (c.tag(arg, "kind", "runtime")) {
+        if (c.tag(arg, "kind", "runtime") or c.tag(arg, "kind", "runtimeAnytype")) {
             try ctx.fields(arg, "kind runtimeIndex");
             try ctx.require(try ctx.nat(try ctx.field(arg, "runtimeIndex"), 31) == indices.items.len and comptime_bits & bit == 0, "runtime/source parameter mapping disagrees");
             if (alias_bits & bit != 0) remapped |= @as(u64, 1) << @intCast(indices.items.len);
@@ -65,7 +65,7 @@ pub fn mapping(ctx: *c.Context, record: c.Value, sources: c.Value) c.Error!Mappi
         } else {
             try ctx.fields(arg, "kind value");
             try ctx.require(comptime_bits & bit != 0 and alias_bits & bit == 0, "implicit comptime or comptime alias_bits is outside the metadata profile");
-            if (c.tag(arg, "kind", "type")) _ = try types.parse(ctx, try ctx.field(arg, "value"), .word_bytes, 0) else if (c.tag(arg, "kind", "value")) _ = try air.constant(ctx, try ctx.field(arg, "value"), .memory) else return ctx.fail("unsupported compile-time argument", .{});
+            if (c.tag(arg, "kind", "type") or c.tag(arg, "kind", "anytypeType")) _ = try types.parse(ctx, try ctx.field(arg, "value"), .word_bytes, 0) else if (c.tag(arg, "kind", "value")) _ = try air.constant(ctx, try ctx.field(arg, "value"), .memory) else return ctx.fail("unsupported compile-time argument", .{});
         }
     }
     try ctx.require(indices.items.len == sig.parameters.len and remapped == sig.alias_bits, "specialization lost runtime parameters or alias_bits bits");

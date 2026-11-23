@@ -7,7 +7,7 @@ pub fn controls() !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var ctx: z.common.Context = .{ .allocator = arena.allocator() };
-    for ([_][]const u8{ "call_always_tail", "atomic_load", "memmove", "struct_field_ptr_index_4", "ret_safe_extra", "", "add sub" }) |tag|
+    for ([_][]const u8{ "call_always_tail", "atomic_load", "atomic_store_release", "atomic_rmw", "cmpxchg_weak", "memmove", "struct_field_ptr_index_4", "ret_safe_extra", "", "add sub" }) |tag|
         try std.testing.expectError(error.InvalidInput, z.admission.require(&ctx, tag));
     try std.testing.expectEqual(z.admission.Origin.source_and_air, z.admission.lookup("slice").?.origin);
     try std.testing.expectEqual(z.admission.Origin.air, z.admission.lookup("memcpy").?.origin);
@@ -49,12 +49,16 @@ pub fn controls() !void {
         .{ .name = "calls", .loops = false, .calls = true, .bytes = false, .certificate = true },
         .{ .name = "call-loops", .loops = true, .calls = true, .bytes = false, .certificate = true },
         .{ .name = "nested-calls", .loops = true, .calls = true, .bytes = false, .certificate = true },
+        .{ .name = "recursive-calls", .loops = true, .calls = true, .bytes = false, .certificate = true },
     }) |expected| {
         const profile = z.air.Profile.parse(expected.name).?;
         try std.testing.expectEqual(expected.loops, profile.hasLoops());
         try std.testing.expectEqual(expected.calls, profile.hasCalls());
+        const graph = if (std.mem.eql(u8, expected.name, "recursive-calls")) "recursive" else if (expected.calls) "acyclic" else "unsupported";
+        try std.testing.expect(z.common.tag(try ctx.field(report, "directCallGraphs"), expected.name, graph));
         try std.testing.expectEqual(expected.bytes, profile.hasBytes());
         try std.testing.expectEqual(expected.certificate, profile.capabilities().correspondence);
+        try std.testing.expectEqual(std.mem.eql(u8, expected.name, "recursive-calls"), profile.capabilities().recursive_calls);
     }
     try std.testing.expect(z.air.Profile.parse("calls+bytes") == null);
 }

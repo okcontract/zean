@@ -70,7 +70,7 @@ fn run(ctx: *z.common.Context, init: std.process.Init) !void {
             std.debug.print("Checked scalar certificate and {d} rejection controls.\n", .{@import("certificate.zig").scalar_mutations.len});
             return;
         }
-        const lean = if (std.mem.eql(u8, label, "certificate")) try @import("certificate.zig").emitted(ctx, null) else if (std.mem.eql(u8, label, "byte-element-reads")) try @import("byte_reads.zig").emitted(ctx) else if (std.mem.eql(u8, label, "record-fields")) try @import("record_fields.zig").emitted(ctx) else if (std.mem.eql(u8, label, "bounded-length-slices")) try @import("bounded_slices.zig").emitted(ctx) else if (std.mem.eql(u8, label, "calls")) try @import("call_admission.zig").emitted(ctx) else return ctx.fail("unknown emitted control: {s}", .{label});
+        const lean = if (std.mem.eql(u8, label, "certificate")) try @import("certificate.zig").emitted(ctx, null) else if (std.mem.eql(u8, label, "byte-element-reads")) try @import("byte_reads.zig").emitted(ctx) else if (std.mem.eql(u8, label, "record-fields")) try @import("record_fields.zig").emitted(ctx) else if (std.mem.eql(u8, label, "bounded-length-slices")) try @import("bounded_slices.zig").emitted(ctx) else if (std.mem.eql(u8, label, "specialization-certificate")) try @import("specialized_source.zig").emitted(ctx) else if (std.mem.eql(u8, label, "calls")) try @import("call_admission.zig").emitted(ctx) else return ctx.fail("unknown emitted control: {s}", .{label});
         try checker.check(label, lean);
         std.debug.print("Compiled emitted control: {s}.\n", .{label});
         return;
@@ -87,8 +87,7 @@ fn run(ctx: *z.common.Context, init: std.process.Init) !void {
 
     var programs: std.ArrayList([]const u8) = .empty;
     try programs.append(ctx.allocator, "import Compiler.ZigAir.Captured\nimport Compiler.ZigAir.CapturedScalar\n");
-    inline for (@typeInfo(z.air.Profile).@"enum".field_values) |value| {
-        const profile: z.air.Profile = @fromBackingInt(@intCast(value));
+    for (std.meta.tags(z.air.Profile)) |profile| {
         try programs.append(ctx.allocator, try ctx.fmt("import Compiler.ZigAir.{s}\n", .{profile.module()}));
     }
     var covered: std.EnumSet(z.air.Profile) = .empty;
@@ -106,7 +105,8 @@ fn run(ctx: *z.common.Context, init: std.process.Init) !void {
     covered.insert(.calls);
     covered.insert(.call_loops);
     covered.insert(.nested_calls);
-    try ctx.require(covered.count() == @typeInfo(z.air.Profile).@"enum".field_names.len, "missing AIR profile compile control");
+    covered.insert(.recursive_calls);
+    try ctx.require(covered.count() == std.meta.tags(z.air.Profile).len, "missing AIR profile compile control");
     try checker.check("air", try std.mem.concat(ctx.allocator, u8, programs.items));
 
     for (@import("cases/word.zig").cases) |fixture| {

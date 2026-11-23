@@ -44,6 +44,13 @@ an instrumented compiler.
 
 ## More demos
 
+When can one thread safely read a dispatch table that another thread is filling
+in? The writer sets a flag with a release store after it fills both entries.
+The Lean proof shows that a reader can use either entry once its acquire load
+sees that store. Run `zig build atomic-publication` to check the proof and see
+what goes wrong if the writer sets the flag too soon.
+[Dispatch-table example](examples/atomic_publication/README.md)
+
 Continue with the [buffer update](examples/buffer/README.md), or follow the
 [copy-loop tutorial](examples/copy/README.md) for initialization, framing and
 helper contracts. The [verification guide](docs/verification.md) explains how
@@ -201,6 +208,7 @@ how to organize those files and update them after a source change.
 | `calls` | Finite memory programs with an admitted direct-call closure |
 | `call-loops` | Looping callers with finite, separately verified callees |
 | `nested-calls` | Acyclic calls to looping callees, with safety over all finite observation budgets |
+| `recursive-calls` | Direct recursion over a checked call table, including mutual calls |
 
 These profiles describe admitted AIR, rather than general Zig language support.
 Standalone translation currently admits ReleaseFast AIR. Memory profiles

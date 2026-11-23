@@ -134,9 +134,13 @@ pub const Scope = struct {
         const name = try pattern.ident();
         return try self.named(name) orelse self.source.ctx.fail("missing source declaration in owner: {s}", .{name});
     }
-    pub fn function(self: Scope, name: []const u8, buffer: *[1]std.zig.Ast.Node.Index) c.Error!std.zig.Ast.full.FnProto {
+    pub fn functionNode(self: Scope, name: []const u8) c.Error!std.zig.Ast.Node.Index {
         const node = try self.named(name) orelse return self.source.ctx.fail("missing function in source owner", .{});
         try self.source.ctx.require(self.source.tree.nodeTag(node) == .fn_decl, "source member is not a function definition");
+        return node;
+    }
+    pub fn function(self: Scope, name: []const u8, buffer: *[1]std.zig.Ast.Node.Index) c.Error!std.zig.Ast.full.FnProto {
+        const node = try self.functionNode(name);
         return self.source.tree.fullFnProto(buffer, node) orelse self.source.ctx.fail("unsupported function declaration", .{});
     }
     pub fn declaration(self: Scope, signature: []const u8) c.Error!Parser {
@@ -172,6 +176,9 @@ pub const Scope = struct {
     fn containerNode(self: Scope, node: std.zig.Ast.Node.Index) c.Error!Scope {
         const decl = self.source.tree.fullVarDecl(node) orelse return self.source.ctx.fail("owner must be a container declaration", .{});
         const init = decl.ast.init_node.unwrap() orelse return self.source.ctx.fail("missing owner initializer", .{});
+        return self.containerValue(init);
+    }
+    pub fn containerValue(self: Scope, init: std.zig.Ast.Node.Index) c.Error!Scope {
         var buffer: [2]std.zig.Ast.Node.Index = undefined;
         try self.source.ctx.require(self.source.tree.fullContainerDecl(&buffer, init) != null, "owner must be a container declaration");
         const child: Scope = .{ .source = self.source, .node = init, .parent = try self.source.ctx.make(Scope, self) };

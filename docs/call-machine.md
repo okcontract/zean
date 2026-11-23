@@ -11,7 +11,7 @@ zig build run -- translate --capture /path/to/capture/report.json \
   --certify /tmp/calls-certificate --output /tmp/calls-model
 ```
 
-The `calls`, `call-loops` and `nested-calls` admission profiles all emit this
+The `calls`, `call-loops`, `nested-calls` and `recursive-calls` profiles emit this
 representation by default. `--call-machine` is an optional explicit assertion
 that the selected profile supports calls; it does not broaden admission.
 Each generated definition has type `Function`;
@@ -21,8 +21,12 @@ ordinary `<|` notation; branches and blocks indent their nested code. Captured
 records follow the program definitions instead of interrupting them. The
 manifest records each function's index.
 The independent `CapturedCallMachine.decode` checks the whole table against
-captured data. Calls must resolve a unique earlier declaration with matching
-source identity, arity and return type. Recursion and forward dependencies reject.
+captured data for the acyclic profiles. The `recursive-calls` profile uses
+`decodeRecursive`, which resolves calls anywhere in that same table, including
+self and mutual calls. Both decoders require unique declarations with matching
+source identity, arity and return type. The translator also checks argument
+types against runtime signatures. Every reached call executes the captured
+body on the explicit stack.
 
 For example, `MemoryCallMachine.run functions fuel root args state` produces a
 finished result or a suspended configuration. Passing `.reuse` as its final

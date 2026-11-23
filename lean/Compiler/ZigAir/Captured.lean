@@ -337,10 +337,16 @@ def bodyWith (lift : Prim → P) (operation : Raw → Option P) (loops : Bool)
 def body (loops : Bool) (parameters : List Nat) (table guards : List Raw) :=
   bodyWith id (fun inst => primitive parameters inst table) loops table guards
 
-/-- Concrete runtime arguments retain their source parameter positions after
-explicit comptime type parameters have been specialized. Implicit anytype,
-comptime values, variadics and noalias are outside this interpretation. -/
-def parameterMapping (raw signature : Raw) (runtimeCount : Nat) : Option (List Nat) := do
+inductive SpecializationPolicy where
+  | standalone
+  | directCall
+  deriving BEq
+
+/-- Preserve source parameter indices after specialization. Direct calls can
+also bind concrete runtime anytype parameters. Earlier captures use "runtime"
+for both parameter shapes; native admission checks the original declaration. -/
+def parameterMapping (raw signature : Raw) (runtimeCount : Nat)
+    (policy : SpecializationPolicy := .standalone) : Option (List Nat) := do
   if !(← signature.boolAt "genericInstance") then
     require (raw.get "specialization" |>.isNone)
     pure (List.range runtimeCount)
@@ -355,11 +361,12 @@ def parameterMapping (raw signature : Raw) (runtimeCount : Nat) : Option (List N
     let args ← spec.listAt "arguments"
     let bits ← spec.natAt "sourceComptimeBits"
     require ((← spec.natAt "sourceParameterCount") == args.length && args.length ≤ 32 &&
-      bits > 0 && bits < 2 ^ args.length)
+      bits < 2 ^ args.length && (bits > 0 || (policy == .directCall && runtimeCount > 0)))
     let (count, indices) ← args.zipIdx.foldlM (fun (count, indices) (arg, index) => do
-      match ← arg.textAt "kind" with
-      | "runtime" =>
-        require (!(bits.testBit index) && (← arg.natAt "runtimeIndex") == count)
+      let kind ← arg.textAt "kind"
+      match kind with
+      | "runtime" | "runtimeAnytype" =>
+        require ((kind == "runtime" || policy == .directCall) && !(bits.testBit index) && (← arg.natAt "runtimeIndex") == count)
         pure (count + 1, indices ++ [index])
       | "type" =>
         require (bits.testBit index)
@@ -379,7 +386,7 @@ structure Input where
   table : List Raw
   root : List Raw
 
-def prepare (raw : Raw) : Option Input := do
+def prepare (raw : Raw) (policy : SpecializationPolicy := .standalone) : Option Input := do
   require ((← raw.textAt "schema") == "oksolc.fresh-air.v3" &&
     (← raw.textAt "capturePoint") == "after-sema-before-legalize" &&
     (← raw.textAt "bodyTraversal") == "supported-structured-containers-only" &&
@@ -393,7 +400,7 @@ def prepare (raw : Raw) : Option Input := do
   require (!(← signature.boolAt "varArgs") &&
     (← signature.natAt "noaliasBits") == 0)
   let parameters ← (← signature.listAt "parameters").mapM (typeOf 17)
-  let mapping ← parameterMapping raw signature parameters.length
+  let mapping ← parameterMapping raw signature parameters.length policy
   let returnType ← typeOf 17 (← signature.get "returnType")
   let validity ← raw.get "sourceValidity"
   require ((← validity.textAt "schema") == "oksolc.source-validity.v1" &&

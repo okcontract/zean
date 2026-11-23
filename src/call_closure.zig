@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 OKcontract Pte. Ltd.
-//! Bind an acyclic direct-call closure before emitting any program.
+//! Bind the captured declarations of a direct-call closure before emission.
 const std = @import("std");
 const c = @import("common.zig");
 const air = @import("air.zig");
 const files = @import("files.zig");
+const declaration_source = @import("declaration_source.zig");
 const translation = @import("translate.zig");
 
 pub const Unit = struct {
@@ -13,8 +14,7 @@ pub const Unit = struct {
     record: c.Value,
     path: []const u8,
     sha: []const u8,
-    source_path: []const u8,
-    source_sha: []const u8,
+    source_parameters: ?[]const usize = null,
     called: bool = false,
 };
 
@@ -36,23 +36,32 @@ pub fn interpreter(ctx: *c.Context, record: c.Value, callees: []const air.Callee
 }
 
 pub const Closure = struct {
+    const Active = struct { record: c.Value, called: bool };
+
     ctx: *c.Context,
     io: std.Io,
     capture: []const u8,
     report: c.Value,
     units: std.ArrayList(Unit) = .empty,
-    active: std.StringHashMap(void),
+    active: std.StringHashMap(Active),
     names: std.StringHashMap(void),
+    sources: std.StringHashMap(struct { path: []const u8, file: declaration_source.File }),
     root_source: ?[]const u8 = null,
+    root_bytes: ?[]const u8 = null,
+    allow_recursion: bool = false,
 
     pub fn init(ctx: *c.Context, io: std.Io, capture: []const u8, report: c.Value) Closure {
-        return .{ .ctx = ctx, .io = io, .capture = capture, .report = report, .active = .init(ctx.allocator), .names = .init(ctx.allocator) };
+        return .{ .ctx = ctx, .io = io, .capture = capture, .report = report, .active = .init(ctx.allocator), .names = .init(ctx.allocator), .sources = .init(ctx.allocator) };
     }
 
     pub fn visit(self: *Closure, root: []const u8, identity: ?c.Value, depth: usize) !void {
         const ctx = self.ctx;
-        try ctx.require(depth < 64 and self.units.items.len < 512, "call closure resource limit");
-        try ctx.require(!self.active.contains(root), "recursive call graph is unsupported");
+        if (self.active.getPtr(root)) |unit| {
+            try ctx.require(self.allow_recursion and identity != null, "recursive call graph is unsupported");
+            try self.bindIdentity(unit.record, identity.?);
+            unit.called = true;
+            return;
+        }
         for (self.units.items) |*unit| if (std.mem.eql(u8, root, unit.root)) {
             if (identity) |expected| {
                 try self.bindIdentity(unit.record, expected);
@@ -60,7 +69,7 @@ pub const Closure = struct {
             } else try self.bindRoot(unit.record, try ctx.field(try ctx.field(self.report, "functions"), root));
             return;
         };
-        try self.active.put(root, {});
+        try ctx.require(depth < 64 and self.active.count() + self.units.items.len < 512, "call closure resource limit");
         const entry = try ctx.field(try ctx.field(self.report, "functions"), root);
         const path = try translation.capturedPath(ctx, self.io, self.capture, entry);
         const captured = try files.readJson(ctx, self.io, path);
@@ -72,11 +81,11 @@ pub const Closure = struct {
         const source = try ctx.str(try ctx.field(record, "sourceFile"));
         const sources = try ctx.field(self.report, "sourceFiles");
         try ctx.require(c.equal(try ctx.field(sources, source), try ctx.field(record, "sourceSha256")), "callee is outside the explicit captured source closure");
-        _ = try @import("declaration_source.zig").ownerPrefix(ctx, source);
-        const source_path = if (self.root_source != null and std.mem.eql(u8, source, std.fs.path.basename(self.root_source.?))) self.root_source.? else try files.closureMember(ctx, self.io, std.fs.path.dirname(self.capture) orelse ".", source);
-        try files.regular(ctx, self.io, source_path);
-        const source_bytes = try ctx.read(self.io, source_path, 64 * 1024 * 1024);
-        try @import("declaration_source.zig").select(ctx, record, sources, source, source_bytes);
+        const file = try self.sourceFile(source);
+        const source_parameters = bindDeclaration(ctx, record, sources, file) catch |err| {
+            if (err == error.InvalidInput) return ctx.fail("{s}: {s}", .{ root, ctx.diagnostic });
+            return err;
+        };
         const start = if (std.mem.lastIndexOfScalar(u8, root, '.')) |index| index + 1 else 0;
         const component = root[start..];
         try ctx.require(c.identifier(component, false), "invalid generated function name");
@@ -89,6 +98,7 @@ pub const Closure = struct {
             name = try ctx.fmt("fn_{s}_{d}", .{ component, suffix });
         }
         try self.names.put(name, {});
+        try self.active.put(root, .{ .record = record, .called = identity != null });
         const instructions = try ctx.array(try ctx.field(record, "instructions"));
         for (instructions) |instruction| {
             if (!c.flag(instruction, "payloadVisited", true)) continue;
@@ -101,8 +111,46 @@ pub const Closure = struct {
             try ctx.fields(expected, "name sourceFile sourceSha256");
             try self.visit(try ctx.str(try ctx.field(expected, "name")), expected, depth + 1);
         }
-        _ = self.active.remove(root);
-        try self.units.append(ctx.allocator, .{ .root = root, .name = name, .record = record, .path = path, .sha = sha, .source_path = source_path, .source_sha = try ctx.str(try ctx.field(record, "sourceSha256")), .called = identity != null });
+        const unit = self.active.fetchRemove(root).?.value;
+        try self.units.append(ctx.allocator, .{ .root = root, .name = name, .record = record, .path = path, .sha = sha, .source_parameters = source_parameters, .called = unit.called });
+    }
+
+    fn sourceFile(self: *Closure, name: []const u8) !*const declaration_source.File {
+        const cached = try self.sources.getOrPut(name);
+        if (cached.found_existing) return &cached.value_ptr.file;
+        errdefer _ = self.sources.remove(name);
+        const selected = self.root_source != null and std.mem.eql(u8, name, std.fs.path.basename(self.root_source.?));
+        const path = if (selected) self.root_source.? else try files.closureMember(self.ctx, self.io, std.fs.path.dirname(self.capture) orelse ".", name);
+        try files.regular(self.ctx, self.io, path);
+        const bytes = if (selected and self.root_bytes != null) self.root_bytes.? else try self.ctx.read(self.io, path, 64 * 1024 * 1024);
+        cached.value_ptr.* = .{ .path = path, .file = try declaration_source.File.init(self.ctx, name, bytes) };
+        return &cached.value_ptr.file;
+    }
+
+    pub fn deinit(self: *Closure) void {
+        var sources = self.sources.valueIterator();
+        while (sources.next()) |cached| cached.file.declarations.deinit();
+        self.sources.deinit();
+        self.names.deinit();
+        self.active.deinit();
+        self.units.deinit(self.ctx.allocator);
+    }
+
+    pub fn revalidateSources(self: *Closure) !void {
+        var sources = self.sources.valueIterator();
+        while (sources.next()) |cached| {
+            const bytes = try self.ctx.read(self.io, cached.path, 64 * 1024 * 1024);
+            try self.ctx.require(std.mem.eql(u8, &c.digest(bytes), &cached.file.sha), "declaration source changed during translation");
+        }
+    }
+
+    fn bindDeclaration(ctx: *c.Context, record: c.Value, sources: c.Value, file: *const declaration_source.File) !?[]const usize {
+        if (c.flag(try ctx.field(record, "signature"), "genericInstance", true)) {
+            const mapped = try @import("specialized_source.zig").selectForCall(ctx, record, file, sources);
+            return mapped.indices;
+        }
+        try declaration_source.selectParsed(ctx, record, sources, file);
+        return null;
     }
 
     fn bindIdentity(self: *Closure, record: c.Value, identity: c.Value) !void {
@@ -111,6 +159,7 @@ pub const Closure = struct {
 
     fn bindRoot(self: *Closure, record: c.Value, entry: c.Value) !void {
         const ctx = self.ctx;
+        try ctx.require(c.flag(try ctx.field(record, "signature"), "genericInstance", false), "a call-profile root must be an ordinary declaration; use --specialized-source for a standalone specialization");
         if (self.root_source) |selected| {
             try ctx.require(c.tag(record, "sourceFile", std.fs.path.basename(selected)), "imported call root has a different source owner");
         } else {

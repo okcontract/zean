@@ -38,6 +38,38 @@ const caller = f.derive(&leaf, &.{
         }),
     })),
 });
+const recursive_caller = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/name", f.s("fixture.parent"))});
+const generic_leaf = f.derive(&leaf, &.{
+    f.set("/name", f.s("fixture.child__func_1")),
+    f.set("/signature/genericInstance", f.b(true)),
+    f.add("/specialization", f.obj(&.{
+        .{ "schema", f.s("oksolc.generic-instance.v1") },
+        .{ "owner", identity },
+        .{ "sourceNoaliasBits", f.n("0") },
+        .{ "sourceComptimeBits", f.n("1") },
+        .{ "sourceParameterCount", f.n("1") },
+        .{ "arguments", f.arr(&.{f.obj(&.{
+            .{ "kind", f.s("type") },
+            .{ "value", f.obj(&.{ .{ "kind", f.s("int") }, .{ "signedness", f.s("unsigned") }, .{ "bits", f.n("8") } }) },
+        })}) },
+    })),
+});
+const generic_caller = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/name", f.s("fixture.child__func_1"))});
+const method_name = "fixture.Factory(u8).child__func_0";
+const method_caller = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/name", f.s(method_name))});
+const method_leaf = f.derive(&generic_leaf, &.{
+    f.set("/name", f.s(method_name)),
+    f.set("/specialization/owner/name", f.s("fixture.Factory(u8).child")),
+    f.set("/specialization/arguments/0/value/bits", f.n("16")),
+    f.add("/sourceDeclarationNode", f.n("8")),
+});
+const method_source = "fn Factory(comptime T: type) type { _ = T; return struct { noinline fn child(comptime U: type) void { _ = U; } }; } export fn parent() void { Factory(u8).child(u16); }";
+const nested_method_name = "fixture.Factory(u8).Nested(u32).child__func_0";
+const nested_method_leaf = f.derive(&method_leaf, &.{
+    f.set("/name", f.s(nested_method_name)),
+    f.set("/specialization/owner/name", f.s("fixture.Factory(u8).Nested(u32).child")),
+    f.set("/sourceDeclarationNode", f.n("15")),
+});
 const loop_leaf = f.derive(&leaf, &.{
     f.set("/instructions", f.arr(&.{
         f.obj(&.{ .{ "index", f.n("0") }, .{ "tag", f.s("loop") }, .{ "payloadVisited", f.b(true) }, .{ "type", never }, .{ "body", f.arr(&.{f.n("1")}) } }),
@@ -71,7 +103,7 @@ const nested_caller = f.derive(&caller, &.{
 
 pub fn controls() !void {
     const definition = "pub fn child() void {} pub fn parent() void { child(); }";
-    const cases = [_]struct { input: f.Value = caller, callee: f.Value = leaf, source: []const u8 = definition, filename: []const u8 = "fixture.zig", child_declaration: []const u8 = "fn_child", linked: bool = false, profile: z.air.Profile = .calls, imported: bool = false, include: bool = true, extra_root: bool = false, accepted: bool = false }{
+    const cases = [_]struct { input: f.Value = caller, callee: f.Value = leaf, source: []const u8 = definition, filename: []const u8 = "fixture.zig", child_declaration: []const u8 = "fn_child", linked: bool = false, profile: z.air.Profile = .calls, imported: bool = false, include: bool = true, extra_root: bool = false, child_root: bool = false, accepted: bool = false }{
         .{ .accepted = true },
         .{
             .input = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/name", f.s("fixture.Helper.parent"))}),
@@ -80,22 +112,57 @@ pub fn controls() !void {
             .child_declaration = "fn_parent_1",
             .accepted = true,
         },
+        .{
+            .input = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/name", f.s("fixture.Factory(u8).child"))}),
+            // Prototype index captured by the pinned Zig compiler for this source.
+            .callee = f.derive(&leaf, &.{ f.set("/name", f.s("fixture.Factory(u8).child")), f.add("/sourceDeclarationNode", f.n("8")) }),
+            .source = "fn Factory(comptime T: type) type { _ = T; return struct { noinline fn child() void {} }; } export fn parent() void { Factory(u8).child(); }",
+            .accepted = true,
+        },
         .{ .input = nested_caller, .callee = nested_leaf, .filename = "nested/fixture.zig", .accepted = true },
         .{ .input = nested_caller, .callee = nested_leaf, .filename = "nested/fixture.zig", .linked = true },
         .{ .input = nested_caller, .callee = nested_leaf, .filename = "nested/fixture.zig", .source = "pub fn parent() void {} const Decoy = struct { pub fn child() void {} };" },
         .{ .input = nested_caller, .callee = leaf, .filename = "nested/fixture.zig" },
         .{ .accepted = true, .imported = true },
         .{ .extra_root = true },
+        .{ .input = generic_caller, .callee = generic_leaf, .source = "pub fn child(comptime T: type) void { _ = T; } pub fn parent() void { child(u8); }", .imported = true, .child_root = true },
+        .{ .input = generic_caller, .callee = generic_leaf, .source = "pub fn child(comptime T: type) void { _ = T; } pub fn parent() void { child(u8); }", .imported = true, .extra_root = true },
         .{ .extra_root = true, .imported = true, .accepted = true },
         .{ .input = f.derive(&caller, &.{f.set("/instructions/0/tag", f.s("call_never_inline"))}), .accepted = true },
         .{ .include = false },
         .{ .input = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/sourceSha256", f.repeat('b', 64))}) },
         .{ .input = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/sourceFile", f.s("decoy.zig"))}) },
-        .{ .input = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/name", f.s("fixture.parent"))}) },
+        .{ .input = recursive_caller },
+        .{ .input = recursive_caller, .profile = .nested_calls },
+        .{ .input = recursive_caller, .profile = .recursive_calls, .source = "pub fn parent() void { parent(); }", .child_declaration = "fn_parent", .include = false, .accepted = true },
+        .{ .input = f.derive(&recursive_caller, &.{f.set("/instructions/0/callee/identity/sourceSha256", f.repeat('b', 64))}), .profile = .recursive_calls },
+        .{ .input = f.derive(&recursive_caller, &.{f.set("/instructions/0/arguments", f.arr(&.{f.obj(&.{.{ "kind", f.s("unit") }})}))}), .profile = .recursive_calls },
         .{ .input = f.derive(&caller, &.{f.set("/instructions/0/tag", f.s("call_always_tail"))}) },
         .{ .input = f.derive(&caller, &.{f.set("/instructions/0/arguments", f.arr(&.{f.obj(&.{.{ "kind", f.s("unit") }})}))}) },
         .{ .callee = f.derive(&leaf, &.{f.set("/instructions/0/tag", f.s("unreach"))}) },
         .{ .callee = f.derive(&leaf, &.{f.set("/signature/genericInstance", f.b(true))}) },
+        .{
+            .input = generic_caller,
+            .callee = generic_leaf,
+            .source = "pub fn child(comptime T: type) void { _ = T; } pub fn parent() void { child(u8); }",
+            .child_declaration = "fn_child__func_1",
+            .accepted = true,
+        },
+        .{
+            .input = generic_caller,
+            .callee = generic_leaf,
+            .source = "pub fn child(comptime T: u8) void { _ = T; } pub fn parent() void { child(0); }",
+        },
+        .{
+            .input = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/name", f.s(nested_method_name))}),
+            .callee = nested_method_leaf,
+            .source = "fn Factory(comptime T: type) type { _ = T; return struct { fn Nested(comptime V: type) type { _ = V; return struct { noinline fn child(comptime U: type) void { _ = U; } }; } }; } export fn parent() void { Factory(u8).Nested(u32).child(u16); }",
+            .child_declaration = "fn_child__func_0",
+            .accepted = true,
+        },
+        .{ .input = method_caller, .callee = method_leaf, .source = method_source, .child_declaration = "fn_child__func_0", .accepted = true },
+        .{ .input = method_caller, .callee = f.derive(&method_leaf, &.{f.set("/sourceDeclarationNode", f.n("19"))}), .source = method_source },
+        .{ .input = method_caller, .callee = f.derive(&method_leaf, &.{f.remove("/sourceDeclarationNode")}), .source = method_source },
         .{ .callee = f.derive(&leaf, &.{f.set("/signature/noaliasBits", f.n("1"))}) },
         .{ .callee = f.derive(&leaf, &.{f.set("/sourceFile", f.s("decoy.zig"))}) },
         .{ .source = "pub fn parent() void {} const Decoy = struct { pub fn child() void {} };" },
@@ -121,6 +188,13 @@ pub fn controls() !void {
         var child_value = try f.load(ctx.allocator, case.callee);
         try parent_value.object.put(ctx.allocator, "sourceSha256", .{ .string = sha });
         try child_value.object.put(ctx.allocator, "sourceSha256", .{ .string = sha });
+        if (z.common.get(child_value, "specialization")) |specialization_value| {
+            var spec = specialization_value;
+            var owner = try ctx.field(spec, "owner");
+            try owner.object.put(ctx.allocator, "sourceSha256", .{ .string = sha });
+            try spec.object.put(ctx.allocator, "owner", owner);
+            try child_value.object.put(ctx.allocator, "specialization", spec);
+        }
         const instructions = try ctx.array(try ctx.field(parent_value, "instructions"));
         var target = try ctx.field(try ctx.field(instructions[0], "callee"), "identity");
         if (z.common.tag(target, "sourceSha256", source_sha)) try target.object.put(ctx.allocator, "sourceSha256", .{ .string = sha });
@@ -160,7 +234,7 @@ pub fn controls() !void {
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "report.json", .data = report });
         const options: z.translate.Options = .{
             .capture = try ctx.fmt("{s}/report.json", .{path}),
-            .roots = if (case.extra_root) &.{ parent_name, child_name } else &.{parent_name},
+            .roots = if (case.child_root) &.{child_name} else if (case.extra_root) &.{ parent_name, child_name } else &.{parent_name},
             .output = try ctx.fmt("{s}/output", .{path}),
             .profile = case.profile,
             .declaration_source = if (case.imported) try ctx.fmt("{s}/fixture.zig", .{path}) else null,
@@ -172,7 +246,12 @@ pub fn controls() !void {
             };
             const generated = try ctx.read(std.testing.io, try ctx.fmt("{s}/Generated.lean", .{options.output}), 16384);
             try std.testing.expect(std.mem.indexOf(u8, generated, try ctx.fmt("(.call FunctionId.{s} [])", .{case.child_declaration})) != null);
-            try std.testing.expect(std.mem.indexOf(u8, generated, try ctx.fmt("def {s} :", .{case.child_declaration})).? < std.mem.indexOf(u8, generated, "def fn_parent :").?);
+            if (std.mem.indexOfScalar(u8, child_name, '(') != null) {
+                try std.testing.expect(std.mem.indexOf(u8, generated, "-- Zig declaration: fixture.Factory(") == null);
+                try std.testing.expect(std.mem.indexOf(u8, generated, "-- Zig declaration: fixture.parent\n") != null);
+            }
+            if (case.profile != .recursive_calls)
+                try std.testing.expect(std.mem.indexOf(u8, generated, try ctx.fmt("def {s} :", .{case.child_declaration})).? < std.mem.indexOf(u8, generated, "def fn_parent :").?);
         } else {
             try std.testing.expectError(error.InvalidInput, z.translate.run(&ctx, std.testing.io, options));
             try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "output", .{}));
@@ -186,9 +265,13 @@ pub fn controls() !void {
             const generated = try ctx.read(std.testing.io, try ctx.fmt("{s}/Generated.lean", .{machine_options.output}), 16384);
             try std.testing.expect(std.mem.indexOf(u8, generated, try ctx.fmt("(.call FunctionId.{s} [])", .{case.child_declaration})) != null);
             try std.testing.expect(std.mem.indexOf(u8, generated, try ctx.fmt("def FunctionId.{s} : Nat := 0", .{case.child_declaration})) != null);
-            try std.testing.expect(std.mem.indexOf(u8, generated, "def FunctionId.fn_parent : Nat := 1") != null);
             try std.testing.expect(std.mem.indexOf(u8, generated, " <|\n      (.ret (.local 0))") != null);
-            try std.testing.expect(std.mem.indexOf(u8, generated, try ctx.fmt("def functions : Program := [{s}, fn_parent]", .{case.child_declaration})) != null);
+            if (case.profile == .recursive_calls) {
+                try std.testing.expect(std.mem.indexOf(u8, generated, "def functions : Program := [fn_parent]") != null);
+            } else {
+                try std.testing.expect(std.mem.indexOf(u8, generated, "def FunctionId.fn_parent : Nat := 1") != null);
+                try std.testing.expect(std.mem.indexOf(u8, generated, try ctx.fmt("def functions : Program := [{s}, fn_parent]", .{case.child_declaration})) != null);
+            }
             try std.testing.expect(std.mem.indexOf(u8, generated, ".target") == null);
             try std.testing.expectEqualStrings(generated, try ctx.read(std.testing.io, try ctx.fmt("{s}/Generated.lean", .{options.output}), 16384));
         } else {
@@ -229,6 +312,11 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
     const targets = [_]z.air.Callee{.{ .record = loop_child, .declaration = "loopChild", .profile = .call_loops }};
     var partial = try z.air.Decoder.initWith(ctx, parent, .nested_calls, .{ .callees = &targets });
     var machine = try z.air.Decoder.initWith(ctx, parent, .calls, .{ .call_machine = true, .callees = &.{.{ .record = child, .declaration = "child", .machine_index = 0 }} });
+    const self_call = try f.load(ctx.allocator, recursive_caller);
+    var recursive = try z.air.Decoder.initWith(ctx, self_call, .recursive_calls, .{
+        .call_machine = true,
+        .callees = &.{.{ .record = self_call, .declaration = "recursiveBody", .profile = .recursive_calls, .machine_index = 0 }},
+    });
     var machine_loop = try z.air.Decoder.initWith(ctx, loop_child, .call_loops, .{ .call_machine = true });
     const block_child = try f.load(ctx.allocator, block_leaf);
     var machine_block = try z.air.Decoder.initWith(ctx, block_child, .calls, .{ .call_machine = true });
@@ -253,6 +341,24 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
         \\example : CapturedCallMachine.decode [parent_captured, child_captured] = none := rfl
         \\example : CapturedCallMachine.decode [child_captured, child_captured] = none := rfl
         \\example : CapturedCallMachine.decode [replaceIdentity child_captured, parent_captured] = none := rfl
+        \\def recursiveBody : MemoryCallMachine.Function :=
+        \\{s}
+        \\def recursiveCaptured : Captured.Raw := {s}
+        \\example : CapturedCallMachine.decodeRecursive [recursiveCaptured] = some [recursiveBody] := rfl
+        \\example : CapturedCallMachine.decode [recursiveCaptured] = none := rfl
+        \\def forwardParent : MemoryCallMachine.Function :=
+        \\  ⟨[], .scalar .unit, .bind 0 (.scalar .unit) (.call 1 []) (.ret (.local 0))⟩
+        \\example : CapturedCallMachine.decodeRecursive [parent_captured, child_captured] =
+        \\    some [forwardParent, machineChild] := rfl
+        \\def omitField (raw : Captured.Raw) (key : String) : Captured.Raw := match raw with
+        \\  | .object fields => .object (fields.filter (fun field => field.1 != key))
+        \\  | value => value
+        \\example : CapturedCallMachine.decodeRecursive [omitField child_captured "name"] = none := rfl
+        \\example : CapturedCallMachine.decodeRecursive [omitField child_captured "sourceFile"] = none := rfl
+        \\example : CapturedCallMachine.decode [omitField child_captured "sourceSha256"] = none := rfl
+        \\example : CapturedCallMachine.decodeRecursive [replaceIdentity child_captured] = none := rfl
+        \\example : CapturedCallMachine.decodeRecursive [parent_captured, parent_captured, child_captured] = none := rfl
+        \\example : CapturedCallMachine.decodeRecursive [parent_captured, replaceIdentity child_captured] = none := rfl
         \\example : MemoryCallMachine.run [machineChild, machineParent] 3 1 [] {{}} = .finished (.ok (.scalar .unit)) {{}} := rfl
         \\def machineLoopChild : MemoryCallMachine.Function :=
         \\{s}
@@ -264,5 +370,5 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
         \\example : CapturedCallMachine.decode [blockCaptured] = some [machineBlockChild] := rfl
         \\example : MemoryCallMachine.run [machineBlockChild] 3 0 [] {{}} = .finished (.ok (.scalar .unit)) {{}} := rfl
         \\
-    , .{ previous, try z.air.decode(ctx, loop_child, .call_loops), try z.certificate.callDeclaration(ctx, loop_child, "loopChild", true, &.{}), try partial.program(), try z.certificate.nestedDeclaration(ctx, parent, "partialCaller", &targets), child_text, try machine.program(), try machine_loop.program(), try machine_block.program(), try z.certificate.lift(ctx, block_child, 0) });
+    , .{ previous, try z.air.decode(ctx, loop_child, .call_loops), try z.certificate.callDeclaration(ctx, loop_child, "loopChild", true, &.{}), try partial.program(), try z.certificate.nestedDeclaration(ctx, parent, "partialCaller", &targets), child_text, try machine.program(), try recursive.program(), try z.certificate.lift(ctx, self_call, 0), try machine_loop.program(), try machine_block.program(), try z.certificate.lift(ctx, block_child, 0) });
 }

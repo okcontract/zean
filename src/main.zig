@@ -6,7 +6,7 @@ const Arguments = z.Arguments;
 const help =
     \\Zean: native Zig 0.17.1 to Lean tools
     \\Usage: zig build run -- [translate] --capture REPORT --root FUNCTION --output NEW_DIRECTORY
-    \\  --profile scalar|memory|loops|aggregate|word-bytes|word-byte-loops|calls|call-loops|nested-calls
+    \\  --profile scalar|memory|loops|aggregate|word-bytes|word-byte-loops|calls|call-loops|nested-calls|recursive-calls
     \\  --namespace NAME            Generated Lean namespace (default Zean.Generated)
     \\  --certify NEW_DIRECTORY     Check supported AIR correspondence before publication; retain evidence
     \\  --specialized-source FILE  Bind a standalone captured type specialization to its source owner
@@ -14,6 +14,7 @@ const help =
     \\  --call-machine             Emit data-based functions for the resumable call machine
     \\Commands: translate, decode, capture, toolchain, check-patch, audit, admission, verify-client, allocator-evaluate, counter-regenerate, buffer-regenerate, copy-regenerate, calls-regenerate, stdlib-replace-regenerate, ziglings-regenerate, benchmark
     \\  zig build capture -- --toolchain REPORT --source FILE --root NAME --output DIRECTORY
+    \\  zig build atomic-publication-check -- --capture REPORT --output DIRECTORY
     \\  zig build admission         Report operation obligations and coverage limits
     \\  zig build verify-client -- --manifest FILE --toolchain REPORT --output DIRECTORY
     \\  zig build allocator-evaluate -- --toolchain REPORT --output DIRECTORY
@@ -39,6 +40,11 @@ fn execute(ctx: *z.common.Context, init: std.process.Init) !void {
     if (std.mem.eql(u8, command, "admission")) {
         _ = try Arguments.parse(ctx, tail, &.{}, &.{});
         return output.interface.print("{s}\n", .{try ctx.json(try z.admission.report(ctx))});
+    }
+    if (std.mem.eql(u8, command, "atomic-publication-check")) {
+        const a = try Arguments.parse(ctx, tail, &.{ "--capture", "--output", "--lake" }, &.{});
+        const result = try z.atomic_publication.check(ctx, init.io, try a.one("--capture"), try a.one("--output"), init.environ_map, try a.optional("--lake"));
+        return output.interface.print("{s}\n", .{try ctx.json(result)});
     }
     if (std.mem.eql(u8, command, "verify-client")) {
         const a = try Arguments.parse(ctx, tail, &.{ "--manifest", "--toolchain", "--output", "--lake" }, &.{});

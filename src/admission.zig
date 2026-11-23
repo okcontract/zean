@@ -29,7 +29,7 @@ pub const operations = [_]Operation{
     .{ .name = "view", .tags = "ptr_cast array_to_slice slice", .origin = .source_and_air, .obligations = "retained source slice bounds and unique anchor, original extent, permissions, complete view; explicit contracts for specialized casts", .interpretation = "Memory.pointerCast / Memory.sourceBounds / MemoryAir.Prim.eval", .controls = "test/native/bounded_slices.zig" },
     .{ .name = "slice_projection", .tags = "slice_len slice_ptr ptr_slice_len_ptr ptr_slice_ptr_ptr", .obligations = "slice owner, field geometry, permissions, element type", .interpretation = "MemoryAir.Prim.eval", .controls = "test/native/cases/air.zig" },
     .{ .name = "record_projection", .tags = "struct_field_ptr struct_field_ptr_index_0 struct_field_ptr_index_1 struct_field_ptr_index_2 struct_field_ptr_index_3", .obligations = "complete owner identity and layout, declared index, extent, permission", .interpretation = "Memory.fieldPointer", .controls = "test/native/record_fields.zig" },
-    .{ .name = "direct_call", .tags = "call call_never_inline call_never_tail", .obligations = "declaration owner, exact signature, source closure, specialization, acyclic bodies", .interpretation = "MemoryCall.Prim.eval / MemoryPartialCall.Prim.eval / MemoryCallMachine.step", .controls = "test/native/call_admission.zig" },
+    .{ .name = "direct_call", .tags = "call call_never_inline call_never_tail", .obligations = "declaration owner, exact signature, source closure, specialization, calls permitted by the selected profile", .interpretation = "MemoryCall.Prim.eval / MemoryPartialCall.Prim.eval / MemoryCallMachine.step", .controls = "test/native/call_admission.zig" },
     .{ .name = "structured_control", .tags = "block cond_br br", .obligations = "SSA dominance, unique body ownership, typed targets, operation order", .interpretation = "Control.Machine.step", .controls = "test/native/cases/air.zig" },
     .{ .name = "loop", .tags = "loop repeat", .obligations = "enabled profile, enclosing target, prefix effects; client invariant for verification", .interpretation = "Control.Machine.step", .controls = "test/native/cases/air.zig" },
     .{ .name = "return", .tags = "ret ret_safe", .obligations = "signature result, cleanup; result type alone does not establish lifetime", .interpretation = "MemoryAir.Program.finish", .controls = "lean/Compiler/Tests/ZigAir/MemoryCallControls.lean" },
@@ -50,14 +50,20 @@ pub fn require(ctx: *c.Context, tag: []const u8) c.Error!void {
 }
 
 pub fn report(ctx: *c.Context) c.Error!c.Value {
+    var call_profiles: c.Value = .{ .object = .empty };
+    for (std.meta.tags(@import("types.zig").Profile)) |profile| {
+        const capabilities = profile.capabilities();
+        try call_profiles.object.put(ctx.allocator, profile.name(), .{ .string = if (capabilities.recursive_calls) "recursive" else if (capabilities.calls) "acyclic" else "unsupported" });
+    }
     return ctx.parse(try ctx.json(.{
         .schema = schema,
+        .directCallGraphs = call_profiles,
         .operations = operations,
         .coverage = "reached AIR vocabulary plus selected pre-elimination slice obligations",
         .sourceRequirementsComplete = false,
         .sourceSafetyVerified = false,
         .nativeRefinementVerified = false,
         .admissionRequires = "profile, target, type, reference, layout, source-owner and specialization checks in addition to the vocabulary gate",
-        .rejected = [_][]const u8{ "unknown reached tags", "unrecorded or unanchored slice obligations", "indirect or recursive calls", "native allocator vtables", "FFI", "volatile or atomic memory", "unsupported pointer and layout forms" },
+        .rejected = [_][]const u8{ "unknown reached tags", "unrecorded or unanchored slice obligations", "indirect calls", "native allocator vtables", "FFI", "volatile or atomic memory", "unsupported pointer and layout forms" },
     }));
 }

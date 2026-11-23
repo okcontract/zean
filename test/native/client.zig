@@ -12,7 +12,7 @@ pub fn controls() !void {
     var scalar = try ctx.parse(try ctx.json(baseline));
     try scalar.object.put(ctx.allocator, "profile", .{ .string = "scalar" });
     try std.testing.expect(!(try z.client.parse(&ctx, scalar)).call_machine);
-    for ([_][]const u8{ "calls", "call-loops", "nested-calls" }) |profile| {
+    for ([_][]const u8{ "calls", "call-loops", "nested-calls", "recursive-calls" }) |profile| {
         var value = try ctx.parse(try ctx.json(baseline));
         try value.object.put(ctx.allocator, "profile", .{ .string = profile });
         try std.testing.expect((try z.client.parse(&ctx, value)).call_machine);

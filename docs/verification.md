@@ -163,10 +163,26 @@ indirect calls, tail-call requests, missing bodies, unsupported specializations
 and callees outside the explicit source closure reject. A callee must be finite;
 a caller may have loops with `call-loops`.
 
+A file-level callee or a method with explicit `comptime T: type` parameters can use the
+same checked source parameter mapping as a standalone specialization. When
+resolving these calls, the translator checks the instantiated signature and
+replays the captured body using the runtime arguments. Calls can also use a
+concrete `anytype` instance when the source parameter and AIR mapping both
+keep that argument at runtime. The exporter marks these arguments as
+`runtimeAnytype` from the generic owner's ZIR parameter tags. The standalone
+Lean decoder rejects marked arguments. A type passed to a comptime `anytype`
+parameter carries the distinct `anytypeType` kind and rejects in both Lean
+decoders. Only an ordinary declaration can serve as a call-profile root.
+For earlier unmarked captures the source declaration supplies the parameter
+shape. Comptime values and variadic calls still reject.
+
 Use `--declaration-source path/to/imported.zig` to select ordinary functions
 captured from an imported file. Every selected root and callee is resolved in
 its actual source owner; cached callees selected later as roots must also pass
-the root checks. `--certify /tmp/call-certificate` checks an independent Lean
+the root checks. New capture records carry the compiler's source prototype
+node. A concrete method in a type factory's instantiated namespace requires
+this anchor to match a named function inside that factory in the hashed source.
+`--certify /tmp/call-certificate` checks an independent Lean
 interpretation of the entire emitted call closure, including the captured
 callee bodies. The certificate checks AIR-to-model correspondence; source
 hashes and declaration checks do not prove frontend correctness.
@@ -186,6 +202,11 @@ The `nested-calls` profile admits looping helpers. Suspension retains the comple
 caller stack and reached state, without producing a return value or performing
 cleanup. Safety quantifies over every finite observation. Termination requires
 a separate proof; finite closures can use the checked structural certificate.
+
+The `recursive-calls` profile admits direct self and mutual calls while retaining
+the same invocation semantics. A proof must justify recursive hypotheses by
+induction or an execution invariant. The finite structural termination
+certificate still rejects a recursive cycle.
 
 The earlier `MemoryCall` and `MemoryPartialCall` interpreters and their controls
 are retained for regression coverage. Production translation does not select

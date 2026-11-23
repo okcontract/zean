@@ -323,7 +323,7 @@ fn writeFunctionIdentity(w: *Writer, func: InternPool.Key.Func, zcu: *Zcu) Write
     try json(w, .{ .name = nav.fqn.toSlice(ip), .sourceFile = file.sub_file_path, .sourceSha256 = @as([]const u8, &hex) });
 }
 
-fn writeSpecialization(w: *Writer, func: InternPool.Key.Func, zcu: *Zcu) Writer.Error!void {
+fn writeSpecialization(w: *Writer, func: InternPool.Key.Func, zcu: *Zcu) !void {
     const ip = &zcu.intern_pool;
     const owner = zcu.funcInfo(func.generic_owner);
     const signature = zcu.typeToFunc(.fromInterned(owner.ty)).?;
@@ -333,15 +333,29 @@ fn writeSpecialization(w: *Writer, func: InternPool.Key.Func, zcu: *Zcu) Writer.
         signature.noalias_bits, signature.comptime_bits, signature.param_types.len,
     });
     var runtime_index: usize = 0;
-    for (func.comptime_args.get(ip), 0..) |arg, i| {
-        if (i != 0) try w.writeByte(',');
+    const origin = owner.zir_body_inst.resolveFull(ip) orelse return error.SourceUnavailable;
+    const zir = zcu.fileByIndex(origin.file).zir orelse return error.SourceUnavailable;
+    const args = func.comptime_args.get(ip);
+    var index: usize = 0;
+    for (zir.getParamBody(origin.inst)) |inst| {
+        const tag = zir.instructions.items(.tag)[@backingInt(inst)];
+        switch (tag) {
+            .param, .param_comptime, .param_anytype, .param_anytype_comptime => {},
+            else => continue,
+        }
+        if (index >= args.len) return error.InvalidParameterInventory;
+        const arg = args[index];
+        if (index != 0) try w.writeByte(',');
+        index += 1;
         if (arg == .none) {
-            try json(w, .{ .kind = "runtime", .runtimeIndex = runtime_index });
+            const kind: []const u8 = if (tag == .param_anytype) "runtimeAnytype" else "runtime";
+            try json(w, .{ .kind = kind, .runtimeIndex = runtime_index });
             runtime_index += 1;
         } else {
             const value: Value = .fromInterned(arg);
             if (value.typeOf(zcu).zigTypeTag(zcu) == .type) {
-                try w.writeAll("{\"kind\":\"type\",\"value\":");
+                const anytype_param = tag == .param_anytype or tag == .param_anytype_comptime;
+                try w.writeAll(if (anytype_param) "{\"kind\":\"anytypeType\",\"value\":" else "{\"kind\":\"type\",\"value\":");
                 try writeType(w, value.toType(), zcu);
                 try w.writeByte('}');
             } else {
@@ -351,6 +365,7 @@ fn writeSpecialization(w: *Writer, func: InternPool.Key.Func, zcu: *Zcu) Writer.
             }
         }
     }
+    if (index != args.len) return error.InvalidParameterInventory;
     try w.writeAll("]}");
 }
 
@@ -443,6 +458,19 @@ fn writeInstruction(w: *Writer, air: *const Air, index: Air.Inst.Index, visited:
     try writeType(w, air.typeOfIndex(index, &zcu.intern_pool), zcu);
     switch (inst.tag) {
         .arg => try w.print(",\"zirParameterIndex\":{d}", .{inst.data.arg.zir_param_index}),
+        .atomic_load => {
+            const load = inst.data.atomic_load;
+            try w.writeAll(",\"ordering\":");
+            try json(w, @tagName(load.order));
+            try w.writeAll(",\"operand\":");
+            try writeRef(w, load.ptr, zcu);
+        },
+        .atomic_store_release => {
+            try w.writeAll(",\"ordering\":\"release\",\"lhs\":");
+            try writeRef(w, inst.data.bin_op.lhs, zcu);
+            try w.writeAll(",\"rhs\":");
+            try writeRef(w, inst.data.bin_op.rhs, zcu);
+        },
         .call, .call_always_tail, .call_never_tail, .call_never_inline => {
             const call = air.unwrapCall(index);
             try w.writeAll(",\"callee\":");
@@ -556,7 +584,9 @@ pub fn captureFunction(pt: Zcu.PerThread, func_index: InternPool.Index, air: *co
     const nav = ip.getNav(func.owner_nav);
     const name = nav.fqn.toSlice(ip);
     const declaration = if (func.generic_owner == .none) nav else ip.getNav(zcu.funcInfo(func.generic_owner).owner_nav);
-    const file = zcu.fileByIndex(declaration.analysis.?.zir_index.resolveFile(ip));
+    const origin = declaration.srcInst(ip).resolveFull(ip) orelse return error.SourceUnavailable;
+    const file = zcu.fileByIndex(origin.file);
+    const declaration_node = (file.zir orelse return error.SourceUnavailable).getDeclaration(origin.inst).src_node;
     const mod = file.mod.?;
     const target = mod.resolved_target.result;
     const signature = zcu.typeToFunc(.fromInterned(func.ty)).?;
@@ -583,6 +613,7 @@ pub fn captureFunction(pt: Zcu.PerThread, func_index: InternPool.Index, air: *co
     std.crypto.hash.sha2.Sha256.hash(file.source orelse return error.SourceUnavailable, &hash, .{});
     const hex = std.fmt.bytesToHex(hash, .lower);
     try json(w, @as([]const u8, &hex));
+    try w.print(",\"sourceDeclarationNode\":{d}", .{@backingInt(declaration_node)});
     try w.writeAll(",\"configuration\":");
     try json(w, .{
         .optimize = switch (mod.optimize_mode) {

@@ -14,6 +14,12 @@ interpretations and rejection controls, and explicitly retain
 `sourceRequirementsComplete = false`. Listing a tag does not admit arbitrary
 instances of it. Translation manifests record the inventory schema.
 
+The sequential profiles reject atomic operations. The dispatch-table example
+uses its own checker for two functions in `publication.zig`. It checks that
+`publish` fills both slots before setting the flag with a release store. It
+also checks that `readEntry` reads a slot only if its acquire load sees `1`.
+[Publication proof and assumptions](../examples/atomic_publication/README.md)
+
 The semantic interpretation of the supported memory fragment is specified in
 [`Captured.lean`](../lean/Compiler/ZigAir/Captured.lean), independently of the Zig
 emitter. `translate --profile memory|loops --certify /tmp/check-evidence` emits
@@ -30,8 +36,8 @@ axiom or assumed correspondence theorem. The evidence directory retains the
 input module, compiler receipts and report. A failed check leaves no published
 bundle. The manifest records `airCorrespondenceChecked` only after success.
 
-This optional check supports the `scalar`, `memory`, `loops`, `calls`, `call-loops` and
-`nested-calls` profiles. Other
+This optional check supports the `scalar`, `memory`, `loops`, `calls`, `call-loops`,
+`nested-calls` and `recursive-calls` profiles. Other
 profiles reject a certification request. They do not silently fall back to
 uncertified translation. Normal translation remains available and reports
 `airCorrespondenceChecked: false`. Native admission still runs before a
@@ -81,7 +87,7 @@ contract. Declaration ownership and hashes do not prove source-to-AIR semantics.
 | Array-to-slice conversion | Preserve the array's static element count, pointer and permissions; conversion alone does not access storage |
 | Complete record fields | Check the entire owner layout and selected field declaration; padding is not usable typed storage |
 | Opaque enum storage | Validate identity, exhaustive tag table, backing width and ABI layout inside complete owners; runtime enum values and operations still reject |
-| Direct calls | Resolve declarations and source identities throughout an acyclic closure; execute captured callees, retaining faults and reached effects |
+| Direct calls | Resolve declarations and source identities throughout the closure permitted by the selected profile; execute captured callees, retaining faults and reached effects |
 | Conditional branches and blocks | Preserve both branches, block results, labels and continuation order |
 | Loops and repeat | Preserve back edges; execution safety covers every prefix and requires a client invariant |
 | Return | Preserve the returned reference; invocation checks its type and releases its own stack storage |
@@ -130,6 +136,6 @@ It is neither automatic memory-safety verification nor a whole-compiler proof.
 
 `calls` admits finite callees. `call-loops` allows loops in the root while keeping
 its callees finite. `nested-calls` additionally admits looping callees and callers
-of those callees. Its independent decoder reconstructs the same interpreter for
-each closure member. Recursion and indirect calls remain unsupported. Each
-function's chosen interpreter appears in the translation manifest.
+of those callees. `recursive-calls` admits cyclic direct calls within a checked
+table of captured bodies. Indirect calls remain unsupported. The translation
+manifest records the execution model for every function.
