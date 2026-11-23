@@ -9,20 +9,74 @@ const Dir = std.Io.Dir;
 pub const name = "zean.outputs.json";
 const schema = "zean.outputs.v1";
 
+pub const Ownership = struct {
+    repo: Dir,
+    enclosing: std.ArrayList(Dir) = .empty,
+
+    /// Keep enclosing projects from publishing new claims while this run is active.
+    pub fn init(ctx: *c.Context, io: std.Io, repo: Dir) !Ownership {
+        var ownership: Ownership = .{ .repo = repo };
+        errdefer ownership.deinit(ctx.allocator, io);
+        var ancestor = try repo.openDir(io, ".", .{});
+        defer ancestor.close(io);
+        var previous = try files.Identity.of(files.directoryFile(ancestor), io);
+        while (true) {
+            const parent = try ancestor.openDir(io, "..", .{});
+            ancestor.close(io);
+            ancestor = parent;
+            const identity = try files.Identity.of(files.directoryFile(parent), io);
+            if (std.meta.eql(previous, identity)) break;
+            previous = identity;
+            if (!try isProject(io, parent)) continue;
+            const owner = try parent.openDir(io, ".", .{ .iterate = true });
+            errdefer owner.close(io);
+            if (!try files.directoryFile(owner).tryLock(io, .shared))
+                return ctx.fail("another Zean run is using an enclosing project", .{});
+            try ownership.enclosing.append(ctx.allocator, owner);
+        }
+        return ownership;
+    }
+
+    pub fn deinit(self: *Ownership, allocator: std.mem.Allocator, io: std.Io) void {
+        for (self.enclosing.items) |dir| dir.close(io);
+        self.enclosing.deinit(allocator);
+    }
+
+    fn isProject(io: std.Io, dir: Dir) !bool {
+        for ([_][]const u8{ "zean.json", "client.json", name }) |entry| {
+            _ = dir.statFile(io, entry, .{ .follow_symlinks = false }) catch |err| switch (err) {
+                error.FileNotFound => continue,
+                else => return err,
+            };
+            return true;
+        }
+        return false;
+    }
+
+    fn check(self: Ownership, ctx: *c.Context, io: std.Io, destinations: []const OutputLocation) !void {
+        for (self.enclosing.items) |owner| {
+            const claims = try readClaims(ctx, io, owner);
+            for (destinations) |destination| {
+                if (try destination.conflictingPath(io, self.repo, claims, .other_project) != null)
+                    return ctx.fail("generated destination {s} belongs to an enclosing Zean project", .{destination.path});
+            }
+        }
+        try checkNestedOwnership(ctx, io, self.repo, destinations);
+    }
+};
+
 pub const Inventory = struct {
     previous: ?[]const u8 = null,
     paths: []const []const u8 = &.{},
-    legacy: bool = true,
 
     pub fn load(ctx: *c.Context, io: std.Io, repo: Dir) !Inventory {
         const previous = try read(ctx, io, repo) orelse return .{};
         const value = try ctx.parse(previous);
-        const retired_field = c.get(value, "retired");
-        try ctx.fields(value, if (retired_field != null) "schema outputs retired" else "schema outputs");
+        try ctx.fields(value, "schema outputs retired");
         try ctx.require(c.tag(value, "schema", schema), "invalid Zean output inventory");
         const active = try ctx.array(try ctx.field(value, "outputs"));
         try ctx.require(active.len > 0 and active.len <= 256, "invalid Zean output inventory size");
-        const retired = if (retired_field) |field| try ctx.array(field) else &.{};
+        const retired = try ctx.array(try ctx.field(value, "retired"));
         const paths = try ctx.allocator.alloc([]const u8, active.len + retired.len);
         var seen: std.StringHashMapUnmanaged(void) = .empty;
         defer seen.deinit(ctx.allocator);
@@ -34,25 +88,45 @@ pub const Inventory = struct {
                     return ctx.fail("duplicate Zean output path {s}", .{path.*});
             }
         }
-        return .{ .previous = previous, .paths = paths, .legacy = retired_field == null };
+        return .{ .previous = previous, .paths = paths };
     }
 
-    pub fn checkObsolete(self: Inventory, ctx: *c.Context, io: std.Io, repo: Dir, lean_dir: []const u8, wanted: []const []const u8) !void {
-        for (self.paths) |path| {
-            if (c.oneOf(path, wanted)) continue;
-            const file = files.openContained(io, repo, path) catch |err| switch (err) {
-                error.FileNotFound => continue,
-                else => return ctx.fail("cannot inspect old Zean output {s} ({s})", .{ path, @errorName(err) }),
-            };
+    pub fn check(self: Inventory, ctx: *c.Context, io: std.Io, ownership: Ownership, wanted: []const []const u8) !void {
+        const repo = ownership.repo;
+        const destinations = try ctx.allocator.alloc(OutputLocation, wanted.len);
+        defer ctx.allocator.free(destinations);
+        for (wanted, destinations) |path, *destination| {
+            try ctx.require(files.validRelativePath(path), "invalid Zean output path");
+            destination.* = try OutputLocation.resolve(io, repo, path, .destination);
+        }
+        try ownership.check(ctx, io, destinations);
+        const retiring = try self.resolveClaims(ctx, io, repo, wanted);
+        defer ctx.allocator.free(retiring);
+        for (destinations) |destination| {
+            if (try destination.conflictingPath(io, repo, retiring, .retiring)) |path|
+                return ctx.fail("generated destination {s} conflicts with recorded output {s}. One path needs the other as a directory", .{ destination.path, path });
+        }
+        for (retiring) |claim| {
+            if (claim.entry != .file) continue;
+            const file = try files.openContained(io, repo, claim.path);
             defer file.close(io);
             if (try hasHeader(io, file) and !try aliasesActiveOutput(io, repo, file, wanted))
-                return obsolete(ctx, path);
+                return obsolete(ctx, claim.path);
         }
-        if (self.legacy) {
-            var scan: LegacyScan = .{ .ctx = ctx, .io = io, .repo = repo, .wanted = wanted };
-            defer scan.nested.deinit(ctx.allocator);
-            try scan.directory(repo, "", if (std.mem.eql(u8, lean_dir, ".")) "" else lean_dir);
+    }
+
+    fn resolveClaims(self: Inventory, ctx: *c.Context, io: std.Io, repo: Dir, exclude: []const []const u8) ![]OutputLocation {
+        var claims: std.ArrayList(OutputLocation) = .empty;
+        defer claims.deinit(ctx.allocator);
+        for (self.paths) |path| {
+            if (c.oneOf(path, exclude)) continue;
+            const claim = OutputLocation.resolve(io, repo, path, .claim) catch |err| switch (err) {
+                error.NotDir => continue,
+                else => return ctx.fail("cannot inspect recorded Zean output {s} ({s})", .{ path, @errorName(err) }),
+            };
+            try claims.append(ctx.allocator, claim);
         }
+        return claims.toOwnedSlice(ctx.allocator);
     }
 
     pub fn verify(self: Inventory, ctx: *c.Context, io: std.Io, repo: Dir) !void {
@@ -119,73 +193,196 @@ fn aliasesActiveOutput(io: std.Io, repo: Dir, file: std.Io.File, wanted: []const
     // A spelling alias can name the same entry after a rename. Distinct hard
     // links must still be checked because replacing one leaves the other in place.
     if ((try file.stat(io)).nlink != 1) return false;
-    const identity = try files.Identity.of(file, io);
-    for (wanted) |path| {
-        const active = files.openContained(io, repo, path) catch |err| switch (err) {
+    return containsIdentity(io, repo, wanted, try files.Identity.of(file, io));
+}
+
+fn containsIdentity(io: std.Io, repo: Dir, paths: []const []const u8, identity: files.Identity) !bool {
+    for (paths) |path| {
+        const file = files.openContained(io, repo, path) catch |err| switch (err) {
             error.FileNotFound => continue,
             else => return err,
         };
-        defer active.close(io);
-        if (std.meta.eql(identity, try files.Identity.of(active, io))) return true;
+        defer file.close(io);
+        if (std.meta.eql(identity, try files.Identity.of(file, io))) return true;
     }
     return false;
 }
 
-const LegacyScan = struct {
-    ctx: *c.Context,
-    io: std.Io,
-    repo: Dir,
-    wanted: []const []const u8,
-    nested: std.StringHashMapUnmanaged(void) = .empty,
+const OutputLocation = struct {
+    const Entry = union(enum) { missing, file: files.Identity, blocking_inode: u64, directory: files.Identity };
+    const ClaimKind = enum { other_project, retiring };
 
-    fn directory(self: *LegacyScan, dir: Dir, prefix: []const u8, remaining: []const u8) anyerror!void {
-        if (prefix.len != 0) try self.recordNested(dir, prefix);
-        // Reach leanDir directly so alternate spellings resolve as they do when
-        // opening outputs. Along the way, record ownership in its ancestors.
-        if (remaining.len != 0) {
-            const slash = std.mem.indexOfScalar(u8, remaining, '/') orelse
-                return self.child(dir, prefix, remaining, "");
-            return self.child(dir, prefix, remaining[0..slash], remaining[slash + 1 ..]);
+    // The last reachable parent and the remaining components of the output path.
+    parent_id: files.Identity,
+    path: []const u8,
+    suffix: []const u8,
+    entry: Entry,
+
+    fn resolve(io: std.Io, repo: Dir, path: []const u8, role: enum { destination, claim }) !OutputLocation {
+        var parent = repo;
+        defer if (parent.handle != repo.handle) parent.close(io);
+        var components = std.mem.splitScalar(u8, path, '/');
+        while (true) {
+            const suffix = components.rest();
+            const component = components.next() orelse return error.InvalidOutputPath;
+            const last = components.peek() == null;
+            const entry: Entry = found: {
+                const stat = parent.statFile(io, component, .{ .follow_symlinks = false }) catch |err| switch (err) {
+                    error.FileNotFound => break :found .missing,
+                    else => return err,
+                };
+                switch (stat.kind) {
+                    .directory => {
+                        if (last and role == .destination) return error.NotRegularFile;
+                        const child = try files.openChildDir(io, parent, component);
+                        if (last) {
+                            defer child.close(io);
+                            break :found .{ .directory = try files.Identity.of(files.directoryFile(child), io) };
+                        }
+                        if (parent.handle != repo.handle) parent.close(io);
+                        parent = child;
+                        continue;
+                    },
+                    .file => {
+                        if (!last) {
+                            if (role == .destination) return error.NotDir;
+                            break :found .{ .blocking_inode = stat.inode };
+                        }
+                        const file = try files.openRegular(io, parent, component, .none);
+                        defer file.close(io);
+                        break :found .{ .file = try files.Identity.of(file, io) };
+                    },
+                    .sym_link => return error.SymLinkLoop,
+                    else => return if (last) error.NotRegularFile else error.NotDir,
+                }
+            };
+            return .{
+                .parent_id = try files.Identity.of(files.directoryFile(parent), io),
+                .path = path,
+                .suffix = suffix,
+                .entry = entry,
+            };
         }
-        var iterator = dir.iterate();
-        while (try iterator.next(self.io)) |entry| {
-            if (entry.kind == .directory) {
-                if (!c.oneOf(entry.name, &.{ ".git", ".lake", ".zig-cache", ".codex-tmp", "zig-out" }))
-                    try self.child(dir, prefix, entry.name, "");
-                continue;
+    }
+
+    fn needsNameComparison(self: OutputLocation, claim: OutputLocation, kind: ClaimKind) bool {
+        if (!std.meta.eql(self.parent_id, claim.parent_id)) return false;
+        return switch (self.entry) {
+            // At the same depth below the shared parent, two spellings can name
+            // the same file. Only a different depth can require it as a directory.
+            .missing => claim.entry == .missing and (kind == .other_project or
+                std.mem.countScalar(u8, self.suffix, '/') != std.mem.countScalar(u8, claim.suffix, '/')),
+            .file => |id| claim.entry == .blocking_inode and id.inode == claim.entry.blocking_inode,
+            else => unreachable, // Only a destination calls this method.
+        };
+    }
+
+    fn conflictingPath(self: OutputLocation, io: std.Io, repo: Dir, claims: []const OutputLocation, kind: ClaimKind) !?[]const u8 {
+        var needs_lookup = false;
+        var has_directory_claim = false;
+        for (claims) |claim| {
+            if (kind == .other_project and self.entry == .file and claim.entry == .file and std.meta.eql(self.entry.file, claim.entry.file)) return claim.path;
+            if (claim.entry == .directory) has_directory_claim = true;
+            if (!self.needsNameComparison(claim, kind)) continue;
+            if (files.within(self.suffix, claim.suffix) or files.within(claim.suffix, self.suffix)) return claim.path;
+            needs_lookup = true;
+        }
+        if (!needs_lookup and !has_directory_claim) return null;
+        const entry_path = self.path[0 .. self.path.len - self.suffix.len + std.mem.sliceTo(self.suffix, '/').len];
+        const parent = try files.openParent(io, repo, entry_path, false);
+        defer parent.close(io);
+        if (!std.meta.eql(self.parent_id, try files.Identity.of(files.directoryFile(parent), io)))
+            return error.OutputDirectoryChanged;
+        if (has_directory_claim) {
+            if (try claimedDirectory(io, parent, claims)) |path| return path;
+        }
+        if (!needs_lookup) return null;
+
+        // A private child inherits the parent's filename lookup rules, including ext4 case folding.
+        var nonce: [16]u8 = undefined;
+        io.random(&nonce);
+        const probe_name = ".zean-lookup-" ++ std.fmt.bytesToHex(nonce, .lower);
+        const permissions: Dir.Permissions = if (@hasDecl(Dir.Permissions, "fromMode")) .fromMode(0o700) else .default_dir;
+        try parent.createDir(io, probe_name, permissions);
+        errdefer parent.deleteTree(io, probe_name) catch {};
+        const probe = try files.openChildDir(io, parent, probe_name);
+        defer probe.close(io);
+        const conflict = try self.lookup(io, probe, claims, kind);
+        try parent.deleteTree(io, probe_name);
+        return conflict;
+    }
+
+    fn claimedDirectory(io: std.Io, parent: Dir, claims: []const OutputLocation) !?[]const u8 {
+        var dir = try parent.openDir(io, ".", .{});
+        defer dir.close(io);
+        var previous: ?files.Identity = null;
+        while (true) {
+            const id = try files.Identity.of(files.directoryFile(dir), io);
+            if (previous) |last| if (std.meta.eql(id, last)) return null;
+            for (claims) |claim| {
+                if (claim.entry == .directory and std.meta.eql(claim.entry.directory, id)) return claim.path;
             }
-            if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".lean")) continue;
-            const path = try files.join(self.ctx, &.{ prefix, entry.name });
-            defer self.ctx.allocator.free(path);
-            if (c.oneOf(path, self.wanted) or self.nested.contains(path)) continue;
-            const file = try files.openRegular(self.io, dir, entry.name, .none);
-            defer file.close(self.io);
-            if (try hasHeader(self.io, file) and !try aliasesActiveOutput(self.io, self.repo, file, self.wanted))
-                return obsolete(self.ctx, path);
+            const next = try dir.openDir(io, "..", .{});
+            dir.close(io);
+            dir = next;
+            previous = id;
         }
     }
 
-    fn child(self: *LegacyScan, parent: Dir, prefix: []const u8, component: []const u8, remaining: []const u8) !void {
-        const dir = parent.openDir(self.io, component, .{ .iterate = true, .follow_symlinks = false }) catch |err| switch (err) {
-            error.FileNotFound => return,
-            else => return err,
-        };
-        defer dir.close(self.io);
-        const path = try files.join(self.ctx, &.{ prefix, component });
-        defer self.ctx.allocator.free(path);
-        try self.directory(dir, path, remaining);
-    }
-
-    fn recordNested(self: *LegacyScan, dir: Dir, prefix: []const u8) !void {
-        const inventory = Inventory.load(self.ctx, self.io, dir) catch |err| {
-            const detail = if (err == error.InvalidInput) self.ctx.diagnostic else @errorName(err);
-            return self.ctx.fail("{s}/" ++ name ++ " ({s})", .{ prefix, detail });
-        };
-        for (inventory.paths) |relative| {
-            const path = try files.join(self.ctx, &.{ prefix, relative });
-            if (c.oneOf(path, self.wanted))
-                return self.ctx.fail("generated destination {s} belongs to a nested Zean project", .{path});
-            try self.nested.put(self.ctx.allocator, path, {});
+    fn lookup(self: OutputLocation, io: std.Io, probe: Dir, claims: []const OutputLocation, kind: ClaimKind) !?[]const u8 {
+        const leaf = try files.openParent(io, probe, self.suffix, true);
+        defer leaf.close(io);
+        const marker = try leaf.createFile(io, Dir.path.basenamePosix(self.suffix), .{ .exclusive = true });
+        marker.close(io);
+        for (claims) |claim| {
+            if (!self.needsNameComparison(claim, kind)) continue;
+            // The probe contains only the requested path. A lookup can reach its
+            // file, stop at one of its directories, or try to descend through its file.
+            const file = files.openContained(io, probe, claim.suffix) catch |err| switch (err) {
+                error.FileNotFound => continue,
+                error.NotDir, error.NotRegularFile => return claim.path,
+                else => return err,
+            };
+            file.close(io);
+            return claim.path;
         }
+        return null;
     }
 };
+
+fn readClaims(ctx: *c.Context, io: std.Io, dir: Dir) ![]const OutputLocation {
+    const inventory = Inventory.load(ctx, io, dir) catch |err| {
+        const detail = if (err == error.InvalidInput) ctx.diagnostic else @errorName(err);
+        var buffer: [Dir.max_path_bytes]u8 = undefined;
+        const directory = if (dir.realPath(io, &buffer)) |length| buffer[0..length] else |_| "project directory";
+        return ctx.fail("cannot read Zean output inventory in {s} ({s})", .{ directory, detail });
+    };
+    return inventory.resolveClaims(ctx, io, dir, &.{});
+}
+
+fn checkNestedOwnership(ctx: *c.Context, io: std.Io, repo: Dir, destinations: []const OutputLocation) !void {
+    var claims_by_directory: std.StringHashMapUnmanaged([]const OutputLocation) = .empty;
+    defer claims_by_directory.deinit(ctx.allocator);
+    for (destinations) |destination| {
+        const path = destination.path;
+        var ancestor: ?Dir = null;
+        defer if (ancestor) |dir| dir.close(io);
+        var components = std.mem.splitScalar(u8, path, '/');
+        while (components.next()) |component| {
+            const relative = components.rest();
+            if (relative.len == 0) break;
+            const dir = (ancestor orelse repo).openDir(io, component, .{ .follow_symlinks = false }) catch |err| switch (err) {
+                error.FileNotFound => break,
+                else => return err,
+            };
+            if (ancestor) |previous| previous.close(io);
+            ancestor = dir;
+
+            const prefix = path[0 .. path.len - relative.len - 1];
+            const entry = try claims_by_directory.getOrPut(ctx.allocator, prefix);
+            if (!entry.found_existing) entry.value_ptr.* = try readClaims(ctx, io, dir);
+            if (try destination.conflictingPath(io, repo, entry.value_ptr.*, .other_project) != null)
+                return ctx.fail("generated destination {s} belongs to a nested Zean project", .{path});
+        }
+    }
+}

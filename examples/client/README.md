@@ -49,9 +49,11 @@ it out to capture for the native host.
 
 `zean --check` reports missing, stale, and obsolete outputs. When dropping or
 renaming a generated module, remove the old file and run `zean` to update the
-inventory. It keeps the retired path so a restored file fails the check. Run
-`zean` once to upgrade older inventories. The upgrade checks the configured
-Lean directory for leftover outputs and respects nested project inventories.
+inventory. It keeps the retired path so a restored file fails the check.
+A new output cannot use a retired file as a directory or replace a directory
+that a retired output needs.
+Nested projects can share directories. Zean rejects a generated file that
+would occupy another project's output path or a directory that output needs.
 Unchanged models retain their original capture hashes.
 
 Zean prints the path to its private evidence directory. It uses `TMPDIR` when

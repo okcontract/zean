@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 OKcontract Pte. Ltd.
 const std = @import("std");
+const builtin = @import("builtin");
 const c = @import("common.zig");
 const Dir = std.Io.Dir;
 const File = std.Io.File;
@@ -60,6 +61,21 @@ pub fn validRelativePath(path: []const u8) bool {
     return true;
 }
 
+/// Compare normalized path components by spelling.
+pub fn within(root: []const u8, path: []const u8) bool {
+    return std.mem.startsWith(u8, path, root) and
+        (path.len == root.len or std.mem.endsWith(u8, root, "/") or path[root.len] == '/');
+}
+
+/// Some kernels report NotDir for a symlink opened with O_NOFOLLOW.
+pub fn openChildDir(io: std.Io, parent: Dir, component: []const u8) !Dir {
+    return parent.openDir(io, component, .{ .follow_symlinks = false }) catch |err| {
+        if (err == error.NotDir and (try parent.statFile(io, component, .{ .follow_symlinks = false })).kind == .sym_link)
+            return error.SymLinkLoop;
+        return err;
+    };
+}
+
 /// Open the parent of a validated, normalized relative path without following links.
 pub fn openParent(io: std.Io, root: Dir, path: []const u8, create: bool) !Dir {
     var dir = try root.openDir(io, ".", .{});
@@ -67,13 +83,12 @@ pub fn openParent(io: std.Io, root: Dir, path: []const u8, create: bool) !Dir {
     var parts = std.mem.splitScalar(u8, path, '/');
     while (parts.next()) |part| {
         if (parts.peek() == null) break;
-        const options: Dir.OpenOptions = .{ .follow_symlinks = false };
-        const child = dir.openDir(io, part, options) catch |err| blk: {
+        const child = openChildDir(io, dir, part) catch |err| blk: {
             if (err != error.FileNotFound or !create) return err;
             dir.createDir(io, part, .default_dir) catch |create_err| {
                 if (create_err != error.PathAlreadyExists) return create_err;
             };
-            break :blk try dir.openDir(io, part, options);
+            break :blk try openChildDir(io, dir, part);
         };
         dir.close(io);
         dir = child;
@@ -106,13 +121,18 @@ pub fn readContained(ctx: *c.Context, io: std.Io, root: Dir, path: []const u8) !
     return readFile(ctx, io, file);
 }
 
+/// Borrow a directory descriptor for file identity checks and locks.
+pub fn directoryFile(dir: Dir) File {
+    return .{ .handle = dir.handle, .flags = .{ .nonblocking = false } };
+}
+
 pub const Identity = struct {
     device: u64,
     inode: u64,
 
     pub fn of(file: File, io: std.Io) !Identity {
         // Io.File.Stat exposes the inode, but not the device it belongs to.
-        switch (@import("builtin").target.os.tag) {
+        switch (builtin.target.os.tag) {
             .linux => {
                 const linux = std.os.linux;
                 var stat: linux.Statx = undefined;

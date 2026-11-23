@@ -44,8 +44,20 @@ test "the project inventory detects restored retired modules after regeneration"
     try @import("project.zig").retiredControls();
 }
 
-test "output inventory migration respects nested project ownership" {
+test "project generation checks its own retiring paths before publication" {
+    try @import("project.zig").retiringLayoutControls();
+}
+
+test "project outputs respect nested ownership before and after recording an inventory" {
     try @import("project.zig").nestedControls();
+}
+
+test "enclosing inventories own their outputs and absent paths retain filesystem identity" {
+    try @import("project.zig").enclosingControls();
+}
+
+test "project outputs reserve their directory components across project boundaries" {
+    try @import("project.zig").fileDirectoryControls();
 }
 
 test "the bundle inspects ELF architecture and linkage before calling ldd" {

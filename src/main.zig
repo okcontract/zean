@@ -106,23 +106,14 @@ fn execute(ctx: *z.common.Context, init: std.process.Init) !void {
     } else if (std.mem.eql(u8, command, "toolchain")) blk: {
         const a = try Arguments.parse(ctx, tail, &.{ "--zig-tree", "--output", "--bootstrap-zig", "--bootstrap", "--llvm-prefix", "--lld-prefix", "--cmake", "--generator", "--cmake-generator", "--system-libcpp", "--search-prefix", "--jobs" }, &.{ "--fresh-air-capture", "--fresh-air" });
         break :blk try z.toolchain.build(ctx, init.io, init.environ_map, z.project_root, .{ .tree = try a.one("--zig-tree"), .output = try a.one("--output"), .bootstrap = try a.either("--bootstrap", "--bootstrap-zig") orelse return ctx.fail("missing --bootstrap", .{}), .llvm = try a.one("--llvm-prefix"), .lld = try a.one("--lld-prefix"), .cmake = try a.default("--cmake", "cmake"), .generator = try a.either("--cmake-generator", "--generator") orelse "Ninja", .system_libcpp = try a.optional("--system-libcpp"), .search_prefixes = a.many("--search-prefix"), .fresh_air = a.flag("--fresh-air-capture") or a.flag("--fresh-air"), .jobs = try std.fmt.parseInt(u32, try a.default("--jobs", "2"), 10) });
-    } else if (std.mem.eql(u8, command, "translate") or implicitTranslate(args[1..])) blk: {
-        const a = try Arguments.parse(ctx, if (std.mem.eql(u8, command, "translate")) tail else args[1..], &.{ "--capture", "--root", "--output", "--profile", "--namespace", "--certify", "--lake", "--specialized-source", "--declaration-source" }, &.{"--call-machine"});
+    } else if (std.mem.eql(u8, command, "translate")) blk: {
+        const a = try Arguments.parse(ctx, tail, &.{ "--capture", "--root", "--output", "--profile", "--namespace", "--certify", "--lake", "--specialized-source", "--declaration-source" }, &.{"--call-machine"});
         const profile = z.air.Profile.parse(try a.default("--profile", "scalar")) orelse return ctx.fail("unknown profile", .{});
         const certify = try a.optional("--certify");
         try ctx.require(certify == null or compiler_payload.len == 0, "use zig build run -- translate --certify from the Zean checkout or check the generated project with Lake");
         break :blk try z.translate.run(ctx, init.io, .{ .capture = try a.one("--capture"), .roots = a.many("--root"), .output = try a.one("--output"), .profile = profile, .namespace = try a.default("--namespace", "Zean.Generated"), .certify = certify, .lake = try a.optional("--lake"), .environment = init.environ_map, .specialized_source = try a.optional("--specialized-source"), .declaration_source = try a.optional("--declaration-source"), .call_machine = a.flag("--call-machine") });
     } else return runProject(ctx, init, args[1..], &output.interface);
     try output.interface.print("{s}\n", .{try ctx.json(result)});
-}
-
-fn implicitTranslate(args: []const []const u8) bool {
-    if (!std.mem.startsWith(u8, args[0], "--")) return false;
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--")) return false;
-        if (z.common.oneOf(arg, &.{ "--capture", "--root", "--output", "--profile", "--namespace", "--certify", "--specialized-source", "--declaration-source", "--call-machine" })) return true;
-    }
-    return false;
 }
 
 fn runProject(ctx: *z.common.Context, init: std.process.Init, args: []const []const u8, output: *std.Io.Writer) !void {

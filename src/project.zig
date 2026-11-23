@@ -87,10 +87,12 @@ pub fn run(ctx: *c.Context, io: std.Io, gpa: std.mem.Allocator, options: Options
         return ctx.fail("cannot open project directory {s} ({s})", .{ options.directory, @errorName(err) });
     defer repo.close(io);
     // Keep the lock stable even when clients switch between client.json and zean.json.
-    const lock: std.Io.File = .{ .handle = repo.handle, .flags = .{ .nonblocking = false } };
+    const lock = files.directoryFile(repo);
     if (!try lock.tryLock(io, .exclusive))
         return ctx.fail("another Zean run is using {s}", .{options.directory});
     defer lock.unlock(io);
+    var ownership = try project_outputs.Ownership.init(ctx, io, repo);
+    defer ownership.deinit(ctx.allocator, io);
 
     var config_path: []const u8 = "zean.json";
     const config_file = files.openRegular(io, repo, config_path, .exclusive) catch |err| fallback: {
@@ -132,7 +134,7 @@ pub fn run(ctx: *c.Context, io: std.Io, gpa: std.mem.Allocator, options: Options
     }
     try protectClientInputs(ctx, io, repo, models);
     const inventory = try project_outputs.Inventory.load(ctx, io, repo);
-    try inventory.checkObsolete(ctx, io, repo, config.lean_dir, paths);
+    try inventory.check(ctx, io, ownership, paths);
     const inventory_bytes = try inventory.encode(ctx, paths);
     const inventory_changed = !project_outputs.matches(inventory.previous, inventory_bytes);
     if (options.check and inventory_changed)
@@ -194,7 +196,7 @@ pub fn run(ctx: *c.Context, io: std.Io, gpa: std.mem.Allocator, options: Options
     }
     try protectClientInputs(ctx, io, repo, models);
     try inventory.verify(ctx, io, repo);
-    try inventory.checkObsolete(ctx, io, repo, config.lean_dir, paths);
+    try inventory.check(ctx, io, ownership, paths);
     // Record all destinations before publishing any of them so a partial run can be retried.
     if (inventory_changed) try inventory.publish(ctx, io, repo, inventory_bytes);
     for (models) |model| {
@@ -242,13 +244,8 @@ fn protectPath(ctx: *c.Context, io: std.Io, repo: Dir, models: []const Model, de
         return ctx.fail("generated destination {s} overlaps a client {s}", .{ destination, kind });
 }
 
-fn within(root: []const u8, path: []const u8) bool {
-    return std.mem.startsWith(u8, path, root) and
-        (path.len == root.len or std.mem.endsWith(u8, root, "/") or path[root.len] == '/');
-}
-
 fn insideCheckout(ctx: *c.Context, io: std.Io, repo: []const u8, path: []const u8) !bool {
-    if (within(repo, path) or within(checkout, path)) return true;
+    if (files.within(repo, path) or files.within(checkout, path)) return true;
     var directory = path;
     while (true) {
         const marker = try files.join(ctx, &.{ directory, ".git" });
