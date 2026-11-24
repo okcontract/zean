@@ -45,7 +45,7 @@ fn execute(ctx: *z.common.Context, init: std.process.Init) !void {
     if (args.len == 1) return runProject(ctx, init, &.{}, &output.interface);
     if (z.common.oneOf(args[1], &.{ "--help", "-h" })) return output.interface.writeAll(help);
     if (std.mem.eql(u8, args[1], "--version")) {
-        return output.interface.print("Zean (Zig {s}{s})\n", .{ z.version, if (compiler_payload.len == 0) "" else ", standalone" });
+        return output.interface.print("Zean {s} (Zig {s}{s})\n", .{ z.project_version, z.version, if (compiler_payload.len == 0) "" else ", standalone" });
     }
     const command = args[1];
     const tail = args[2..];

@@ -23,7 +23,9 @@ pub const capture = @import("capture.zig");
 pub const capture_stdlib = @import("capture_stdlib.zig");
 pub const Arguments = @import("arguments.zig").Arguments;
 pub const project_root = @import("build_options").project_root;
+pub const project_version = @import("build_options").project_version;
 
+/// Version of the pinned Zig toolchain.
 pub const version = "0.17.1";
 pub const revision = "be248cc1fdc3cc654f9ec8ba68514bcb93b204fe";
 

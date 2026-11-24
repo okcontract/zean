@@ -15,6 +15,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const toolchain_report = b.option([]const u8, "toolchain-report", "Instrumented Zig report for standalone and release-check");
     const options = b.addOptions();
+    options.addOption([]const u8, "project_version", @import("build.zig.zon").version);
     const producer = treeIdentity(b, "src", &.{ "build.zig", "build.zig.zon" }) catch @panic("cannot identify producer sources");
     const models = treeIdentity(b, "lean", &.{ "lean-toolchain", "lakefile.lean" }) catch @panic("cannot identify Lean library");
     options.addOption([]const u8, "producer_sha256", &producer.sha256);

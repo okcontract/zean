@@ -79,4 +79,4 @@ Zean grew out of formal verification work on a Solidity compiler written in
 Zig. We wrote the first release over two months with AI assistance, mainly
 GPT-6 Astra. [oksolc](https://github.com/okcontract/oksolc)
 
-[Apache 2.0 license](LICENSE) · [Attribution](NOTICE)
+[Changelog](CHANGELOG.md) · [Apache 2.0 license](LICENSE) · [Attribution](NOTICE)
