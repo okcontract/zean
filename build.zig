@@ -13,7 +13,9 @@ comptime {
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const toolchain_report = b.option([]const u8, "toolchain-report", "Instrumented Zig report for standalone and release-check");
     const options = b.addOptions();
+    options.addOption([]const u8, "project_version", @import("build.zig.zon").version);
     const producer = treeIdentity(b, "src", &.{ "build.zig", "build.zig.zon" }) catch @panic("cannot identify producer sources");
     const models = treeIdentity(b, "lean", &.{ "lean-toolchain", "lakefile.lean" }) catch @panic("cannot identify Lean library");
     options.addOption([]const u8, "producer_sha256", &producer.sha256);
@@ -21,7 +23,10 @@ pub fn build(b: *std.Build) void {
     options.addOption([]const u8, "model_sha256", &models.sha256);
     options.addOption(usize, "model_files", models.files);
     options.addOption([]const u8, "lean_toolchain", lean_toolchain);
-    options.addOptionPathUntracked("project_root", b.path("."));
+    // The installed CLI also runs from client repositories.
+    const root_path = b.root.joinString(b.allocator, ".") catch @panic("cannot locate Zean sources");
+    const project_root = std.Io.Dir.cwd().realPathFileAlloc(b.graph.io, root_path, b.allocator) catch @panic("cannot resolve Zean sources");
+    options.addOption([]const u8, "project_root", project_root);
     const module = b.addModule("zean", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -34,8 +39,36 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "zean", .module = module }},
     });
+    cli_module.addAnonymousImport("capture_payload", .{ .root_source_file = b.addWriteFiles().add("empty-payload", "") });
     const executable = b.addExecutable(.{ .name = "zean", .root_module = cli_module });
     b.installArtifact(executable);
+    const standalone = b.step("standalone", "Install a self-contained Zean executable with the instrumented Zig compiler");
+    if (toolchain_report) |report| {
+        if (target.query.isNative()) {
+            const packer = b.addExecutable(.{ .name = "zean-bundle", .root_module = b.createModule(.{
+                .root_source_file = b.path("src/bundle_tool.zig"),
+                .target = b.graph.host,
+                .optimize = .safe,
+                .imports = &.{.{ .name = "zean", .module = module }},
+            }) });
+            if (b.graph.host.result.os.tag == .macos)
+                packer.root_module.linkFramework("CoreFoundation", .{});
+            const pack = b.addRunArtifact(packer);
+            pack.addFileArg(b.graph.cwdRelativePath(report));
+            const archive = pack.addOutputFileArg("compiler.tar.gz");
+            // The report refers to an external source tree and executable.
+            pack.has_side_effects = true;
+            const bundled = b.createModule(.{
+                .root_source_file = b.path("src/main.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "zean", .module = module }},
+            });
+            bundled.addAnonymousImport("capture_payload", .{ .root_source_file = archive });
+            const standalone_exe = b.addExecutable(.{ .name = "zean", .root_module = bundled });
+            standalone.dependOn(&b.addInstallArtifact(standalone_exe, .{}).step);
+        } else standalone.dependOn(&b.addFail("standalone requires a native target and a report for that host").step);
+    } else standalone.dependOn(&b.addFail("standalone requires -Dtoolchain-report=/path/to/report.json").step);
     const run = b.addRunArtifact(executable);
     run.addPassthruArgs();
     b.step("run", "Run the native Zig-to-Lean tool").dependOn(&run.step);
@@ -48,12 +81,15 @@ pub fn build(b: *std.Build) void {
     const fixture = b.addExecutable(.{ .name = "zean-test-child", .root_module = b.createModule(.{ .root_source_file = b.path("test/native/process_fixture.zig"), .target = target, .optimize = optimize }) });
     const test_options = b.addOptions();
     test_options.addOptionPath("child", fixture.getEmittedBin());
+    test_options.addOptionPath("zig", .zig_exe);
     const test_module = b.createModule(.{
         .root_source_file = b.path("test/native/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{ .{ .name = "zean", .module = module }, .{ .name = "test_options", .module = test_options.createModule() } },
     });
+    if (target.result.os.tag == .macos)
+        test_module.linkFramework("CoreFoundation", .{});
     const tests = b.addTest(.{ .root_module = test_module });
     const test_run = b.addRunArtifact(tests);
     // Source profiles, checked-in models and process fixtures are runtime inputs.
@@ -381,7 +417,6 @@ pub fn build(b: *std.Build) void {
     const check_ziglings_init = rejectExampleProof(b, lake, "examples/ziglings/InitializationProof.lean", &check_replace_permission.step);
     const check_ziglings_bounds = rejectExampleProof(b, lake, "examples/ziglings/BoundsProof.lean", &check_ziglings_init.step);
     check.dependOn(&check_ziglings_bounds.step);
-    const toolchain_report = b.option([]const u8, "toolchain-report", "Instrumented Zig report for release-check");
     const release_output = b.option([]const u8, "release-output", "New external evidence directory for release-check");
     const compatibility = b.step("compatibility-check", "Check held-out call rejections and certified fixed-length slice admission");
     var compatibility_first: ?*std.Build.Step = null;

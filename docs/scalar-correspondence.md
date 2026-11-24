@@ -1,38 +1,25 @@
-# Scalar AIR correspondence review
+# Scalar AIR correspondence
 
-The scalar profile now supports `translate --certify`. Its independent Lean
-decoder reuses `Captured`'s raw readers and structured opcode interpretation,
-then requires every type, primitive and reference to project to scalar code.
-Both branches, block continuations, labels and operation order remain present.
-Memory effects and source guards reject. The native admission checks are
-unchanged; a certificate remains an additional check before publication.
+`zig build run -- translate --profile scalar --certify` checks the generated
+program against `CapturedScalar.decode`. The decoder reads structured AIR, then
+projects each type, reference, and primitive to scalar code. It retains both
+branches, block continuations, and operation order. Memory effects, source
+slice guards, and generic scalar specializations reject.
+[Scalar decoder](../lean/Compiler/ZigAir/CapturedScalar.lean)
 
-Self-review covered profile routing, target independence, argument mapping,
-integer modes and widths, reached work, proof ownership, publication on failure,
-and retained source/native assumptions. The public emitted-control target now
-builds the new decoder from clean inputs. Declarative clients accept this newly
-certifiable profile while continuing to reject unsupported profiles. The CLI's
-workspace identity check expects its build checkout as the working directory.
+## Validation on 2026-11-15
 
-Validation on 2026-11-15:
+- `zig build test -j1` passed with optional upstream-dependent skips.
+- `zig build emitted-lean -j1` built the Lean library and checked 48 emitted
+  controls across nine profiles. The scalar fixtures received certificates.
+- `zig build emitted-control -Demitted-control=scalar-certificate -j1` checked
+  an independently recorded scalar model and thirteen mutations. Every mutation
+  failed at the kernel decision, including a reached store outside scalar code.
+- A fresh capture of zevm's unchanged `word.byte` passed certification and
+  ordinary/instrumented object comparison. Lean 4.35.0 checked the certificate
+  with one worker and a 4096 MiB limit. Dependency builds used two workers.
+- Formatting and diff checks passed.
 
-* `zig build test -j1` passes; optional upstream-dependent skips remain explicit.
-* The complete `zig build emitted-lean -j1` build checks the Lean library and 48
-  emitted controls across nine profiles. All supported scalar fixtures gain
-  correspondence certificates.
-* `zig build emitted-control -Demitted-control=scalar-certificate -j1` checks
-  the independently recorded scalar model and thirteen rejected mutations,
-  including a reached store that cannot project to scalar code. Every rejection
-  must fail at the kernel decision, rather than at an import or unrelated check.
-* A fresh native capture of zevm's unchanged `word.byte` passes scalar
-  certification with `CapturedScalar.decode`; instrumented and ordinary object
-  bytes agree. The certificate is checked with Lean 4.35.0, one proof worker,
-  and a 4096 MiB limit; dependency builds use two workers.
-* Zig formatting and diff checks pass. No new axiom, unchecked evaluator or
-  native proof oracle was introduced.
-
-This certifies AIR-to-generated-model lowering under the retained inert JSON
-lifting assumption. It does not certify source safety, source-to-AIR export,
-ABI or native compilation. Those manifest fields remain false. Generic scalar
-specializations are outside this certificate profile. Bulk compiler, capture,
-certificate and control evidence stays outside the checkout.
+The certificate checks lowering from the captured data. Inert JSON lifting,
+source capture, and native compilation have separate evidence requirements.
+[Admission and proof scope](admission.md)

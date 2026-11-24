@@ -1,41 +1,24 @@
 # Copying undefined storage
 
-`@memcpy` transports byte initialization state. It does not require every byte
-to have a defined value. A later value read still requires initialization.
+`@memcpy` transports byte initialization. Copying an undefined source byte
+clears initialization at the destination. A later value read of that byte
+faults until it is initialized.
 
-The byte-copy semantics distinguish these operations:
+The model checks lifetime, bounds, destination permission, and non-overlap.
+Unsupported padding and representation views reject. A fault keeps writes
+already reached. On success, a copy preserves heap validity and observations
+outside its destination. With initialized source bytes, the copied prefix
+contains those exact values.
 
-| Operation | Undefined source byte |
-| --- | --- |
-| Value read | Explicit `uninitialized` fault |
-| Byte copy | Erase the destination byte's initialization and continue |
+The native fixture copies a partially initialized array, fills the missing
+destination byte, then reads it. `zig build test` checks both comptime and
+runtime execution. Fresh capture matched ordinary and instrumented objects.
+Full translation of the fixture stops at its explicit undefined-array
+stores. [Native fixture](../test/native/undefined_copy.zig)
 
-Copying still checks lifetime, bounds, destination permission and non-overlap.
-Unsupported padding or representation views reject. The model never assigns a
-chosen value to undefined bytes. A reached failure preserves earlier writes.
-
-The native control in [`undefined_copy.zig`](../test/native/undefined_copy.zig)
-copies a partially initialized array, initializes its missing destination byte,
-then reads the complete destination. `zig build test` checks its result both at
-compile time and at runtime. The Lean controls independently check transport,
-erasure of an old destination value, later uninitialized reads, and reached
-effects on bounds failures. These are source/model audit controls, not a proof
-of Zig compilation.
-
-Run the focused model checks with:
+The Lean controls check transport, erasure of an old value, subsequent
+uninitialized reads, and writes that survive a bounds fault.
 
 ```sh
 zig build lean-module -Dlean-module=Compiler.Tests.ZigAir.MemoryUndefinedTransportAudit
 ```
-
-Fresh native capture of the fixture also passed ordinary/instrumented object
-equality. Translating the whole fixture currently rejects its explicit
-undefined-array stores in the memory profile; that boundary remains fail closed.
-
-The generic copy theorems retain their stronger initialized-source contract:
-when the source bytes have values, the copied prefix has exactly those values.
-Successful copies preserve heap validity, allocation shape and observations
-outside the destination, including when undefined bytes are transported.
-
-The model controls distinguish permitted transport from a later value read,
-which faults when the copied byte remains uninitialized.

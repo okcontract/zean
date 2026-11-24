@@ -1,20 +1,15 @@
-# Pinned Ziglings exercises
+# Pinned Ziglings inputs
 
-These five files are unchanged copies from
-[Ziglings `v0.17.0`](https://codeberg.org/ziglings/exercises/src/tag/v0.17.0),
-commit `f594c3f60940506a6b0c8a920e4f440a6e2962dc`:
+The exercises, patches, and MIT license are copied unchanged from commit
+`f594c3f60940506a6b0c8a920e4f440a6e2962dc`.
+[Ziglings v0.17.0](https://codeberg.org/ziglings/exercises/src/commit/f594c3f60940506a6b0c8a920e4f440a6e2962dc)
 
-- [038 exercise source](038_structs2.zig)
-- [054 exercise source](054_manypointers.zig)
-- [038 correction](038_structs2.patch)
-- [054 correction](054_manypointers.patch)
-- [MIT license](LICENSE) (Dave Gauer and Chris Boesch)
+| Exercise | Files |
+| --- | --- |
+| 038 | [Source](038_structs2.zig) · [Correction](038_structs2.patch) |
+| 054 | [Source](054_manypointers.zig) · [Correction](054_manypointers.patch) |
 
-Upstream has no `v0.17.1` tag. We pin this immutable revision and run its two
-corrected exercises with **Zig 0.17.1**, the compiler required by Zean.
-This checks these exercises, not compatibility of the entire Ziglings suite.
-
-[`../upstream.zig`](../upstream.zig) records the SHA-256 hashes and explicitly
-applies the two official corrections. `zig build ziglings-upstream` checks
-the hashes and the corrected programs' output. The uninitialized baseline
-of exercise 038 is retained as source and is never executed by this target.
+`zig build ziglings-upstream` checks the file hashes and runs the two
+corrected exercises with Zig 0.17.1. The 038 baseline contains an
+uninitialized read and is kept as source. [Hash checks](../upstream.zig) ·
+[MIT license](LICENSE)

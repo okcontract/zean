@@ -3,12 +3,22 @@
 const std = @import("std");
 const z = @import("zean");
 const Arguments = z.Arguments;
+const compiler_payload = @embedFile("capture_payload");
 const help =
-    \\Zean: native Zig 0.17.1 to Lean tools
-    \\Usage: zig build run -- [translate] --capture REPORT --root FUNCTION --output NEW_DIRECTORY
+    \\Zean generates Lean models from Zig 0.17.1 AIR.
+    \\Usage: zean [DIRECTORY] [--check] [--toolchain REPORT] [--evidence NEW_DIRECTORY]
+    \\  Read zean.json or client.json in DIRECTORY (default .).
+    \\  Generate Lean modules under lean/ and record them in zean.outputs.json.
+    \\  --check                  Capture and check for stale or obsolete generated files
+    \\  --toolchain REPORT       Override the bundled compiler or $ZEAN_TOOLCHAIN
+    \\  --evidence NEW_DIRECTORY Retain logs and captures in a private external directory
+    \\  Use zig build run -- [DIRECTORY] to run from the Zean checkout.
+    \\
+    \\Translate a retained capture:
+    \\  zean translate --capture REPORT --root FUNCTION --output NEW_DIRECTORY
     \\  --profile scalar|memory|loops|aggregate|word-bytes|word-byte-loops|calls|call-loops|nested-calls|recursive-calls
     \\  --namespace NAME            Generated Lean namespace (default Zean.Generated)
-    \\  --certify NEW_DIRECTORY     Check supported AIR correspondence before publication; retain evidence
+    \\  --certify NEW_DIRECTORY     Check AIR correspondence with a development build from the Zean checkout
     \\  --specialized-source FILE  Bind a standalone captured type specialization to its source owner
     \\  --declaration-source FILE  Bind an ordinary captured function from the explicit source closure
     \\  --call-machine             Emit data-based functions for the resumable call machine
@@ -32,11 +42,14 @@ pub fn main(init: std.process.Init) !void {
 fn execute(ctx: *z.common.Context, init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(ctx.allocator);
     var output = std.Io.File.stdout().writerStreaming(init.io, &.{});
-    if (args.len == 1 or std.mem.eql(u8, args[1], "--help")) return output.interface.writeAll(help);
-    if (std.mem.eql(u8, args[1], "--version")) return output.interface.print("Zean (Zig {s})\n", .{z.version});
+    if (args.len == 1) return runProject(ctx, init, &.{}, &output.interface);
+    if (z.common.oneOf(args[1], &.{ "--help", "-h" })) return output.interface.writeAll(help);
+    if (std.mem.eql(u8, args[1], "--version")) {
+        return output.interface.print("Zean {s} (Zig {s}{s})\n", .{ z.project_version, z.version, if (compiler_payload.len == 0) "" else ", standalone" });
+    }
     const command = args[1];
     const tail = args[2..];
-    if (tail.len == 1 and std.mem.eql(u8, tail[0], "--help")) return output.interface.writeAll(help);
+    if (tail.len == 1 and z.common.oneOf(tail[0], &.{ "--help", "-h" })) return output.interface.writeAll(help);
     if (std.mem.eql(u8, command, "admission")) {
         _ = try Arguments.parse(ctx, tail, &.{}, &.{});
         return output.interface.print("{s}\n", .{try ctx.json(try z.admission.report(ctx))});
@@ -93,10 +106,24 @@ fn execute(ctx: *z.common.Context, init: std.process.Init) !void {
     } else if (std.mem.eql(u8, command, "toolchain")) blk: {
         const a = try Arguments.parse(ctx, tail, &.{ "--zig-tree", "--output", "--bootstrap-zig", "--bootstrap", "--llvm-prefix", "--lld-prefix", "--cmake", "--generator", "--cmake-generator", "--system-libcpp", "--search-prefix", "--jobs" }, &.{ "--fresh-air-capture", "--fresh-air" });
         break :blk try z.toolchain.build(ctx, init.io, init.environ_map, z.project_root, .{ .tree = try a.one("--zig-tree"), .output = try a.one("--output"), .bootstrap = try a.either("--bootstrap", "--bootstrap-zig") orelse return ctx.fail("missing --bootstrap", .{}), .llvm = try a.one("--llvm-prefix"), .lld = try a.one("--lld-prefix"), .cmake = try a.default("--cmake", "cmake"), .generator = try a.either("--cmake-generator", "--generator") orelse "Ninja", .system_libcpp = try a.optional("--system-libcpp"), .search_prefixes = a.many("--search-prefix"), .fresh_air = a.flag("--fresh-air-capture") or a.flag("--fresh-air"), .jobs = try std.fmt.parseInt(u32, try a.default("--jobs", "2"), 10) });
-    } else blk: {
-        const a = try Arguments.parse(ctx, if (std.mem.eql(u8, command, "translate")) tail else args[1..], &.{ "--capture", "--root", "--output", "--profile", "--namespace", "--certify", "--lake", "--specialized-source", "--declaration-source" }, &.{"--call-machine"});
+    } else if (std.mem.eql(u8, command, "translate")) blk: {
+        const a = try Arguments.parse(ctx, tail, &.{ "--capture", "--root", "--output", "--profile", "--namespace", "--certify", "--lake", "--specialized-source", "--declaration-source" }, &.{"--call-machine"});
         const profile = z.air.Profile.parse(try a.default("--profile", "scalar")) orelse return ctx.fail("unknown profile", .{});
-        break :blk try z.translate.run(ctx, init.io, .{ .capture = try a.one("--capture"), .roots = a.many("--root"), .output = try a.one("--output"), .profile = profile, .namespace = try a.default("--namespace", "Zean.Generated"), .certify = try a.optional("--certify"), .lake = try a.optional("--lake"), .environment = init.environ_map, .specialized_source = try a.optional("--specialized-source"), .declaration_source = try a.optional("--declaration-source"), .call_machine = a.flag("--call-machine") });
-    };
+        const certify = try a.optional("--certify");
+        try ctx.require(certify == null or compiler_payload.len == 0, "use zig build run -- translate --certify from the Zean checkout or check the generated project with Lake");
+        break :blk try z.translate.run(ctx, init.io, .{ .capture = try a.one("--capture"), .roots = a.many("--root"), .output = try a.one("--output"), .profile = profile, .namespace = try a.default("--namespace", "Zean.Generated"), .certify = certify, .lake = try a.optional("--lake"), .environment = init.environ_map, .specialized_source = try a.optional("--specialized-source"), .declaration_source = try a.optional("--declaration-source"), .call_machine = a.flag("--call-machine") });
+    } else return runProject(ctx, init, args[1..], &output.interface);
     try output.interface.print("{s}\n", .{try ctx.json(result)});
+}
+
+fn runProject(ctx: *z.common.Context, init: std.process.Init, args: []const []const u8, output: *std.Io.Writer) !void {
+    const parsed = try Arguments.project(ctx, args);
+    const options: z.project.Options = .{
+        .directory = parsed.directory orelse ".",
+        .toolchain = try parsed.optional("--toolchain"),
+        .evidence = try parsed.optional("--evidence"),
+        .check = parsed.flag("--check"),
+        .compiler_payload = compiler_payload,
+    };
+    return z.project.run(ctx, init.io, init.gpa, options, init.environ_map, output);
 }

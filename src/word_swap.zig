@@ -81,7 +81,7 @@ pub fn generate(ctx: *c.Context, io: std.Io, report_path: []const u8, root: []co
     const callee = try ctx.str(try ctx.field(edge, "callee"));
     const record = try ctx.field(records, callee);
     const decoded = try decode(ctx, record, sources);
-    const lean = try ctx.fmt("/-\n// Copyright (C) 2026 OKcontract Pte. Ltd.\n// SPDX-License-Identifier: Apache-2.0\nGenerated from captured AIR; do not edit. Source/backend preservation remains open.\n-/\nimport Compiler.ZigAir.MemoryWordPair\n\nnamespace Compiler.ZigAir.GeneratedMemory\nopen MemoryAir\n\ndef fn_swap_u32 : WordPairProgram :=\n{s}\n\nend Compiler.ZigAir.GeneratedMemory\n", .{decoded.program});
+    const lean = try ctx.fmt(files.generated_lean_header ++ "/-\n// Copyright (C) 2026 OKcontract Pte. Ltd.\n// SPDX-License-Identifier: Apache-2.0\nSource/backend preservation remains open.\n-/\nimport Compiler.ZigAir.MemoryWordPair\n\nnamespace Compiler.ZigAir.GeneratedMemory\nopen MemoryAir\n\ndef fn_swap_u32 : WordPairProgram :=\n{s}\n\nend Compiler.ZigAir.GeneratedMemory\n", .{decoded.program});
     var visited: usize = 0;
     for (decoded.decoder.visited) |flag| if (flag) {
         visited += 1;

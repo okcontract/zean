@@ -8,6 +8,10 @@ pub const atomic_publication = @import("atomic_publication.zig");
 pub const target = @import("target.zig");
 pub const proof_replay = @import("proof_replay.zig");
 pub const client = @import("client.zig");
+pub const project = @import("project.zig");
+pub const project_outputs = @import("project_outputs.zig");
+pub const bundled_compiler = @import("bundled_compiler.zig");
+pub const bundle_dependencies = @import("bundle_dependencies.zig");
 
 pub const component = @import("component.zig");
 pub const translate = @import("translate.zig");
@@ -19,7 +23,9 @@ pub const capture = @import("capture.zig");
 pub const capture_stdlib = @import("capture_stdlib.zig");
 pub const Arguments = @import("arguments.zig").Arguments;
 pub const project_root = @import("build_options").project_root;
+pub const project_version = @import("build_options").project_version;
 
+/// Version of the pinned Zig toolchain.
 pub const version = "0.17.1";
 pub const revision = "be248cc1fdc3cc654f9ec8ba68514bcb93b204fe";
 

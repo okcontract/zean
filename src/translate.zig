@@ -7,7 +7,20 @@ const files = @import("files.zig");
 const version = @import("root.zig").version;
 const revision = @import("root.zig").revision;
 
-pub const Options = struct { capture: []const u8, roots: []const []const u8, output: []const u8, profile: air.Profile = .scalar, namespace: []const u8 = "Zean.Generated", certify: ?[]const u8 = null, environment: ?*const std.process.Environ.Map = null, lake: ?[]const u8 = null, specialized_source: ?[]const u8 = null, declaration_source: ?[]const u8 = null, call_machine: bool = false };
+pub const Options = struct {
+    capture: []const u8,
+    roots: []const []const u8,
+    output: []const u8,
+    profile: air.Profile = .scalar,
+    namespace: []const u8 = "Zean.Generated",
+    emit_correspondence: bool = false,
+    certify: ?[]const u8 = null,
+    environment: ?*const std.process.Environ.Map = null,
+    lake: ?[]const u8 = null,
+    specialized_source: ?[]const u8 = null,
+    declaration_source: ?[]const u8 = null,
+    call_machine: bool = false,
+};
 fn namespaceText(ctx: *c.Context, name: []const u8) c.Error![]const u8 {
     try ctx.require(c.identifier(name, true), "invalid Lean namespace");
     var components: std.ArrayList([]const u8) = .empty;
@@ -19,8 +32,10 @@ fn namespaceText(ctx: *c.Context, name: []const u8) c.Error![]const u8 {
 pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
     const lean_namespace = try namespaceText(ctx, options.namespace);
     const call_machine = options.profile.hasCalls();
+    const emit_certificate = options.emit_correspondence or options.certify != null;
     try ctx.require(!options.call_machine or call_machine, "call-machine emission requires a call profile");
-    if (options.certify != null) try ctx.require(options.profile.capabilities().correspondence and options.environment != null, "certification requires a supported profile and an explicit process environment");
+    if (emit_certificate) try ctx.require(options.profile.capabilities().correspondence, "correspondence requires a supported profile");
+    if (options.certify != null) try ctx.require(options.environment != null, "certification requires an explicit process environment");
     try ctx.require(options.roots.len > 0, "roots must be nonempty and unique");
     for (options.roots, 0..) |root, index| for (options.roots[0..index]) |previous| try ctx.require(!std.mem.eql(u8, root, previous), "roots must be nonempty and unique");
     try ctx.require(!try files.exists(io, options.output), "output directory already exists; use a new directory");
@@ -37,19 +52,28 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
     const source_sha = if (specialized_bytes orelse declaration_bytes) |bytes| try ctx.allocator.dupe(u8, &c.digest(bytes)) else capture_source_sha;
     try ctx.require(c.isDigest(source_sha), "capture has no valid source identity");
     var lines: std.ArrayList([]const u8) = .empty;
-    try lines.append(ctx.allocator,
+    try lines.append(ctx.allocator, files.generated_lean_header ++
         \\/-
         \\Copyright (C) 2026 OKcontract Pte. Ltd.
         \\SPDX-License-Identifier: Apache-2.0
-        \\Generated from admitted AIR; do not edit.
         \\Source validity and native refinement require separate evidence.
         \\-/
         \\
     );
     try lines.append(ctx.allocator, try ctx.fmt("-- Source SHA-256: {s}\n-- Capture report SHA-256: {s}\n", .{ source_sha, &c.digest(captured.bytes) }));
+    const source_inventory = c.get(report, "sourceFiles");
+    if (source_inventory) |source_files| {
+        try ctx.require(source_files == .object and source_files.object.count() != 0, "invalid captured source inventory");
+        for (source_files.object.keys(), source_files.object.values()) |path, identity| {
+            try ctx.require(files.validRelativePath(path) and std.mem.endsWith(u8, path, ".zig"), "invalid captured source inventory path");
+            try ctx.require(c.isDigest(try ctx.str(identity)), "invalid captured source hash");
+        }
+        const closure_hash = c.digest(try ctx.json(try c.ordered(ctx, source_files)));
+        try lines.append(ctx.allocator, try ctx.fmt("-- Source closure SHA-256: {s}\n", .{&closure_hash}));
+    }
     const module = options.profile.module();
     const vocabulary = options.profile.vocabulary();
-    if (options.certify != null) try lines.append(ctx.allocator, if (options.profile == .scalar) "import Compiler.ZigAir.CapturedScalar\n" else if (call_machine) "import Compiler.ZigAir.CapturedCallMachine\n" else "import Compiler.ZigAir.Captured\n");
+    if (emit_certificate) try lines.append(ctx.allocator, if (options.profile == .scalar) "import Compiler.ZigAir.CapturedScalar\n" else if (call_machine) "import Compiler.ZigAir.CapturedCallMachine\n" else "import Compiler.ZigAir.Captured\n");
     try lines.append(ctx.allocator, try ctx.fmt("import Compiler.ZigAir.{s}\n\nnamespace {s}\nopen Compiler.ZigAir.{s}\n\n", .{ module, lean_namespace, vocabulary }));
     var functions: c.Value = .{ .object = .empty };
     var identities: std.ArrayList(struct { path: []const u8, sha: []const u8 }) = .empty;
@@ -92,7 +116,7 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
             try lines.append(ctx.allocator, try ctx.fmt("-- AIR SHA-256: {s}\ndef {s} : Function :=\n{s}\n\n", .{ unit.sha, unit.name, program }));
             {
                 try machine_names.append(ctx.allocator, unit.name);
-                if (options.certify != null) {
+                if (emit_certificate) {
                     const record_name = try ctx.fmt("CapturedRecords.{s}", .{unit.name});
                     try machine_records.append(ctx.allocator, record_name);
                     try machine_captures.append(ctx.allocator, try ctx.fmt("def {s} : Compiler.ZigAir.Captured.Raw :=\n{s}\n\n", .{ record_name, try @import("certificate.zig").lift(ctx, unit.record, 0) }));
@@ -105,11 +129,11 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
         }
         {
             try lines.append(ctx.allocator, try ctx.fmt("def functions : Program := [{s}]\n\n", .{try std.mem.join(ctx.allocator, ", ", machine_names.items)}));
-            if (options.certify != null) {
+            if (emit_certificate) {
                 try lines.append(ctx.allocator, "-- Captured AIR and independent decoding certificate.\n\n");
                 try lines.appendSlice(ctx.allocator, machine_captures.items);
             }
-            if (options.certify != null) {
+            if (emit_certificate) {
                 const decoder = if (closure.allow_recursion) "decodeRecursive" else "decode";
                 try lines.append(ctx.allocator, try ctx.fmt("set_option maxRecDepth 8192 in\nset_option maxHeartbeats 2000000 in\ntheorem functions_correspondence :\n  Compiler.ZigAir.CapturedCallMachine.{s} [{s}] = some functions := by rfl'\n\n", .{ decoder, try std.mem.join(ctx.allocator, ", ", machine_records.items) }));
             }
@@ -132,12 +156,17 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
         try ctx.require(c.isDigest(sha) and std.mem.eql(u8, &c.digest(record_file.bytes), sha), "AIR identity mismatch");
         const record = record_file.value;
         try ctx.require(c.tag(record, "name", root) and c.tag(record, "sourceSha256", source_sha), "AIR root/source identity mismatch");
+        if (source_inventory) |source_files| {
+            const source_file = try ctx.str(try ctx.field(record, "sourceFile"));
+            if (!c.tag(source_files, source_file, source_sha))
+                return ctx.fail("{s}: AIR source identity differs from the capture inventory", .{root});
+        }
         if (declaration_bytes) |bytes| try @import("declaration_source.zig").select(ctx, record, try ctx.field(report, "sourceFiles"), std.fs.path.basename(options.declaration_source.?), bytes);
         const mapping = if (specialized_bytes) |bytes| try @import("specialized_source.zig").select(ctx, record, std.fs.path.basename(options.specialized_source.?), bytes) else null;
         var decoder = try air.Decoder.initWith(ctx, record, options.profile, .{ .source_parameters = if (mapping) |mapped| mapped.indices else null, .explicit_type_specialization = mapping != null });
         const program = try decoder.program();
         try lines.append(ctx.allocator, try ctx.fmt("-- AIR SHA-256: {s}\ndef {s} : Program{s} :=\n{s}\n\n", .{ sha, name, if (options.profile.hasLoops()) " true" else "", program }));
-        if (options.certify != null) {
+        if (emit_certificate) {
             const certificate = if (options.profile == .scalar) try @import("certificate.zig").scalarDeclaration(ctx, record, name) else try @import("certificate.zig").declaration(ctx, record, name, options.profile.hasLoops());
             // Preserve existing certificate names wherever the source leaves them available.
             const collision = standalone.contains(try ctx.fmt("{s}_captured", .{name})) or standalone.contains(try ctx.fmt("{s}_correspondence", .{name}));
@@ -175,6 +204,7 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
         .callDeclarationOwnershipChecked = options.profile.hasCalls(),
         .inputKind = c.get(report, "inputKind") orelse c.Value{ .string = "unclassified" },
         .nativeCaptureVerified = false,
+        .airCorrespondenceEmitted = emit_certificate,
         .airCorrespondenceChecked = options.certify != null,
         .jsonLiftingVerified = false,
         .sourceSafetyVerified = false,

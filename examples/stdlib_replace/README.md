@@ -1,76 +1,44 @@
-# Verify an unchanged Zig standard-library loop
+# Verify the standard-library replacement loop
 
-This client verifies the captured `u32` specialization of Zig 0.17.1's
-`std.mem.replaceScalar`. The original implementation loops over a mutable slice
-and replaces each matching element. It is not copied into the translator or
-rewritten to fit the proof. The small [Zig wrapper](replace.zig) makes the
-specialization available for capture.
+The wrapper makes Zig 0.17.1's `std.mem.replaceScalar(u32)` available for
+capture. The model comes from the unchanged library implementation.
+[Capture wrapper](replace.zig)
 
 ```sh
 zig build stdlib-replace
 ```
 
-This checks native results, the actual standard-library source hash, the Lean
-contract, concrete execution controls and two intentionally false proof clients.
-The retained model needs no instrumented compiler to check.
+The target checks native results, the standard-library source hash, Lean
+proofs from the retained model, and two false proof clients.
 
-## Contract and proof
+The caller supplies a valid heap and an initialized writable word view.
+The invariant relates the index to the extent and preserves initialization
+and surrounding memory. `air_vcgen` and the slice rules derive the proof
+obligations from the generated program. Checked selectors find the bindings
+and loop label. [Model](../../lean/Compiler/Components/Replace/Generated.lean) ·
+[Contract and proof](../../lean/Compiler/Components/Replace/Proofs.lean)
 
-The [generated module](../../lean/Compiler/Components/Replace/Generated.lean)
-contains only program data and capture provenance. The separate
-[proof client](../../lean/Compiler/Components/Replace/Proofs.lean) supplies:
+Every finite prefix excludes access, initialization, permission, arithmetic,
+and malformed-program faults. Completion and modeled exhaustion preserve
+the view and surrounding memory. Concrete controls check replacement values
+and exhibit faults for uninitialized, readonly, and out-of-bounds views.
+A write reached before a fault remains visible. The universal contract leaves
+termination and the exact replacement list open.
+[Controls](../../lean/Compiler/Components/Replace/Controls.lean)
 
-- A valid caller heap and a writable word view whose extent fits its allocation.
-- Initialization of every word that the slice may read.
-- A loop invariant relating the index to the slice length, retaining initialization
-  and a frame for memory outside the view.
-
-`air_vcgen` derives the obligations from the generated program. The reusable
-slice, word and frame rules discharge them. Checked selectors locate bindings
-and the loop label in program data; the verifier has no rule for this function's
-name or instruction numbers.
-
-For every execution prefix, the contract excludes invalid access, uninitialized
-read, permission, arithmetic and malformed-program faults. Completed execution
-preserves heap validity, initialized contents, writable extent and memory outside
-the view. Modeled allocation exhaustion is permitted and has the same preservation
-guarantees. The current universal contract does **not** prove termination or
-the exact replacement list. Concrete positive controls check replacement results,
-including neighboring words and an empty view.
-
-[Negative controls](../../lean/Compiler/Components/Replace/Controls.lean) show
-that a valid heap alone is insufficient: a missing initialized word faults,
-readonly storage rejects a write, and an exaggerated slice exceeds physical
-bounds. A write reached before a later fault remains observable. Unsafe cases
-execute only in the model.
-
-## Capture, certify and replay
-
-Build an instrumented compiler using the [toolchain guide](../../docs/toolchain.md),
-then use a new directory outside the checkout:
+## Recapture the specialization
 
 ```sh
 zig build stdlib-replace-regenerate -- \
-  --toolchain /path/to/instrumented-build/report.json \
+  --toolchain /path/to/toolchain/report.json \
   --output /tmp/stdlib-replace-evidence \
   --check
 ```
 
-The command captures the wrapper and dependency, selects the original
-`mem.replaceScalar__func_0` body, checks its scoped source owner and concrete
-type-parameter mapping, and translates it with the `loops` profile. It checks
-an independent AIR-to-model correspondence theorem in Lean and replays the
-handwritten proofs against the fresh generated definitions. False proof clients
-import that exact freshly compiled proof module. `report.json` and `evidence.tar`
-retain inputs, hashes, process receipts and results. The checked-in generated
-file keeps its historical provenance.
-
-The contract is for the captured callee's **slice interface**, not the pointer
-wrapper used to request capture. Calling a looping callee is still outside the
-direct-call profile. `--specialized-source` admits this standalone concrete body;
-it does not prove all generic specializations or validate the wrapper by proxy.
-
-This is a real library body under explicit model assumptions. It is not a proof
-of source-to-AIR preservation, the native backend, native stack capacity or Rust's
-ownership discipline. The [admission specification](../../docs/admission.md)
-describes those boundaries.
+Replay selects `mem.replaceScalar__func_0` with its checked file owner and
+concrete type mapping, translates it with `loops`, and checks correspondence
+and proofs on the fresh model. The proof concerns this specialization's slice
+interface. The pointer wrapper only requests capture. The replay retains
+receipts and the checked-in file keeps its recorded capture hashes.
+[Toolchain setup](../../docs/toolchain.md) ·
+[Specialization admission](../../docs/admission.md#source-owners-and-calls)

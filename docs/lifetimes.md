@@ -1,90 +1,54 @@
 # Ownership and lifetime contracts
 
-`Compiler.ZigAir.Verify.Lifetimes` provides optional, sequential contracts for
-allocator ownership, replacing a byte allocation, and pointers that escape a
-function. These contracts extend the memory model. They do **not** currently
-admit native allocator vtables, `realloc`, or macOS FFI calls through the AIR
-translator.
-
-Check the library and its controls through the public build interface:
+`Compiler.ZigAir.Verify.Lifetimes` adds sequential contracts for allocation
+ownership, byte replacement, and escaping pointers. Native allocator
+vtables, `realloc`, and macOS FFI are outside AIR admission.
 
 ```sh
 zig build lean-module -Dlean-module=Compiler.Tests.ZigAir.MemoryOwnershipControls
 zig build lean-module -Dlean-module=Compiler.Tests.ZigAir.MemoryEscapeControls
 ```
 
-## Ownership is part of the state
+## Ownership
 
-[`MemoryOwnership.lean`](../lean/Compiler/ZigAir/MemoryOwnership.lean) pairs a
-modeled heap with a registry mapping allocation lifetimes to allocator identities.
-A pointer alone cannot authorize release. `World.Consistent` requires distinct
-registry entries backed by live, writable, persistent allocations.
+`World.Consistent` pairs a heap with distinct registry entries for live,
+writable, persistent allocations. Release checks the allocator identity,
+zero offset, declared type, write permission, lifetime, and registry entry.
 
-Release checks the allocator identity, zero offset, complete declared type,
-write permission and persistent lifetime. Successful release removes the
-allocation and consumes its registry entry. The checked rules establish that:
-
-- Every alias carrying that lifetime becomes unallocated, regardless of offset.
-- A second release rejects.
-- Reads and ownership entries for other allocations remain unchanged.
-- Allocation counters do not rewind. Reusing a physical base creates a fresh
-  lifetime; it does not revive an old pointer.
-
-This is an explicit sequential ownership discipline. It does not infer exclusive
-borrows, prevent concurrent races, or establish the origin of an external
-pointer. A client introducing a heap and registry must justify their relationship
-to the actual caller state.
+Release consumes the entry and invalidates every alias of that lifetime.
+A second release rejects. Other allocations and ownership entries are
+preserved. Reusing a base address starts a fresh lifetime and keeps old
+pointers invalid. The caller must relate the registry to actual ownership.
+[Ownership model](../lean/Compiler/ZigAir/MemoryOwnership.lean)
 
 ## Replacing an allocation
 
-[`replaceBytes`](../lean/Compiler/ZigAir/MemoryOwnedReplacement.lean) models an
-explicit allocate, copy, release protocol. It validates the old owner before
-requesting a new region. The allocator receives the complete size and alignment;
-its private effects survive every response. Returned regions are checked for
-alignment, extent and separation before publication.
+`replaceBytes` validates the old owner, requests a new region with the
+required size and alignment, and checks its geometry and separation. It
+copies the shorter extent, then releases the old allocation. The allocator's
+private effects survive every response. Allocation failure preserves the old
+owner. A copy fault keeps the completed prefix and both allocations. Empty
+allocations create no releasable entry.
+[Replacement model](../lean/Compiler/ZigAir/MemoryOwnedReplacement.lean)
 
-Ordinary allocation failure retains the old allocation and owner. On success,
-the protocol copies the shorter extent and then releases the old allocation.
-A reached copying fault retains the actual completed prefix and both allocations.
-It is a verification failure, not an invented rollback. Empty allocations create
-no releasable ownership entry.
-
-The quantified
-[`replaceBytes_success`](../lean/Compiler/ZigAir/MemoryOwnedReplacementContracts.lean)
-theorem assumes a consistent old allocation, initialized source bytes, a nonempty
-replacement and a returned region satisfying the checked geometry contract.
-It proves the copied prefix in the new allocation, its write capability, the new
-ownership entry, and retirement of the old lifetime. The new tail does not acquire
-an initialization guarantee. These are sufficient caller assumptions, not a
-claim that every legal native replacement requires them.
-
-The protocol is separate from Zig's allocator ABI. Connecting a native allocator
-requires capturing and admitting the relevant implementation, or stating an
-explicit external contract whose native justification is independently reviewed.
-The translator does not silently replace an unsupported allocator call with this
-model.
+`replaceBytes_success` assumes initialized source bytes, a consistent old
+owner, a nonempty replacement, and a returned region satisfying the geometry
+contract. It proves the copied prefix, write capability, the new registry
+entry, and retirement of the old lifetime. The tail's initialization is
+unspecified. Connecting this protocol to a native allocator requires an
+admitted implementation or an independently justified external contract.
+[Success theorem](../lean/Compiler/ZigAir/MemoryOwnedReplacementContracts.lean)
 
 ## Escaping pointers
 
-[`MemoryEscape.lean`](../lean/Compiler/ZigAir/MemoryEscape.lean) follows lifetime
-identities through returned values, optional record fields and pointers stored in
-reachable allocations. `EscapeSafe` requires every reachable allocation to survive
-the invocation's cleanup mark. Its theorem proves that cleanup leaves all those
-lifetimes live, including paths through cyclic graphs.
+`EscapeSafe` follows pointers in returned values, optional record fields,
+and reachable allocations. Every reachable lifetime must survive cleanup.
+The theorem covers cycles. The negative control returns a persistent object
+containing a pointer to a stack slot. Even empty slices carry a lifetime
+in this contract. State bounds, initialization, and permissions separately.
+[Escape model](../lean/Compiler/ZigAir/MemoryEscape.lean)
 
-Checking only the directly returned pointer is insufficient: a persistent object
-may contain a pointer to a callee's stack local. The negative control demonstrates
-that case. The contract conservatively treats even an empty slice as carrying a
-lifetime. Bounds, initialization and permissions remain separate obligations.
-
-## Platform boundaries
-
-Platform objects, foreign buffers, callbacks, concurrency and allocator vtables
-remain outside admitted execution. Foreign summaries require a justified
-connection to the implementation and its calling convention.
-
-For each future external boundary, a verified client must identify the owner,
-extent, initialization, aliases, lifetime and reached effects on both success
-and failure. Native evidence must also justify the ABI and implementation behind
-that contract. A model fault describes an unmet verification obligation; no
-runtime checker is added to the Zig executable.
+For foreign buffers, platform objects, callbacks, or concurrent code, a
+boundary contract must justify ownership, aliases, live extents, initialization,
+and reached effects for each outcome. It also needs evidence for the native
+ABI and implementation. [Trust boundaries](architecture.md#trust-boundaries)
