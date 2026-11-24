@@ -64,6 +64,14 @@ test "the bundle inspects ELF architecture and linkage before calling ldd" {
     try @import("bundle.zig").elfControls();
 }
 
+test "standalone packaging rejects ELF RPATH in a compiler or shared library" {
+    try @import("bundle.zig").elfSearchPaths();
+}
+
+test "standalone packaging rejects external frameworks even when weak and absent" {
+    try @import("bundle.zig").macFramework();
+}
+
 test "standalone library names must have distinct archive paths" {
     try @import("bundle.zig").archiveNameControls();
 }

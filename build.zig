@@ -80,6 +80,7 @@ pub fn build(b: *std.Build) void {
     const fixture = b.addExecutable(.{ .name = "zean-test-child", .root_module = b.createModule(.{ .root_source_file = b.path("test/native/process_fixture.zig"), .target = target, .optimize = optimize }) });
     const test_options = b.addOptions();
     test_options.addOptionPath("child", fixture.getEmittedBin());
+    test_options.addOptionPath("zig", .zig_exe);
     const test_module = b.createModule(.{
         .root_source_file = b.path("test/native/root.zig"),
         .target = target,

@@ -182,16 +182,25 @@ const MacLibraries = struct {
         const ctx = self.ctx;
         if ((try self.visited.getOrPut(ctx.allocator, real)).found_existing) return;
         const commands = if (self.trace.images.get(real)) |loaded| loaded.commands else try MacImage.read(ctx, self.io, image);
+        if (!std.mem.eql(u8, real, self.executable)) {
+            try rejectMacFramework(ctx, image);
+            try rejectMacFramework(ctx, real);
+            if (commands.install_name) |name| try rejectMacFramework(ctx, name);
+        }
         var run_paths: std.ArrayList([]const u8) = .empty;
         for (commands.run_paths.items) |path|
             try run_paths.append(ctx.allocator, try self.expand(image, path));
         try run_paths.appendSlice(ctx.allocator, inherited);
         for (commands.dependencies.items) |dependency| {
-            const path = try self.resolve(image, dependency.name, run_paths.items) orelse {
+            const resolved_path = try self.resolve(image, dependency.name, run_paths.items);
+            if (resolved_path) |path| {
+                if (macSystemLibrary(path)) continue;
+            }
+            try rejectMacFramework(ctx, dependency.name);
+            const path = resolved_path orelse {
                 if (dependency.weak) continue;
                 return ctx.fail("could not resolve {s} loaded by {s}", .{ dependency.name, image });
             };
-            if (macSystemLibrary(path)) continue;
             const name = Dir.path.basename(dependency.name);
             const resolved = try addLibrary(ctx, self.io, &self.result, name, path);
             try self.visit(path, resolved, run_paths.items);
@@ -238,8 +247,13 @@ const MacLibraries = struct {
         return if (self.trace.images.get(real)) |loaded| loaded.path else null;
     }
 
+    extern "c" fn _dyld_shared_cache_contains_path(path: [*:0]const u8) bool;
+
     fn available(self: *const MacLibraries, path: []const u8) !bool {
-        if (macSystemLibrary(path)) return true; // May live only in the dyld shared cache.
+        if (macSystemLibrary(path)) {
+            const name = try std.posix.toPosixPath(path);
+            if (_dyld_shared_cache_contains_path(&name)) return true;
+        }
         const stat = Dir.cwd().statFile(self.io, path, .{}) catch |err| switch (err) {
             error.FileNotFound, error.NotDir => return false,
             else => return err,
@@ -275,6 +289,13 @@ fn macSystemLibrary(path: []const u8) bool {
     return std.mem.startsWith(u8, path, "/usr/lib/") or std.mem.startsWith(u8, path, "/System/Library/");
 }
 
+fn rejectMacFramework(ctx: *c.Context, path: []const u8) !void {
+    // Dyld searches framework paths separately when the framework and binary names match.
+    const name_end = std.mem.findLast(u8, path, ".framework/") orelse return;
+    if (std.mem.eql(u8, Dir.path.basename(path[0..name_end]), Dir.path.basename(path)))
+        return ctx.fail("cannot bundle external macOS framework {s}", .{path});
+}
+
 fn macLibraries(ctx: *c.Context, io: std.Io, executable: []const u8, version: []const u8) !Libraries {
     const real = try Dir.cwd().realPathFileAlloc(io, executable, ctx.allocator);
     try ctx.require(try macImageHasType(ctx, io, real, "EXECUTE"), "bundled compiler must be a native Mach-O executable");
@@ -288,9 +309,9 @@ fn macLibraries(ctx: *c.Context, io: std.Io, executable: []const u8, version: []
     return libraries.result;
 }
 
-/// Check the native format and classify linkage from the executable itself.
-pub fn elfIsDynamic(ctx: *c.Context, io: std.Io, executable: []const u8, host: std.Target) !bool {
-    const file = try Dir.cwd().openFile(io, executable, .{ .allow_directory = false });
+/// Inspect an ELF image for paths that override the bundle and report whether it needs a loader.
+pub fn elfIsDynamic(ctx: *c.Context, io: std.Io, path: []const u8, host: std.Target) !bool {
+    const file = try Dir.cwd().openFile(io, path, .{ .allow_directory = false });
     defer file.close(io);
     var buffer: [4096]u8 = undefined;
     var reader = file.reader(io, &buffer);
@@ -304,18 +325,23 @@ pub fn elfIsDynamic(ctx: *c.Context, io: std.Io, executable: []const u8, host: s
     const phdr_size: u16 = if (header.is_64) @sizeOf(elf.Elf64.Phdr) else @sizeOf(elf.Elf32.Phdr);
     try ctx.require(header.phentsize == phdr_size and header.phnum != 0 and header.phoff <= file_size and
         @as(u64, phdr_size) * header.phnum <= file_size - header.phoff, "invalid compiler ELF program headers");
+    var needs_loader = false;
     var headers = header.iterateProgramHeaders(&reader);
     while (try headers.next()) |program| {
-        if (program.type == .INTERP) return true;
+        if (program.type == .INTERP) needs_loader = true;
         if (program.type != .DYNAMIC) continue;
-        try ctx.require(program.offset <= file_size and program.filesz <= file_size - program.offset, "invalid compiler ELF dynamic table");
+        const entry_size: u64 = if (header.is_64) @sizeOf(elf.Elf64_Dyn) else @sizeOf(elf.Elf32_Dyn);
+        try ctx.require(program.offset <= file_size and program.filesz <= file_size - program.offset and
+            program.filesz % entry_size == 0, "invalid ELF dynamic table");
         var dynamic = header.iterateDynamicSection(&reader, program.offset, program.filesz);
-        while (try dynamic.next()) |entry| {
-            if (entry.d_tag == elf.DT_NEEDED) return true;
-            if (entry.d_tag == elf.DT_NULL) break;
-        }
+        while (try dynamic.next()) |entry| switch (entry.d_tag) {
+            elf.DT_NULL => break,
+            elf.DT_NEEDED => needs_loader = true,
+            elf.DT_RPATH => return ctx.fail("ELF DT_RPATH in {s} can override bundled libraries. Relink with DT_RUNPATH", .{path}),
+            else => {},
+        } else return ctx.fail("unterminated ELF dynamic table in {s}", .{path});
     }
-    return false;
+    return needs_loader;
 }
 
 fn linuxLibraries(ctx: *c.Context, io: std.Io, executable: []const u8) !Libraries {
@@ -336,7 +362,8 @@ fn linuxLibraries(ctx: *c.Context, io: std.Io, executable: []const u8) !Librarie
         const end = std.mem.lastIndexOf(u8, path, " (") orelse
             return ctx.fail("could not resolve native library {s}", .{name});
         if (c.oneOf(name, &.{ "libc.so.6", "libm.so.6", "libpthread.so.0", "librt.so.1", "libdl.so.2" })) continue;
-        _ = try addLibrary(ctx, io, &result, name, path[0..end]);
+        const real = try addLibrary(ctx, io, &result, name, path[0..end]);
+        _ = try elfIsDynamic(ctx, io, real, builtin.target);
     }
     return result;
 }
