@@ -688,7 +688,12 @@ def bodyWith (lift : Prim → P) (operation : Raw → Option P) (loops : Bool)
         require (match type with | .int _ bits => decide (bits > 0) | .enumeration _ => true | _ => false)
         let ref ← scalarRef operand
         let arms ← switchArms type inst
-        let fallback ← bodyWith lift operation loops table guards fuel (← inst.listAt "elseBody")
+        let defaultBody ← inst.listAt "elseBody"
+        let fallback ← if defaultBody.isEmpty then do
+            let .enumeration decl := type | none
+            require ((arms.flatMap Prod.fst).length == decl.tags.length)
+            pure (.bind id (.scalar .unit) (lift .unreachable) (.ret (.constant (.scalar .unit))))
+          else bodyWith lift operation loops table guards fuel defaultBody
         let decoded ← arms.zipIdx.mapM fun ((ranges, body), ordinal) => do
           let register := 3 * table.length + guards.length + id * 256 + ordinal
           let selected ← bodyWith lift operation loops table guards fuel body

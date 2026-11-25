@@ -60,7 +60,7 @@ profiles reject volatile and atomic accesses. [Call machine](call-machine.md) ·
 | Direct calls | Exact callee identity and execution of its captured body, including faults and effects. A by-value singleton is omitted only after checking its exact zero-storage declaration and sole defined value. The other arguments keep their source order. |
 | Void error unions and `try` | Concrete error sets and named values in registers. The selected branch executes, and a failure arm can use its own labels. An absent component faults on extraction. Byte layouts and nonvoid payloads remain outside this subset. |
 | Branches, blocks, and loops | Branch selection, labels, block results, continuations, and back edges |
-| Switches | Integers use typed, disjoint constant items and inclusive ranges. Enums use disjoint declared tags. All bodies and the explicit default must pass admission. |
+| Switches | Integers use typed, disjoint constant items and inclusive ranges. Enums use disjoint declared tags. The memory and call profiles accept an omitted enum default when the arms cover every declared tag. Every supplied arm and default must pass admission. |
 | Return | Result type and reference, followed by release of private stack storage |
 | Debug metadata | Erasure only for the four admitted tags with the explicit debug flag and unit type |
 | Unknown reached tags | Rejection, including operations with unused results |

@@ -58,15 +58,18 @@ const compare = f.derive(&shared.air_memory_program_2_input_13, &.{
     }), returns("2", ref("1")) })),
 });
 
+fn arm(value: []const u8, destination: []const u8) f.Value {
+    return f.obj(&.{
+        .{ "ranges", f.arr(&.{f.arr(&.{ tag(value), tag(value) })}) },
+        .{ "body", f.arr(&.{f.n(destination)}) },
+    });
+}
+
 const choose = f.derive(&compare, &.{
     f.set("/body", f.arr(&.{ f.n("0"), f.n("1") })),
     f.set("/instructions", f.arr(&.{ argument, f.obj(&.{
         .{ "index", f.n("1") },               .{ "tag", f.s("switch_br") }, .{ "payloadVisited", f.b(true) },
-        .{ "type", never },                   .{ "operand", ref("0") },
-        .{ "cases", f.arr(&.{f.obj(&.{
-            .{ "ranges", f.arr(&.{f.arr(&.{ tag("3"), tag("3") })}) },
-            .{ "body", f.arr(&.{f.n("2")}) },
-        })}) },
+        .{ "type", never },                   .{ "operand", ref("0") },     .{ "cases", f.arr(&.{arm("3", "2")}) },
         .{ "elseBody", f.arr(&.{f.n("3")}) },
     }), returns("2", boolConstant("1")), returns("3", boolConstant("0")) })),
 });
@@ -74,6 +77,15 @@ const choose = f.derive(&compare, &.{
 const hole = f.derive(&compare, &.{f.set("/instructions/1/rhs/value", f.n("2"))});
 const foreign = f.derive(&compare, &.{f.set("/instructions/1/rhs/type/identity/name", f.s("fixture.Other"))});
 const range = f.derive(&choose, &.{f.set("/instructions/1/cases/0/ranges/0/0", tag("1"))});
+const exhaustive = f.derive(&choose, &.{
+    f.set("/instructions/1/elseBody", f.arr(&.{})),
+    f.add("/instructions/1/cases/1", arm("1", "3")),
+});
+const incomplete = f.derive(&choose, &.{
+    f.set("/instructions/1/elseBody", f.arr(&.{})),
+    f.remove("/instructions/3"),
+});
+const repeated = f.derive(&exhaustive, &.{f.set("/instructions/1/cases/1", arm("3", "3"))});
 
 pub fn controls() !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -81,12 +93,16 @@ pub fn controls() !void {
     var ctx: z.common.Context = .{ .allocator = arena.allocator() };
     const compared = try z.air.decode(&ctx, try f.load(ctx.allocator, compare), .memory);
     const chosen = try z.air.decode(&ctx, try f.load(ctx.allocator, choose), .memory);
+    const full = try z.air.decode(&ctx, try f.load(ctx.allocator, exhaustive), .memory);
     try std.testing.expect(std.mem.indexOf(u8, compared, "(.compareEnum true ") != null);
     try std.testing.expect(std.mem.indexOf(u8, chosen, "(.enumInTags (.local 0) [3])") != null);
+    try std.testing.expect(std.mem.indexOf(u8, full, ".unreachable") != null);
     for ([_]f.Value{
         hole,
         foreign,
         range,
+        incomplete,
+        repeated,
         f.derive(&compare, &.{f.set("/instructions/1/tag", f.s("cmp_lt"))}),
         f.derive(&compare, &.{f.set("/instructions/1/rhs/kind", f.s("constant"))}),
         f.derive(&compare, &.{f.set("/signature/parameters/0/fields/1/value", f.n("1"))}),
@@ -97,6 +113,7 @@ pub fn controls() !void {
 pub fn emitted(ctx: *z.common.Context) ![]const u8 {
     const comparison = try f.load(ctx.allocator, compare);
     const selection = try f.load(ctx.allocator, choose);
+    const complete = try f.load(ctx.allocator, exhaustive);
     return ctx.fmt(
         \\import Compiler.ZigAir.Captured
         \\open Compiler.ZigAir Compiler.ZigAir.MemoryAir
@@ -105,24 +122,34 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
         \\{s}
         \\def choose : Program := {s}
         \\{s}
+        \\def full : Program := {s}
+        \\{s}
         \\def hole : Captured.Raw := {s}
         \\def foreign : Captured.Raw := {s}
         \\def range : Captured.Raw := {s}
+        \\def incomplete : Captured.Raw := {s}
+        \\def repeated : Captured.Raw := {s}
         \\def declaration : Scalar.EnumDecl := ⟨"fixture.Mode", "fixture.zig", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", 2, [("alpha", 1), ("beta", 3)]⟩
         \\example : compare.run [.scalar (.enumTag declaration 1)] {{}} = (.ok (.scalar (.bool false)), {{}}) := rfl
         \\example : compare.run [.scalar (.enumTag declaration 3)] {{}} = (.ok (.scalar (.bool true)), {{}}) := rfl
         \\example : choose.run [.scalar (.enumTag declaration 1)] {{}} = (.ok (.scalar (.bool false)), {{}}) := rfl
         \\example : choose.run [.scalar (.enumTag declaration 3)] {{}} = (.ok (.scalar (.bool true)), {{}}) := rfl
         \\example : choose.run [.scalar (.enumTag declaration 2)] {{}} = (.error .malformed, {{}}) := rfl
+        \\example : full.run [.scalar (.enumTag declaration 1)] {{}} = (.ok (.scalar (.bool false)), {{}}) := rfl
+        \\example : full.run [.scalar (.enumTag declaration 3)] {{}} = (.ok (.scalar (.bool true)), {{}}) := rfl
         \\example : Captured.decode false hole = none := rfl
         \\example : Captured.decode false foreign = none := rfl
         \\example : Captured.decode false range = none := rfl
+        \\example : Captured.decode false incomplete = none := rfl
+        \\example : Captured.decode false repeated = none := rfl
         \\end EnumControls
         \\
     , .{
-        try z.air.decode(ctx, comparison, .memory),                       try z.certificate.declaration(ctx, comparison, "compare", false),
-        try z.air.decode(ctx, selection, .memory),                        try z.certificate.declaration(ctx, selection, "choose", false),
-        try z.certificate.lift(ctx, try f.load(ctx.allocator, hole), 0),  try z.certificate.lift(ctx, try f.load(ctx.allocator, foreign), 0),
-        try z.certificate.lift(ctx, try f.load(ctx.allocator, range), 0),
+        try z.air.decode(ctx, comparison, .memory),                          try z.certificate.declaration(ctx, comparison, "compare", false),
+        try z.air.decode(ctx, selection, .memory),                           try z.certificate.declaration(ctx, selection, "choose", false),
+        try z.air.decode(ctx, complete, .memory),                            try z.certificate.declaration(ctx, complete, "full", false),
+        try z.certificate.lift(ctx, try f.load(ctx.allocator, hole), 0),     try z.certificate.lift(ctx, try f.load(ctx.allocator, foreign), 0),
+        try z.certificate.lift(ctx, try f.load(ctx.allocator, range), 0),    try z.certificate.lift(ctx, try f.load(ctx.allocator, incomplete), 0),
+        try z.certificate.lift(ctx, try f.load(ctx.allocator, repeated), 0),
     });
 }

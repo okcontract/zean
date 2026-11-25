@@ -861,7 +861,11 @@ pub const Decoder = struct {
         try ctx.require(arms.len > 0 and arms.len <= maximum_switch_ranges, "switch arm limit");
         const Interval = struct { low: i1024, high: i1024 };
         var checked: std.ArrayList(Interval) = .empty;
-        var code = try self.body(try ctx.field(inst, "elseBody"), env, labels, depth + 1);
+        const fallback = try ctx.array(try ctx.field(inst, "elseBody"));
+        const defaultless = fallback.len == 0;
+        if (defaultless) try ctx.require(enum_selector and
+            (self.profile == .memory or self.profile == .loops or self.profile.hasCalls()), "an omitted switch default requires a declared enum and memory semantics");
+        var code = if (defaultless) try self.memoryUnreachable(index) else try self.bodyIndices(fallback, env, labels, depth + 1);
         var ordinal = arms.len;
         while (ordinal > 0) {
             ordinal -= 1;
@@ -900,7 +904,14 @@ pub const Decoder = struct {
                 });
             }
         }
+        if (defaultless) try ctx.require(checked.items.len == operand.ty.enumeration.tags.len, "defaultless enum switch must cover every declared tag");
         return code;
+    }
+
+    fn memoryUnreachable(self: *Decoder, index: usize) Error![]const u8 {
+        return self.ctx.fmt("(.bind {d} (.scalar .unit) {s} (.ret (.constant (.scalar .unit))))", .{
+            index, if (self.profile.hasCalls()) "(.memory .unreachable)" else ".unreachable",
+        });
     }
 
     fn body(self: *Decoder, indices_value: Value, incoming: Env, labels: Labels, depth: usize) Error![]const u8 {
@@ -1101,7 +1112,7 @@ pub const Decoder = struct {
                 terminal = try self.branchText(try ctx.fmt("(.local {d})", .{condition_id}), handler, success);
                 break;
             } else if (eq(u8, tag, "switch_br")) {
-                try ctx.require(ty.* == .noreturn and self.options.extension == .none, "unsupported integer switch result or profile");
+                try ctx.require(ty.* == .noreturn and self.options.extension == .none, "unsupported switch result or profile");
                 terminal = try self.switchBranch(inst, index, env, labels, depth);
             } else if (eq(u8, tag, "br")) {
                 try ctx.fields(inst, base ++ "target operand");
@@ -1116,7 +1127,7 @@ pub const Decoder = struct {
             } else if (eq(u8, tag, "unreach") and (self.profile == .memory or self.profile == .loops or self.profile.hasCalls())) {
                 try ctx.fields(inst, "index tag payloadVisited type");
                 try ctx.require(ty.* == .noreturn, "unreachable has a result");
-                terminal = try ctx.fmt("(.bind {d} (.scalar .unit) {s} (.ret (.constant (.scalar .unit))))", .{ index, if (self.profile.hasCalls()) "(.memory .unreachable)" else ".unreachable" });
+                terminal = try self.memoryUnreachable(index);
             } else if (c.oneOf(tag, &.{ "ret", "ret_safe" })) {
                 try ctx.fields(inst, base ++ "operand");
                 const operand = try self.reference(try ctx.field(inst, "operand"), env, false);
