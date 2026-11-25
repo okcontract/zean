@@ -55,7 +55,7 @@ profiles reject volatile and atomic accesses. [Call machine](call-machine.md) ·
 | Byte `memmove` | The same length, extent, permission, and initialization checks, with backwards traversal when the destination overlaps the source to its right. |
 | Undefined `memset` | A writable slice of supported scalars and an exact typed `undefined` operand. Each reached element loses initialization. Empty slices touch no storage. |
 | Array to slice | Static extent, pointer, and permissions. Conversion itself performs no storage access. |
-| Record fields | Complete owner layout and declared field. Validated zero-storage fields retain their declaration indices and contribute no heap storage. Projections into them and accesses to padding reject. |
+| Record fields | Complete owner layout and declared field. An unused pointer projection to a validated zero-storage field checks the live owner and representable address. Admission rejects uses of that pointer and accesses to padding. |
 | Opaque enum storage | Identity, exhaustive tag table, backing width and layout. Runtime enum values and operations reject. |
 | Direct calls | Exact callee identity and execution of its captured body, including faults and effects. A by-value singleton is omitted only after checking its exact zero-storage declaration and sole defined value. The other arguments keep their source order. |
 | Branches, blocks, and loops | Branch selection, labels, block results, continuations, and back edges |

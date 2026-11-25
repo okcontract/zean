@@ -73,6 +73,14 @@ theorem fieldPointer_eq_of_lookup (before after : State) (writable many : Bool) 
       fieldPointer before (.pointer (.pointer writable many owner) address) offset := by
   simp only [fieldPointer, access, same]
 
+theorem checkZeroField_of_access (state : State) (writable : Bool) (owner : Ty)
+    (address : Address) (offset : Nat) (layout : Layout) (cell : Allocation)
+    (shaped : owner.layout = some layout) (parent : access state address layout false = .ok cell)
+    (view : acceptsView cell.type address.offset owner = true)
+    (inside : offset ≤ layout.bytes) (width : cell.base + address.offset + offset < addressLimit) :
+    checkZeroField state (.pointer (.pointer writable false owner) address) offset = .ok () := by
+  simp [checkZeroField, shaped, parent, view, Nat.not_lt_of_ge inside, Nat.not_le_of_lt width, bind, Except.bind]
+
 theorem fieldPointer_address (state : State) (writable many : Bool) (owner : Ty) (address : Address)
     (offset : Nat) (result : Value)
     (selected : fieldPointer state (.pointer (.pointer writable many owner) address) offset = .ok result) :

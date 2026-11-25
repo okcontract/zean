@@ -34,6 +34,8 @@ const Env = []?*const Ty;
 const Labels = []?Label;
 const Cell = struct { offset: u64, text: []const u8 };
 const Parameter = struct { ty: *const Ty, source_index: usize };
+const FieldSelection = struct { owner: Reference, field: Ty.Field };
+const field_tags: []const []const u8 = &.{ "struct_field_ptr", "struct_field_ptr_index_0", "struct_field_ptr_index_1", "struct_field_ptr_index_2", "struct_field_ptr_index_3" };
 
 pub fn constant(ctx: *Context, value: Value, profile: Profile) Error!Reference {
     if (profile == .aggregate and (c.tag(value, "kind", "aggregate") or c.tag(value, "kind", "undefined"))) {
@@ -560,21 +562,39 @@ pub const Decoder = struct {
         try ctx.require(if (eq(u8, tag, "ptr_slice_len_ptr")) ty.pointer.child.isInt(false, 64) else isPointer(ty.pointer.child, child.mutable, true, child.child), "ill-typed slice field projection");
         return try ctx.fmt("(.pointerField {s} {s})", .{ c.boolText(eq(u8, tag, "ptr_slice_len_ptr")), source.text });
     }
-    fn fieldPrimitive(self: *Decoder, inst: Value, ty: *const Ty, env: Env) Error!?[]const u8 {
+    fn selectField(self: *Decoder, inst: Value, tag: []const u8, env: Env) Error!FieldSelection {
         const ctx = self.ctx;
-        const tag = try ctx.str(try ctx.field(inst, "tag"));
-        if (!eq(u8, tag, "struct_field_ptr") and !std.mem.startsWith(u8, tag, "struct_field_ptr_index_")) return null;
         try ctx.fields(inst, "index tag payloadVisited type operand fieldIndex");
         const owner = try self.reference(try ctx.field(inst, "operand"), env, false);
         try ctx.require(owner.ty.* == .pointer and owner.ty.pointer.child.* == .structure, "field pointer lacks complete declaration");
         const fields = owner.ty.pointer.child.structure.fields;
         try ctx.require(fields.len > 0, "field pointer has no declared field");
         const index = try ctx.nat(try ctx.field(inst, "fieldIndex"), fields.len - 1);
-        if (!eq(u8, tag, "struct_field_ptr")) try ctx.require(c.oneOf(tag, &.{ "struct_field_ptr_index_0", "struct_field_ptr_index_1", "struct_field_ptr_index_2", "struct_field_ptr_index_3" }) and tag[tag.len - 1] - '0' == index, "fixed field pointer changes index");
-        const field = fields[index];
+        if (!eq(u8, tag, "struct_field_ptr")) try ctx.require(tag[tag.len - 1] - '0' == index, "fixed field pointer changes index");
+        return .{ .owner = owner, .field = fields[index] };
+    }
+
+    fn fieldPrimitive(self: *Decoder, inst: Value, ty: *const Ty, env: Env) Error!?[]const u8 {
+        const ctx = self.ctx;
+        const tag = try ctx.str(try ctx.field(inst, "tag"));
+        if (!c.oneOf(tag, field_tags)) return null;
+        const selection = try self.selectField(inst, tag, env);
+        const field = selection.field;
         try ctx.require(field.ty == .stored, "zero-storage fields cannot be accessed");
-        try ctx.require(isPointer(ty, owner.ty.pointer.mutable, false, field.ty.stored), "field pointer changes type or permissions");
-        return try ctx.fmt("(.fieldPointer {s} {d})", .{ owner.text, field.offset });
+        try ctx.require(isPointer(ty, selection.owner.ty.pointer.mutable, false, field.ty.stored), "field pointer changes type or permissions");
+        return try ctx.fmt("(.fieldPointer {s} {d})", .{ selection.owner.text, field.offset });
+    }
+
+    fn zeroFieldPrimitive(self: *Decoder, inst: Value, tag: []const u8, env: Env) Error!?[]const u8 {
+        if (!c.oneOf(tag, field_tags)) return null;
+        const ctx = self.ctx;
+        const result = try ctx.field(inst, "type");
+        if (!c.tag(result, "kind", "pointer") or !try types.isSingletonParameter(ctx, try ctx.field(result, "child"))) return null;
+        const selection = try self.selectField(inst, tag, env);
+        const owner = selection.owner.ty.pointer;
+        try ctx.require(selection.field.ty == .zero_storage and !owner.many, "zero-storage field requires a declared singleton and a single owner");
+        try types.checkSingletonPointer(ctx, result, selection.field.ty.zero_storage, owner.mutable);
+        return try ctx.fmt("(.checkZeroField {s} {d})", .{ selection.owner.text, selection.field.offset });
     }
     fn aggregatePrimitive(self: *Decoder, inst: Value, ty: *const Ty, env: Env) Error!?[]const u8 {
         const ctx = self.ctx;
@@ -840,13 +860,18 @@ pub const Decoder = struct {
             };
             try ctx.require(c.flag(inst, "payloadVisited", true) and c.get(inst, "unsupportedPayload") == null, "unsupported or unvisited AIR body instruction");
             try @import("admission.zig").require(ctx, tag);
-            const ty = try types.parse(ctx, try ctx.field(inst, "type"), self.profile, 0);
+            const zero_field = if (self.options.extension == .none and (self.profile == .memory or self.profile == .loops or self.profile.hasCalls()))
+                try self.zeroFieldPrimitive(inst, tag, env)
+            else
+                null;
+            const ty = if (zero_field != null) try ctx.make(Ty, .unit) else try types.parse(ctx, try ctx.field(inst, "type"), self.profile, 0);
             const base = "index tag payloadVisited type ";
             try self.before(index, env, &prefixes);
             if (c.oneOf(tag, &.{ "memcpy", "memmove" }) and self.profile != .scalar)
                 try self.copyLengthGuard(inst, index, env, &prefixes);
             const direct_call = self.profile.hasCalls() and c.oneOf(tag, &.{ "call", "call_never_inline", "call_never_tail" });
-            var primitive: ?[]const u8 = if (direct_call) try self.callPrimitive(inst, ty, env) else try self.extraPrimitive(inst, ty, env);
+            var primitive = zero_field;
+            if (primitive == null) primitive = if (direct_call) try self.callPrimitive(inst, ty, env) else try self.extraPrimitive(inst, ty, env);
             if (primitive == null and c.oneOf(tag, &.{ "slice_elem_val", "ptr_elem_val" })) {
                 try ctx.require(self.profile == .memory or self.profile == .loops or self.profile.hasCalls(), "element reads require the memory vocabulary");
                 try ctx.fields(inst, base ++ "lhs rhs");
@@ -934,7 +959,9 @@ pub const Decoder = struct {
                 const nested = try ctx.allocator.dupe(?Label, labels);
                 nested[index] = .{ .block = ty };
                 try prefixes.append(ctx.allocator, .{ .kind = "block", .id = index, .ty = try ty.lean(ctx, self.profile), .child = try self.body(try ctx.field(inst, "body"), env, nested, depth + 1) });
-                env[index] = ty;
+                // A checked zero-storage projection cannot supply any later
+                // operand. Reached address validation remains in the program.
+                if (zero_field == null) env[index] = ty;
             } else if (eq(u8, tag, "loop") and (self.profile.hasLoops() or self.options.extension == .hash_update)) {
                 try ctx.fields(inst, base ++ "body");
                 try ctx.require(ty.* == .noreturn, "AIR loop must be non-returning");

@@ -56,6 +56,7 @@ inductive Prim where
   | invalidateSlice (target : Ref)
   | pointerField (length : Bool) (pointer : Ref)
   | fieldPointer (pointer : Ref) (offset : Nat)
+  | checkZeroField (pointer : Ref) (offset : Nat)
   | booleanNot (value : Ref)
   | unreachable
   | pointerCast (target : Ty) (pointer : Ref)
@@ -110,6 +111,9 @@ def Prim.transition (prim : Prim) (args : List Value) (env : Env) (state : State
       | .load pointer => do Memory.load state (← pointer.eval env)
       | .pointerField length pointer => do Memory.pointerField length (← pointer.eval env)
       | .fieldPointer pointer offset => do Memory.fieldPointer state (← pointer.eval env) offset
+      | .checkZeroField pointer offset => do
+        Memory.checkZeroField state (← pointer.eval env) offset
+        .ok (.scalar .unit)
       | .booleanNot reference => do MemoryAir.booleanNot (← reference.eval env)
       | .unreachable => .error (.scalar .illegalBehavior)
       | .pointerCast target pointer => do Memory.pointerCast state target (← pointer.eval env)

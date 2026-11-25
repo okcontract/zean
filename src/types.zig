@@ -263,6 +263,35 @@ pub fn checkSingletonValue(ctx: *Context, value: Value, declaration: Value) Erro
     for (members, fields) |member, field| try checkSingletonValue(ctx, member, try ctx.field(field, "type"));
 }
 
+fn parsePointer(ctx: *Context, value: Value, profile: Profile, child: *const Ty) Error!*const Ty {
+    try ctx.fields(value, "kind flags child layout pointeeLayout sentinel");
+    const flags = try ctx.field(value, "flags");
+    try ctx.fields(flags, "size alignment isConst isVolatile allowZero addressSpace vectorIndex hostSizeBytes bitOffset");
+    const size = try ctx.str(try ctx.field(flags, "size"));
+    const constant = try ctx.field(flags, "isConst");
+    try ctx.require(c.oneOf(size, &.{ "one", "many", "slice" }) and constant == .bool and c.flag(flags, "isVolatile", false) and c.flag(flags, "allowZero", false) and c.tag(flags, "addressSpace", "generic") and c.none(flags, "vectorIndex") and c.none(value, "sentinel"), "unsupported memory pointer attributes");
+    try ctx.require(try ctx.nat(try ctx.field(flags, "hostSizeBytes"), std.math.maxInt(u64)) == 0 and try ctx.nat(try ctx.field(flags, "bitOffset"), std.math.maxInt(u64)) == 0, "unsupported memory pointer attributes");
+    var result = try ctx.make(Ty, if (std.mem.eql(u8, size, "slice")) .{ .slice = .{ .mutable = !constant.bool, .child = child } } else .{ .pointer = .{ .mutable = !constant.bool, .many = std.mem.eql(u8, size, "many"), .child = child } });
+    try checkLayout(ctx, try ctx.field(value, "layout"), try result.layout(ctx));
+    try checkLayout(ctx, try ctx.field(value, "pointeeLayout"), try child.layout(ctx));
+    const alignment = try ctx.field(flags, "alignment");
+    if (alignment != .null) {
+        const amount = try ctx.nat(alignment, 4);
+        try ctx.require(profile.hasBytes() and (amount == 1 or amount == 2 or amount == 4) and child.isInt(false, 8), "unsupported explicit byte alignment");
+        result = try ctx.make(Ty, .{ .aligned = .{ .alignment = amount, .child = result } });
+    }
+    return result;
+}
+
+/// Validate a singleton field result using its complete raw declaration and the
+/// ABI geometry shared with other pointer types. This only checks the result
+/// type of the projection, which does not produce a modeled reference.
+pub fn checkSingletonPointer(ctx: *Context, value: Value, declaration: Value, writable: bool) Error!void {
+    try ctx.require(c.tag(value, "kind", "pointer") and c.equal(try ctx.field(value, "child"), declaration), "zero-storage field pointer changed declaration");
+    const pointer = try parsePointer(ctx, value, .memory, &.unit);
+    try ctx.require(pointer.* == .pointer and !pointer.pointer.many and pointer.pointer.mutable == writable, "zero-storage field pointer changed kind or permissions");
+}
+
 pub fn parse(ctx: *Context, value: Value, profile: Profile, depth: usize) Error!*const Ty {
     if (depth > 16 or value != .object) return ctx.fail("type depth or shape", .{});
     if (c.tag(value, "kind", "int")) {
@@ -272,24 +301,8 @@ pub fn parse(ctx: *Context, value: Value, profile: Profile, depth: usize) Error!
         return ctx.make(Ty, .{ .int = .{ .signed = std.mem.eql(u8, signedness, "signed"), .bits = @intCast(try ctx.nat(try ctx.field(value, "bits"), 512)) } });
     }
     if (profile != .scalar and c.tag(value, "kind", "pointer")) {
-        try ctx.fields(value, "kind flags child layout pointeeLayout sentinel");
-        const flags = try ctx.field(value, "flags");
-        try ctx.fields(flags, "size alignment isConst isVolatile allowZero addressSpace vectorIndex hostSizeBytes bitOffset");
-        const size = try ctx.str(try ctx.field(flags, "size"));
-        const constant = try ctx.field(flags, "isConst");
-        try ctx.require(c.oneOf(size, &.{ "one", "many", "slice" }) and constant == .bool and c.flag(flags, "isVolatile", false) and c.flag(flags, "allowZero", false) and c.tag(flags, "addressSpace", "generic") and c.none(flags, "vectorIndex") and c.none(value, "sentinel"), "unsupported memory pointer attributes");
-        try ctx.require(try ctx.nat(try ctx.field(flags, "hostSizeBytes"), std.math.maxInt(u64)) == 0 and try ctx.nat(try ctx.field(flags, "bitOffset"), std.math.maxInt(u64)) == 0, "unsupported memory pointer attributes");
         const child = try parse(ctx, try ctx.field(value, "child"), profile, depth + 1);
-        var result = try ctx.make(Ty, if (std.mem.eql(u8, size, "slice")) .{ .slice = .{ .mutable = !constant.bool, .child = child } } else .{ .pointer = .{ .mutable = !constant.bool, .many = std.mem.eql(u8, size, "many"), .child = child } });
-        try checkLayout(ctx, try ctx.field(value, "layout"), try result.layout(ctx));
-        try checkLayout(ctx, try ctx.field(value, "pointeeLayout"), try child.layout(ctx));
-        const alignment = try ctx.field(flags, "alignment");
-        if (alignment != .null) {
-            const amount = try ctx.nat(alignment, 4);
-            try ctx.require(profile.hasBytes() and (amount == 1 or amount == 2 or amount == 4) and child.isInt(false, 8), "unsupported explicit byte alignment");
-            result = try ctx.make(Ty, .{ .aligned = .{ .alignment = amount, .child = result } });
-        }
-        return result;
+        return parsePointer(ctx, value, profile, child);
     }
     if (profile != .scalar and c.tag(value, "kind", "array")) {
         try ctx.fields(value, "kind length child layout sentinel");

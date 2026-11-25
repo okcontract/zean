@@ -54,6 +54,14 @@ def Raw.equal : Nat → Raw → Raw → Bool
       leftKey == rightKey && leftValue.equal fuel rightValue)
   | _, _, _ => false
 
+private def Raw.usesInstruction (index : Nat) : Nat → Raw → Bool
+  | 0, _ => true
+  | fuel + 1, .array values => values.any (Raw.usesInstruction index fuel)
+  | fuel + 1, raw@(.object properties) =>
+    (raw.textAt "kind" == some "instruction" && raw.natAt "index" == some index) ||
+      properties.any (fun (_, value) => value.usesInstruction index fuel)
+  | _ + 1, _ => false
+
 def require (condition : Bool) : Option Unit := if condition then some () else none
 
 private def layoutMatches (raw : Raw) (ty : Ty) : Option Unit := do
@@ -124,6 +132,21 @@ private def zeroStorage : Nat → Raw → Option Unit
         zeroStorage fuel (← field.get "type")
     | _ => none
 
+private def pointerType (raw : Raw) (child : Ty) : Option Ty := do
+  require ((← raw.textAt "kind") == "pointer")
+  let flags ← raw.get "flags"
+  let size ← flags.textAt "size"
+  require (["one", "many", "slice"].contains size)
+  let writable := !(← flags.boolAt "isConst")
+  require (!(← flags.boolAt "isVolatile") && !(← flags.boolAt "allowZero") &&
+    (← flags.textAt "addressSpace") == "generic" && (← flags.get "vectorIndex").isNull &&
+    (← flags.get "alignment").isNull && (← raw.get "sentinel").isNull &&
+    (← flags.natAt "hostSizeBytes") == 0 && (← flags.natAt "bitOffset") == 0)
+  let ty := if size == "slice" then Ty.slice writable child else Ty.pointer writable (size == "many") child
+  layoutMatches (← raw.get "layout") ty
+  layoutMatches (← raw.get "pointeeLayout") child
+  pure ty
+
 def typeOf : Nat → Raw → Option Ty
   | 0, _ => none
   | fuel + 1, raw => do
@@ -135,20 +158,7 @@ def typeOf : Nat → Raw → Option Ty
       let signed ← raw.textAt "signedness"
       require (bits ≤ 512 && (signed == "signed" || signed == "unsigned"))
       pure (.scalar (.int (signed == "signed") bits))
-    | "pointer" =>
-      let flags ← raw.get "flags"
-      let size ← flags.textAt "size"
-      require (["one", "many", "slice"].contains size)
-      let writable := !(← flags.boolAt "isConst")
-      require (!(← flags.boolAt "isVolatile") && !(← flags.boolAt "allowZero") &&
-        (← flags.textAt "addressSpace") == "generic" && (← flags.get "vectorIndex").isNull &&
-        (← flags.get "alignment").isNull && (← raw.get "sentinel").isNull &&
-        (← flags.natAt "hostSizeBytes") == 0 && (← flags.natAt "bitOffset") == 0)
-      let child ← typeOf fuel (← raw.get "child")
-      let ty := if size == "slice" then Ty.slice writable child else Ty.pointer writable (size == "many") child
-      layoutMatches (← raw.get "layout") ty
-      layoutMatches (← raw.get "pointeeLayout") child
-      pure ty
+    | "pointer" => pointerType raw (← typeOf fuel (← raw.get "child"))
     | "array" =>
       require (← raw.get "sentinel").isNull
       let ty := Ty.array (← raw.natAt "length") (← typeOf fuel (← raw.get "child"))
@@ -282,6 +292,35 @@ private def undefinedFill (table : List Raw) (inst : Raw) : Option Prim := do
     (← typeOf 17 (← inst.get "type")) == .scalar .unit)
   pure (.invalidateSlice (← reference destination))
 
+private structure FieldProjection where
+  reference : Ref
+  owner : Ty
+  writable : Bool
+  many : Bool
+  offset : Nat
+  declared : Raw
+
+private def fieldProjection (table : List Raw) (inst : Raw) : Option FieldProjection := do
+  let operand ← inst.get "operand"
+  let source ← instruction table operand
+  let rawType ← source.get "type"
+  let .pointer writable many owner ← typeOf 17 rawType | none
+  let fields ← (← rawType.get "child").listAt "fields"
+  let index ← inst.natAt "fieldIndex"
+  let tag ← inst.textAt "tag"
+  require (tag == "struct_field_ptr" || tag == "struct_field_ptr_index_" ++ toString index)
+  let field ← fields[index]?
+  pure ⟨← reference operand, owner, writable, many, ← field.natAt "offset", ← field.get "type"⟩
+
+private def zeroFieldProjection (table : List Raw) (inst result : Raw) : Option Prim := do
+  let field ← fieldProjection table inst
+  let layout ← field.owner.layout
+  require (!field.many && field.offset ≤ layout.bytes)
+  zeroStorage 17 field.declared
+  require (Raw.equal 128 (← result.get "child") field.declared &&
+    (← pointerType result (.scalar .unit)) == .pointer field.writable false (.scalar .unit))
+  pure (.checkZeroField field.reference field.offset)
+
 def primitive (parameters : List Nat) (inst : Raw) (table : List Raw := []) : Option Prim := do
   match ← inst.textAt "tag" with
   | "arg" =>
@@ -322,21 +361,11 @@ def primitive (parameters : List Nat) (inst : Raw) (table : List Raw := []) : Op
     unary inst .booleanNot
   | "struct_field_ptr" | "struct_field_ptr_index_0" | "struct_field_ptr_index_1" |
       "struct_field_ptr_index_2" | "struct_field_ptr_index_3" =>
-    let operand ← inst.get "operand"
-    require ((← operand.textAt "kind") == "instruction")
-    let source ← table[← operand.natAt "index"]?
-    let rawType ← source.get "type"
-    let .pointer writable _ owner ← typeOf 17 rawType | none
-    let fields ← (← rawType.get "child").listAt "fields"
-    let index ← inst.natAt "fieldIndex"
-    let tag ← inst.textAt "tag"
-    require (tag == "struct_field_ptr" || tag == "struct_field_ptr_index_" ++ toString index)
-    let rawField ← fields[index]?
-    let offset ← rawField.natAt "offset"
-    let child ← typeOf 17 (← rawField.get "type")
-    require (fieldType owner offset == some child &&
-      (← typeOf 17 (← inst.get "type")) == .pointer writable false child)
-    pure (.fieldPointer (← reference operand) offset)
+    let field ← fieldProjection table inst
+    let child ← typeOf 17 field.declared
+    require (fieldType field.owner field.offset == some child &&
+      (← typeOf 17 (← inst.get "type")) == .pointer field.writable false child)
+    pure (.fieldPointer field.reference field.offset)
   | "add" => scalarBinary inst (.arithmetic .add .unchecked)
   | "sub" => scalarBinary inst (.arithmetic .sub .unchecked)
   | "mul" => scalarBinary inst (.arithmetic .mul .unchecked)
@@ -579,6 +608,15 @@ def bodyWith (lift : Prim → P) (operation : Raw → Option P) (loops : Bool)
         match guard with
         | none => pure code
         | some check => pure (.bind (2 * table.length + guards.length + id) (.scalar .unit) (lift check) code)
+      | "struct_field_ptr" | "struct_field_ptr_index_0" | "struct_field_ptr_index_1" |
+          "struct_field_ptr_index_2" | "struct_field_ptr_index_3" => do
+        let result ← inst.get "type"
+        let next ← bodyWith lift operation loops table guards fuel tail
+        if let some ty := typeOf 17 result then
+          pure (.bind id ty (← operation inst) next)
+        else
+          require (!table.any (Raw.usesInstruction id 128) && !guards.any (Raw.usesInstruction id 128))
+          pure (.bind id (.scalar .unit) (lift (← zeroFieldProjection table inst result)) next)
       | _ => pure (.bind id (← typeOf 17 (← inst.get "type")) (← operation inst)
           (← bodyWith lift operation loops table guards fuel tail))
     prefixGuards lift table.length id guards code

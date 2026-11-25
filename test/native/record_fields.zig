@@ -83,8 +83,21 @@ const zero_projection = f.derive(&zero_owner, &.{
     f.set("/instructions/1/fieldIndex", f.n("2")),
     f.set("/instructions/1/tag", f.s("struct_field_ptr_index_2")),
 });
+const zero_pointer = f.derive(&pointer, &.{ f.set("/child", lock), f.set("/pointeeLayout", empty_layout) });
+const used_zero_projection = f.derive(&zero_projection, &.{f.set("/instructions/1/type", zero_pointer)});
+const unused_zero_projection = f.derive(&used_zero_projection, &.{
+    f.set("/signature/returnType", f.obj(&.{.{ "kind", f.s("void") }})),
+    f.set("/body", f.arr(&.{ f.n("0"), f.n("1"), f.n("2") })),
+    f.remove("/instructions/2"),
+    f.set("/instructions/2/index", f.n("2")),
+    f.set("/instructions/2/operand", f.obj(&.{.{ "kind", f.s("unit") }})),
+});
 const invalid_zero_storage = [_]f.Value{
     zero_projection,
+    used_zero_projection,
+    f.derive(&unused_zero_projection, &.{f.set("/instructions/1/type/flags/isConst", f.b(false))}),
+    f.derive(&unused_zero_projection, &.{f.set("/instructions/1/type/child/identity/name", f.s("fixture.OtherLock"))}),
+    f.derive(&unused_zero_projection, &.{f.set("/instructions/1/type/flags/allowZero", f.b(true))}),
     f.derive(&zero_owner, &.{f.set("/signature/parameters/0/child/fields/2/offset", f.n("17"))}),
     f.derive(&zero_owner, &.{f.set("/signature/parameters/0/child/fields/2/type/fields/0/type/backingType/bits", f.n("1"))}),
     f.derive(&zero_owner, &.{f.set("/signature/parameters/0/child/fields/2/type/fields/0/type/fields/0/value", f.n("1"))}),
@@ -153,6 +166,8 @@ pub fn controls() !void {
     }
     const zero_decoded = try z.air.decode(&ctx, try f.load(ctx.allocator, zero_owner), .memory);
     try std.testing.expectEqualStrings(decoded, zero_decoded);
+    const zero_checked = try z.air.decode(&ctx, try f.load(ctx.allocator, unused_zero_projection), .memory);
+    try std.testing.expect(std.mem.indexOf(u8, zero_checked, "(.checkZeroField (.local 0) 16)") != null);
     for (invalid_zero_storage) |invalid|
         try std.testing.expectError(error.InvalidInput, z.air.decode(&ctx, try f.load(ctx.allocator, invalid), .memory));
     const conflicting_zero_identity = f.derive(&zero_owner, &.{
@@ -189,6 +204,15 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
     for (invalid_enums) |invalid| try parts.append(ctx.allocator, try ctx.fmt("example : Captured.typeOf 17 {s} = none := by decide +kernel\n", .{try z.certificate.lift(ctx, try f.load(ctx.allocator, invalid), 0)}));
     const with_zero = try f.load(ctx.allocator, zero_owner);
     try parts.append(ctx.allocator, try ctx.fmt("def readWithZero : Program := {s}\n{s}\nexample : readWithZero = readField := rfl\n", .{ try z.air.decode(ctx, with_zero, .memory), try z.certificate.declaration(ctx, with_zero, "readWithZero", false) }));
+    const checked = try f.load(ctx.allocator, unused_zero_projection);
+    try parts.append(ctx.allocator, try ctx.fmt("def checkZero : Program := {s}\n{s}\n", .{
+        try z.air.decode(ctx, checked, .memory), try z.certificate.declaration(ctx, checked, "checkZero", false),
+    }));
+    try parts.append(ctx.allocator,
+        \\example : checkZero.run [.pointer (.pointer false false pair) ⟨0, 0⟩] heap = (.ok (.scalar .unit), heap) := rfl
+        \\example : checkZero.run [.pointer (.pointer false false pair) ⟨0, 8⟩] heap = (.error .memoryValidity, heap) := rfl
+        \\
+    );
     for (invalid_zero_storage) |invalid|
         try parts.append(ctx.allocator, try ctx.fmt("example : Captured.decode false {s} = none := rfl\n", .{try z.certificate.lift(ctx, try f.load(ctx.allocator, invalid), 0)}));
     const conversion = try f.load(ctx.allocator, array_slice);

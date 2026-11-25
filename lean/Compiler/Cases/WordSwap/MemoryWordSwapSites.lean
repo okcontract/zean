@@ -25,7 +25,7 @@ def dataSite (site : Nat × Ty × Prim) : Prop :=
       site = (21, ByteAccess.byte, .wordByteLoad .little (.local 19))
   | .wordByteStore .. => site = (22, .scalar .unit, .wordByteStore .little (.local 18) (.local 21)) ∨
       site = (23, .scalar .unit, .wordByteStore .little (.local 19) (.local 20))
-  | .argument .. | .scalar .. | .pointerField .. | .fieldPointer .. | .booleanNot .. |
+  | .argument .. | .scalar .. | .pointerField .. | .fieldPointer .. | .checkZeroField .. | .booleanNot .. |
     .unreachable | .pointerCast .. | .sliceCast .. | .arrayToSlice .. | .offsetPointer .. |
     .elementPointer .. | .wordByteCast .. | .sliceElementPointer .. | .slice .. | .sliceLen .. |
     .slicePtr .. | .checkBounds .. | .checkCopyLengths .. => True
