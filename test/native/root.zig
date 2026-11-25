@@ -118,6 +118,10 @@ test "enum comparisons and switches check declared tags and identities" {
     try @import("enum_tags.zig").controls();
 }
 
+test "optional bytes preserve presence, payload type, and null extraction faults" {
+    try @import("optional_bytes.zig").controls();
+}
+
 test "counter regeneration compares complete programs and admits only replayed imports" {
     try @import("tutorial_replay.zig").controls();
 }

@@ -53,11 +53,16 @@ fn runtimeEnum(loaded: InternPool.LoadedEnumType, backing: Type, zcu: *Zcu) bool
     return info.signedness == .unsigned and info.bits >= 2 and info.bits <= 8;
 }
 
+fn optionalByte(ty: Type, zcu: *Zcu) bool {
+    return ty.optionalChild(zcu).toIntern() == .u8_type;
+}
+
 fn layoutKnown(ty: Type, zcu: *Zcu, depth: u8, remaining: *usize) bool {
     if (depth >= 16 or remaining.* == 0) return false;
     remaining.* -= 1;
     return switch (ty.zigTypeTag(zcu)) {
         .int, .bool, .void, .pointer => true,
+        .optional => optionalByte(ty, zcu),
         .@"enum" => known: {
             const loaded = resolvedEnum(ty, zcu) orelse break :known false;
             break :known layoutKnown(.fromInterned(loaded.int_tag_type), zcu, depth + 1, remaining);
@@ -94,6 +99,15 @@ fn writeTypeDepth(w: *Writer, ty: Type, zcu: *Zcu, depth: u8, remaining: *usize)
         .bool => try json(w, .{ .kind = "bool" }),
         .void => try json(w, .{ .kind = "void" }),
         .noreturn => try json(w, .{ .kind = "noreturn" }),
+        .optional => {
+            if (!optionalByte(ty, zcu))
+                return json(w, .{ .kind = "unsupported", .zigTypeTag = "optional" });
+            try w.writeAll("{\"kind\":\"optionalScalar\",\"child\":");
+            try writeTypeDepth(w, ty.optionalChild(zcu), zcu, depth + 1, remaining);
+            try w.writeAll(",\"layout\":");
+            try writeLayout(w, ty, zcu);
+            try w.writeByte('}');
+        },
         .error_set => {
             const errors = switch (zcu.intern_pool.indexToKey(ty.toIntern())) {
                 .error_set_type => |set| set.names,
@@ -295,6 +309,18 @@ fn writeValue(w: *Writer, value: Value, zcu: *Zcu, depth: u8, remaining: *usize)
         return w.writeByte('}');
     }
     if (ty.zigTypeTag(zcu) == .void) return json(w, .{ .kind = "unit" });
+    if (ty.zigTypeTag(zcu) == .optional and optionalByte(ty, zcu)) {
+        if (zcu.intern_pool.indexToKey(value.toIntern()) != .opt)
+            return json(w, .{ .kind = "unsupported", .reason = "optional-constant-storage" });
+        try w.writeAll("{\"kind\":\"optionalValue\",\"type\":");
+        try writeType(w, ty, zcu);
+        try w.writeAll(",\"payload\":");
+        if (value.optionalValue(zcu)) |payload|
+            try writeValue(w, payload, zcu, depth + 1, remaining)
+        else
+            try w.writeAll("null");
+        return w.writeByte('}');
+    }
     if (ty.zigTypeTag(zcu) == .error_set or ty.zigTypeTag(zcu) == .error_union) {
         const kind: []const u8 = switch (zcu.intern_pool.indexToKey(value.toIntern())) {
             .err => "errorValue",
@@ -611,7 +637,7 @@ fn writeInstruction(w: *Writer, air: *const Air, index: Air.Inst.Index, visited:
                 break;
             }
         },
-        .ret, .ret_safe, .ret_load, .is_err, .is_non_err => {
+        .ret, .ret_safe, .ret_load, .is_err, .is_non_err, .is_null, .is_non_null => {
             try w.writeAll(",\"operand\":");
             try writeRef(w, inst.data.un_op, zcu);
         },
@@ -619,7 +645,7 @@ fn writeInstruction(w: *Writer, air: *const Air, index: Air.Inst.Index, visited:
             try w.writeAll(",\"operand\":");
             try writeRef(w, inst.data.ty_op.operand, zcu);
         },
-        .unwrap_errunion_payload, .unwrap_errunion_err, .wrap_errunion_payload, .wrap_errunion_err => {
+        .unwrap_errunion_payload, .unwrap_errunion_err, .wrap_errunion_payload, .wrap_errunion_err, .optional_payload, .wrap_optional => {
             try w.writeAll(",\"operand\":");
             try writeRef(w, inst.data.ty_op.operand, zcu);
         },

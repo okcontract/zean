@@ -26,6 +26,7 @@ def dataSite (site : Nat × Ty × Prim) : Prop :=
   | .wordByteStore .. => site = (22, .scalar .unit, .wordByteStore .little (.local 18) (.local 21)) ∨
       site = (23, .scalar .unit, .wordByteStore .little (.local 19) (.local 20))
   | .argument .. | .scalar .. | .pointerField .. | .fieldPointer .. | .checkZeroField .. | .booleanNot .. |
+    .testOptional .. | .optionalPayload .. | .wrapOptional .. |
     .testError .. | .unwrapError .. | .wrapError .. |
     .unreachable | .pointerCast .. | .sliceCast .. | .arrayToSlice .. | .offsetPointer .. |
     .elementPointer .. | .wordByteCast .. | .sliceElementPointer .. | .slice .. | .sliceLen .. |

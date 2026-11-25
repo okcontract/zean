@@ -38,6 +38,18 @@ const FieldSelection = struct { owner: Reference, field: Ty.Field };
 const field_tags: []const []const u8 = &.{ "struct_field_ptr", "struct_field_ptr_index_0", "struct_field_ptr_index_1", "struct_field_ptr_index_2", "struct_field_ptr_index_3" };
 
 pub fn constant(ctx: *Context, value: Value, profile: Profile) Error!Reference {
+    if (c.tag(value, "kind", "optionalValue")) {
+        try ctx.fields(value, "kind type payload");
+        const ty = try types.parse(ctx, try ctx.field(value, "type"), profile, 0);
+        try ctx.require(ty.* == .optional_byte, "optional constant requires a byte optional type");
+        const raw_payload = try ctx.field(value, "payload");
+        const payload = if (raw_payload == .null) "none" else blk: {
+            const child = try scalarConstant(ctx, raw_payload);
+            try ctx.require(child.ty.isInt(false, 8), "optional constant changes payload type");
+            break :blk try ctx.fmt("(some {s})", .{scalarConstantValue(child)});
+        };
+        return .{ .ty = ty, .text = try ctx.fmt("(.constant (.optionalScalar (.int false 8) {s}))", .{payload}) };
+    }
     if (c.tag(value, "kind", "errorValue") or c.tag(value, "kind", "errorStatus")) {
         try ctx.fields(value, "kind type name");
         const ty = try types.parse(ctx, try ctx.field(value, "type"), profile, 0);
@@ -71,8 +83,12 @@ pub fn constant(ctx: *Context, value: Value, profile: Profile) Error!Reference {
     }
     const result = try scalarConstant(ctx, value);
     if (profile == .scalar) return result;
-    const body = result.text["(.constant ".len .. result.text.len - 1];
+    const body = scalarConstantValue(result);
     return .{ .ty = result.ty, .text = if (profile == .aggregate) try ctx.fmt("(.constant (.value (.scalar {s})))", .{body}) else try ctx.fmt("(.constant (.scalar {s}))", .{body}) };
+}
+
+fn scalarConstantValue(reference: Reference) []const u8 {
+    return reference.text["(.constant ".len .. reference.text.len - 1];
 }
 
 fn scalarConstant(ctx: *Context, value: Value) Error!Reference {
@@ -524,6 +540,22 @@ pub const Decoder = struct {
         const tag = try ctx.str(try ctx.field(inst, "tag"));
         const base = "index tag payloadVisited type ";
         if (try self.errorPrimitive(inst, tag, ty, env)) |operation| return operation;
+        if (c.oneOf(tag, &.{ "is_null", "is_non_null", "optional_payload", "wrap_optional" })) {
+            try ctx.require(self.profile == .memory or self.profile == .loops or self.profile.hasCalls(), "optional values require the memory or call vocabulary");
+            try ctx.fields(inst, "index tag payloadVisited type operand");
+            const operand = try self.memoryReference(try ctx.field(inst, "operand"), env);
+            if (eq(u8, tag, "wrap_optional")) {
+                try ctx.require(operand.ty.isInt(false, 8) and ty.* == .optional_byte, "optional wrapping changes payload type");
+                return try ctx.fmt("(.wrapOptional {s})", .{operand.text});
+            }
+            try ctx.require(operand.ty.* == .optional_byte, "expected an optional byte operand");
+            if (eq(u8, tag, "optional_payload")) {
+                try ctx.require(ty.isInt(false, 8), "optional extraction changes payload type");
+                return try ctx.fmt("(.optionalPayload {s})", .{operand.text});
+            }
+            try ctx.require(ty.* == .boolean, "optional test requires a boolean result");
+            return try ctx.fmt("(.testOptional {s} {s})", .{ c.boolText(eq(u8, tag, "is_non_null")), operand.text });
+        }
         if (try self.fieldPrimitive(inst, ty, env)) |field| return field;
         if (eq(u8, tag, "not")) {
             try ctx.fields(inst, base ++ "operand");

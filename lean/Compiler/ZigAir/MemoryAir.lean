@@ -59,6 +59,9 @@ inductive Prim where
   | fieldPointer (pointer : Ref) (offset : Nat)
   | checkZeroField (pointer : Ref) (offset : Nat)
   | booleanNot (value : Ref)
+  | testOptional (nonNull : Bool) (value : Ref)
+  | optionalPayload (value : Ref)
+  | wrapOptional (value : Ref)
   | testError (nonError : Bool) (value : Ref)
   | unwrapError (payload : Bool) (value : Ref)
   | wrapError (allowed : List String) (value : Ref)
@@ -119,6 +122,16 @@ def Prim.transition (prim : Prim) (args : List Value) (env : Env) (state : State
         Memory.checkZeroField state (← pointer.eval env) offset
         .ok (.scalar .unit)
       | .booleanNot reference => do MemoryAir.booleanNot (← reference.eval env)
+      | .testOptional nonNull reference => do
+        let .optionalScalar _ payload ← reference.eval env | .error .malformed
+        .ok (.scalar (.bool (payload.isSome == nonNull)))
+      | .optionalPayload reference => do
+        let .optionalScalar _ payload ← reference.eval env | .error .malformed
+        let some value := payload | .error (.scalar .illegalBehavior)
+        .ok (.scalar value)
+      | .wrapOptional reference => do
+        let .scalar value ← reference.eval env | .error .malformed
+        .ok (.optionalScalar value.type (some value))
       | .testError nonError reference => do Memory.testError nonError (← reference.eval env)
       | .unwrapError payload reference => do Memory.unwrapError payload (← reference.eval env)
       | .wrapError allowed reference => do Memory.wrapError allowed (← reference.eval env)

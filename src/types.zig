@@ -89,6 +89,7 @@ pub const Ty = union(enum) {
     unit,
     noreturn,
     error_value: ErrorValue,
+    optional_byte,
     pointer: struct { mutable: bool, many: bool, child: *const Ty },
     slice: struct { mutable: bool, child: *const Ty },
     array: struct { len: u64, child: *const Ty },
@@ -166,7 +167,7 @@ pub const Ty = union(enum) {
         if (std.meta.activeTag(a.*) != std.meta.activeTag(b.*)) return false;
         return switch (a.*) {
             .int => |v| v.signed == b.int.signed and v.bits == b.int.bits,
-            .boolean, .unit, .noreturn => true,
+            .boolean, .unit, .noreturn, .optional_byte => true,
             .error_value => |v| v.same(b.error_value),
             .pointer => |v| v.mutable == b.pointer.mutable and v.many == b.pointer.many and same(v.child, b.pointer.child),
             .slice => |v| v.mutable == b.slice.mutable and same(v.child, b.slice.child),
@@ -203,6 +204,7 @@ pub const Ty = union(enum) {
         return switch (self.*) {
             .unit => .{ 0, 1 },
             .boolean => .{ 1, 1 },
+            .optional_byte => .{ 2, 1 },
             .int => |v| if (c.oneOf(try ctx.fmt("{d}", .{v.bits}), &.{ "8", "16", "32", "64" })) .{ v.bits / 8, v.bits / 8 } else if (!v.signed and v.bits == 256) .{ 32, 16 } else ctx.fail("unsupported memory layout", .{}),
             .pointer => .{ target.pointer_bytes, target.pointer_alignment },
             .slice => .{ 2 * target.pointer_bytes, target.pointer_alignment },
@@ -231,6 +233,7 @@ pub const Ty = union(enum) {
             .unit => if (profile == .scalar) ".unit" else "(.scalar .unit)",
             .noreturn => ctx.fail("noreturn cannot be a runtime value type", .{}),
             .error_value => |v| ctx.fmt("(.errorValue .{s} {s})", .{ v.leanKind(), try ctx.json(v.names) }),
+            .optional_byte => "(.optionalScalar (.int false 8))",
             .pointer => |v| ctx.fmt("(.pointer {s} {s} {s})", .{ c.boolText(v.mutable), c.boolText(v.many), try v.child.lean(ctx, .memory) }),
             .slice => |v| ctx.fmt("(.slice {s} {s})", .{ c.boolText(v.mutable), try v.child.lean(ctx, .memory) }),
             .array => |v| ctx.fmt("(.array {d} {s})", .{ v.len, try v.child.lean(ctx, .memory) }),
@@ -433,6 +436,14 @@ pub fn parse(ctx: *Context, value: Value, profile: Profile, depth: usize) Error!
         return ctx.make(Ty, .{ .int = .{ .signed = std.mem.eql(u8, signedness, "signed"), .bits = @intCast(try ctx.nat(try ctx.field(value, "bits"), 512)) } });
     }
     if (profile == .memory or profile == .loops or profile.hasCalls()) {
+        if (c.tag(value, "kind", "optionalScalar")) {
+            try ctx.fields(value, "kind child layout");
+            const child = try parse(ctx, try ctx.field(value, "child"), profile, depth + 1);
+            try ctx.require(child.isInt(false, 8), "only byte optional payloads are admitted");
+            const ty: Ty = .optional_byte;
+            try checkLayout(ctx, try ctx.field(value, "layout"), try ty.layout(ctx));
+            return ctx.make(Ty, ty);
+        }
         if (c.tag(value, "kind", "errorSet"))
             return ctx.make(Ty, .{ .error_value = .{ .result = false, .names = try errorNames(ctx, value) } });
         if (c.tag(value, "kind", "errorStatus")) {

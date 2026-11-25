@@ -194,6 +194,15 @@ def typeOf : Nat → Raw → Option Ty
       let signed ← raw.textAt "signedness"
       require (bits ≤ 512 && (signed == "signed" || signed == "unsigned"))
       pure (.scalar (.int (signed == "signed") bits))
+    | "optionalScalar" =>
+      let .object fields := raw | none
+      let child@(.object childFields) ← raw.get "child" | none
+      let abi@(.object layoutFields) ← raw.get "layout" | none
+      require (fields.length == 3 && childFields.length == 3 && layoutFields.length == 3 &&
+        (← typeOf fuel child) == .scalar (.int false 8))
+      let type := Ty.optionalScalar (.int false 8)
+      layoutMatches abi type
+      pure type
     | "pointer" => pointerType raw (← typeOf fuel (← raw.get "child"))
     | "array" =>
       require (← raw.get "sentinel").isNull
@@ -239,6 +248,16 @@ private def scalarType (raw : Raw) : Option Scalar.Ty := do
   let .scalar ty ← typeOf 17 raw | none
   pure ty
 
+private def scalarLiteral (raw : Raw) : Option Scalar.Value := do
+  let ty ← scalarType (← raw.get "type")
+  let n ← (← raw.get "value").integer
+  let value ← match ty with
+    | .int signed bits => pure (Scalar.Value.int signed bits n)
+    | .bool => do require (n == 0 || n == 1); pure (.bool (n == 1))
+    | .unit | .enumeration _ => none
+  require value.valid
+  pure value
+
 def reference (raw : Raw) : Option Ref := do
   let kind ← raw.textAt "kind"
   match kind with
@@ -260,15 +279,21 @@ def reference (raw : Raw) : Option Ref := do
     let value := Value.errorValue status allowed named
     require value.valid
     pure (.constant value)
-  | "constant" =>
-    let ty ← scalarType (← raw.get "type")
-    let n ← (← raw.get "value").integer
-    let value ← match ty with
-      | .int signed bits => pure (Scalar.Value.int signed bits n)
-      | .bool => do require (n == 0 || n == 1); pure (.bool (n == 1))
-      | .unit | .enumeration _ => none
-    require value.valid
-    pure (.constant (.scalar value))
+  | "optionalValue" => do
+    let .object fields := raw | none
+    let .optionalScalar child ← typeOf 17 (← raw.get "type") | none
+    require (fields.length == 3)
+    let payload ← raw.get "payload"
+    let decoded ← if payload.isNull then pure none else do
+      let .object payloadFields := payload | none
+      let .object payloadType ← payload.get "type" | none
+      require (payloadFields.length == 3 && payloadType.length == 3 &&
+        (← payload.textAt "kind") == "constant")
+      let value ← scalarLiteral payload
+      require (value.type == child)
+      pure (some value)
+    pure (.constant (.optionalScalar child decoded))
+  | "constant" => pure (.constant (.scalar (← scalarLiteral raw)))
   | _ => none
 
 private def singletonValue : Nat → Raw → Raw → Option Unit
@@ -421,6 +446,26 @@ private def errorOperation (table : List Raw) (inst : Raw) (tag : String) : Opti
       require (result == if payload then .scalar .unit else .errorValue .tag allowed)
       pure (.unwrapError payload reference)
 
+private def optionalOperation (table : List Raw) (inst : Raw) (tag : String) : Option Prim := do
+  let .object fields := inst | none
+  require (fields.length == 5)
+  let operand ← inst.get "operand"
+  let ref ← reference operand
+  let input ← referenceType table operand
+  let result ← typeOf 17 (← inst.get "type")
+  if tag == "wrap_optional" then
+    let .optionalScalar child := result | none
+    require (input == .scalar child)
+    pure (.wrapOptional ref)
+  else
+    let .optionalScalar child := input | none
+    if tag == "optional_payload" then
+      require (result == .scalar child)
+      pure (.optionalPayload ref)
+    else
+      require (result == .scalar .bool)
+      pure (.testOptional (tag == "is_non_null") ref)
+
 def primitive (parameters : List Nat) (inst : Raw) (table : List Raw := []) : Option Prim := do
   match ← inst.textAt "tag" with
   | "arg" =>
@@ -461,6 +506,8 @@ def primitive (parameters : List Nat) (inst : Raw) (table : List Raw := []) : Op
     unary inst .booleanNot
   | "is_err" | "is_non_err" | "unwrap_errunion_payload" | "unwrap_errunion_err" |
       "wrap_errunion_payload" | "wrap_errunion_err" => errorOperation table inst (← inst.textAt "tag")
+  | "is_null" | "is_non_null" | "optional_payload" | "wrap_optional" =>
+    optionalOperation table inst (← inst.textAt "tag")
   | "struct_field_ptr" | "struct_field_ptr_index_0" | "struct_field_ptr_index_1" |
       "struct_field_ptr_index_2" | "struct_field_ptr_index_3" =>
     let field ← fieldProjection table inst
