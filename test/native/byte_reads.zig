@@ -44,6 +44,11 @@ pub fn controls() !void {
     }))});
     try std.testing.expectError(error.InvalidInput, z.air.decode(&ctx, try f.load(ctx.allocator, unsupported_type), .memory));
     try std.testing.expectEqualStrings("AIR instruction 2 (slice_elem_val) rejected. unsupported Zig AIR type 'optional'", ctx.diagnostic);
+    const unsupported_layout = f.derive(&read, &.{f.set("/instructions/2/type", f.obj(&.{
+        .{ "kind", f.s("unsupported") }, .{ "reason", f.s("unresolved-enum") },
+    }))});
+    try std.testing.expectError(error.InvalidInput, z.air.decode(&ctx, try f.load(ctx.allocator, unsupported_layout), .memory));
+    try std.testing.expectEqualStrings("AIR instruction 2 (slice_elem_val) rejected. unsupported Zig AIR type (unresolved-enum)", ctx.diagnostic);
 
     for ([_]f.Value{
         f.derive(&read, &.{f.set("/instructions/2/type", size)}),

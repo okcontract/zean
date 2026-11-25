@@ -515,6 +515,10 @@ pub fn parse(ctx: *Context, value: Value, profile: Profile, depth: usize) Error!
     }
     const kind = try ctx.str(try ctx.field(value, "kind"));
     if (std.mem.eql(u8, kind, "unsupported")) {
+        if (c.get(value, "reason")) |reason| {
+            try ctx.fields(value, "kind reason");
+            return ctx.fail("unsupported Zig AIR type ({s})", .{try ctx.str(reason)});
+        }
         try ctx.fields(value, "kind zigTypeTag");
         const tag = try ctx.str(try ctx.field(value, "zigTypeTag"));
         return ctx.fail("unsupported Zig AIR type '{s}'", .{tag});
