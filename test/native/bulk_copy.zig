@@ -62,6 +62,54 @@ const missing_lengths = f.derive(&copy_slices, &.{f.remove("/instructions/5/copy
 const pointer_source = f.derive(&copy_slices, &.{
     f.set("/instructions/5/copyLengths/source", f.obj(&.{ .{ "kind", f.s("manyPointer") }, .{ "operand", ref("4") } })),
 });
+const writable_pointer = f.derive(&byte_pointer, &.{f.set("/flags/isConst", f.b(false))});
+const borrowed_destination = f.derive(&copy_slices, &.{
+    f.set("/signature/parameters", f.arr(&.{ writable_pointer, byte_slice })),
+    f.set("/instructions/0/type", writable_pointer),
+    f.set("/instructions/1/type", byte_slice),
+    f.set("/instructions/2/operand", ref("1")),
+    f.set("/instructions/3", f.obj(&.{
+        .{ "index", f.n("3") },  .{ "tag", f.s("slice") }, .{ "payloadVisited", f.b(true) },
+        .{ "type", byte_slice }, .{ "lhs", ref("0") },     .{ "rhs", ref("2") },
+    })),
+    f.set("/instructions/4/type", writable_pointer),
+    f.set("/instructions/5/lhs", ref("3")),
+    f.set("/instructions/5/copyLengths/destination", f.obj(&.{ .{ "kind", f.s("manyPointer") }, .{ "operand", ref("0") } })),
+    f.set("/instructions/5/copyLengths/source", ref("2")),
+});
+const changed_pointer = f.derive(&borrowed_destination, &.{f.set("/instructions/5/copyLengths/destination/operand", ref("4"))});
+const changed_length = f.derive(&borrowed_destination, &.{f.set("/instructions/3/rhs", f.derive(&literal, &.{f.set("/value", f.n("2"))}))});
+
+fn byteArrayPointer(comptime count: []const u8) f.Value {
+    const layout = f.obj(&.{ .{ "kind", f.s("abi") }, .{ "bytes", f.n(count) }, .{ "alignment", f.n("1") } });
+    const byte = f.derive(&word, &.{f.set("/bits", f.n("8"))});
+    return f.derive(&writable_pointer, &.{
+        f.set("/flags/size", f.s("one")),
+        f.set("/child", f.obj(&.{ .{ "kind", f.s("array") }, .{ "length", f.n(count) }, .{ "child", byte }, .{ "layout", layout }, .{ "sentinel", .null } })),
+        f.set("/pointeeLayout", layout),
+    });
+}
+
+const one_byte_array = byteArrayPointer("1");
+const borrowed_array = f.derive(&copy, &.{
+    f.set("/sourceOperationTags", f.arr(&.{f.s("memcpy")})),
+    f.add("/sourceValidity/copyLengthsAnchored", f.b(true)),
+    f.set("/signature/parameters", f.arr(&.{ writable_pointer, one_byte_array })),
+    f.set("/instructions/0/type", writable_pointer),
+    f.set("/instructions/1/type", one_byte_array),
+    f.set("/instructions/2", unary("2", "ptr_cast", one_byte_array, ref("0"))),
+    f.set("/instructions/3", f.obj(&.{
+        .{ "index", f.n("3") }, .{ "tag", f.s("memcpy") }, .{ "payloadVisited", f.b(true) }, .{ "type", unit },
+        .{ "lhs", ref("2") },   .{ "rhs", ref("1") },
+        .{ "copyLengths", f.obj(&.{
+            .{ "destination", f.obj(&.{ .{ "kind", f.s("manyPointer") }, .{ "operand", ref("0") } }) },
+            .{ "source", f.derive(&literal, &.{f.set("/value", f.n("1"))}) },
+        }) },
+    })),
+    f.add("/instructions/4", unary("4", "ret", never, f.obj(&.{.{ "kind", f.s("unit") }}))),
+    f.add("/body/4", f.n("4")),
+});
+const changed_extent = f.derive(&borrowed_array, &.{f.set("/instructions/2/type", byteArrayPointer("2"))});
 const move_slices = f.derive(&copy_slices, &.{
     f.set("/sourceOperationTags/0", f.s("memmove")),
     f.set("/instructions/5/tag", f.s("memmove")),
@@ -97,7 +145,12 @@ pub fn controls() !void {
     try std.testing.expect(guard < transfer);
     const unguarded = try z.air.decode(&ctx, try f.load(ctx.allocator, pointer_source), .memory);
     try std.testing.expect(std.mem.indexOf(u8, unguarded, "checkCopyLengths") == null);
+    _ = try z.air.decode(&ctx, try f.load(ctx.allocator, borrowed_destination), .memory);
+    _ = try z.air.decode(&ctx, try f.load(ctx.allocator, borrowed_array), .memory);
     for ([_]f.Value{
+        changed_extent,
+        changed_pointer,
+        changed_length,
         missing_lengths,
         f.derive(&copy_slices, &.{f.remove("/instructions/5/copyLengths/source")}),
         f.derive(&copy_slices, &.{f.set("/instructions/5/copyLengths/source/index", f.n("6"))}),
@@ -173,11 +226,21 @@ pub fn moveEmitted(ctx: *z.common.Context) ![]const u8 {
 
 pub fn lengthsEmitted(ctx: *z.common.Context) ![]const u8 {
     const raw = try f.load(ctx.allocator, copy_slices);
+    const borrowed = try f.load(ctx.allocator, borrowed_destination);
     return ctx.fmt(
         \\import Compiler.ZigAir.Captured
+        \\import Compiler.ZigAir.AggregateAir
         \\open Compiler.ZigAir Compiler.ZigAir.Memory Compiler.ZigAir.MemoryAir
         \\def copySlices : Program := {s}
         \\{s}
+        \\def borrowedCopy : Program := {s}
+        \\{s}
+        \\example : Captured.decode false {s} = none := rfl
+        \\example : Captured.decode false {s} = none := rfl
+        \\example : (Captured.decode false {s}).isSome = true := rfl
+        \\example : Captured.decode false {s} = none := rfl
+        \\def aggregateCopy : AggregateAir.Program := {s}
+        \\def aggregateMove : AggregateAir.Program := {s}
         \\def missingLengths : Captured.Raw := {s}
         \\example : Captured.decode false missingLengths = none := rfl
         \\def byte : Ty := .scalar (.int false 8)
@@ -190,8 +253,22 @@ pub fn lengthsEmitted(ctx: *z.common.Context) ![]const u8 {
         \\example : load (copySlices.run [dst, src 2] initial).2
         \\    (.pointer (.pointer false false byte) ⟨0, 1⟩) = .ok (.scalar (.int false 8 99)) := rfl
         \\example : copySlices.run [dst, src 1] initial = (.error .sourceBounds, initial) := rfl
+        \\example : aggregateCopy.run [.value dst, .value (src 1)] initial = (.error .sourceBounds, initial) := rfl
+        \\example : aggregateMove.run [.value dst, .value (src 1)] initial = (.error .sourceBounds, initial) := rfl
         \\
-    , .{ try z.air.decode(ctx, raw, .memory), try z.certificate.declaration(ctx, raw, "copySlices", false), try z.certificate.lift(ctx, try f.load(ctx.allocator, missing_lengths), 0) });
+    , .{
+        try z.air.decode(ctx, raw, .memory),
+        try z.certificate.declaration(ctx, raw, "copySlices", false),
+        try z.air.decode(ctx, borrowed, .memory),
+        try z.certificate.declaration(ctx, borrowed, "borrowedCopy", false),
+        try z.certificate.lift(ctx, try f.load(ctx.allocator, changed_pointer), 0),
+        try z.certificate.lift(ctx, try f.load(ctx.allocator, changed_length), 0),
+        try z.certificate.lift(ctx, try f.load(ctx.allocator, borrowed_array), 0),
+        try z.certificate.lift(ctx, try f.load(ctx.allocator, changed_extent), 0),
+        try z.air.decode(ctx, raw, .aggregate),
+        try z.air.decode(ctx, try f.load(ctx.allocator, move_slices), .aggregate),
+        try z.certificate.lift(ctx, try f.load(ctx.allocator, missing_lengths), 0),
+    });
 }
 
 pub fn emitted(ctx: *z.common.Context) ![]const u8 {

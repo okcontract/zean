@@ -350,7 +350,7 @@ private def copyView (table : List Raw) (tag : String) (operand : Raw) : Raw :=
     require ((← inst.textAt "tag") == tag)
     inst.get "operand") : Option Raw).getD operand
 
-private def copyLength (table : List Raw) (length operand : Raw) : Option (Option Ref) := do
+private def copyLength (table : List Raw) (length operand : Raw) (sourceLength : Option Raw) : Option (Option Ref) := do
   let lowered ← instruction table operand
   let operandType ← typeOf 17 (← lowered.get "type")
   let origin := match operandType with
@@ -363,8 +363,16 @@ private def copyLength (table : List Raw) (length operand : Raw) : Option (Optio
     let .pointer writable true (.scalar (.int false 8)) ←
       typeOf 17 (← (← instruction table original).get "type") | none
     match operandType with
-    | .slice .. => require (writable && lowered.textAt "tag" == some "slice")
-    | _ => require ((← reference original) == (← reference origin))
+    | .slice .. =>
+      let borrowed ← sourceLength
+      require (writable && lowered.textAt "tag" == some "slice" &&
+        (← reference (← lowered.get "lhs")) == (← reference original) &&
+        (← reference (← lowered.get "rhs")) == (← reference borrowed))
+    | _ =>
+      require ((← reference original) == (← reference origin))
+      if let some borrowed := sourceLength then
+        let .pointer _ false (.array count _) := operandType | none
+        require (borrowed.textAt "kind" == some "constant" && (← borrowed.natAt "value") == count)
     return none
   let view := copyView table "slice_ptr" origin
   let ty ← if (← length.textAt "kind") == "instruction" then do
@@ -389,8 +397,9 @@ private def copyLengthCheck (table : List Raw) (inst : Raw) : Option (Option Pri
   if let some lengths := inst.get "copyLengths" then
     let .object fields := lengths | none
     require (fields.length == 2)
-    match ← copyLength table (← lengths.get "destination") (← inst.get "lhs"),
-          ← copyLength table (← lengths.get "source") (← inst.get "rhs") with
+    let sourceLength ← lengths.get "source"
+    let source ← copyLength table sourceLength (← inst.get "rhs") none
+    match ← copyLength table (← lengths.get "destination") (← inst.get "lhs") (some sourceLength), source with
     | none, none => none
     | some destination, some source => pure (some (.checkCopyLengths destination source))
     | _, _ => pure none

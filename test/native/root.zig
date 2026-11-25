@@ -16,6 +16,10 @@ test "captured standard-library source evidence binds hashes and safe identities
 test "record fields preserve complete geometry, declaration indices and permissions" {
     try @import("record_fields.zig").controls();
 }
+test "inlined slice guards bind the retained source and preserve the bound check" {
+    try @import("bounded_slices.zig").inlineSources();
+}
+
 test "bounded length-based slices retain their original extent and overflow work" {
     try @import("bounded_slices.zig").controls();
 }

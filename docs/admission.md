@@ -106,3 +106,15 @@ recorded model. Each mutation must fail at the correspondence theorem.
 ```sh
 zig build emitted-control -Demitted-control=scalar-certificate
 ```
+
+### Slice guards from inline helpers
+
+A client can keep an export in its adapter and list the imported Zig helper in
+`sources`. The capture retains both files. When an AIR slice guard names another
+file, translation looks up its full relative path in the capture inventory,
+checks the SHA-256 of the retained bytes and bounds the span by that file's
+length. Each guard still needs its original instruction anchor and dominated
+operands. Standalone AIR decoding without a capture inventory accepts only
+guards from the declaration's own file. The Lean correspondence checker
+replays the captured bounds operations. Source identity is checked during
+native translation.

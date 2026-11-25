@@ -363,7 +363,7 @@ pub fn build(b: *std.Build) void {
     emitted_control.addArgs(&.{ "--only", b.option([]const u8, "emitted-control", "Single control for the emitted-control development check") orelse "certificate" });
     emitted_control.addArgs(if (lake) |path| &.{ path, "env", "lean" } else &.{ "elan", "run", lean_toolchain, "lake", "env", "lean" });
     emitted_control.has_side_effects = true;
-    emitted_control.step.dependOn(&leanBuild(b, lake, &.{ "Compiler.ZigAir.CapturedScalar", "Compiler.ZigAir.CapturedNestedCalls", "Compiler.ZigAir.CapturedCallMachine" }).step);
+    emitted_control.step.dependOn(&leanBuild(b, lake, &.{ "Compiler.ZigAir.CapturedScalar", "Compiler.ZigAir.CapturedNestedCalls", "Compiler.ZigAir.CapturedCallMachine", "Compiler.ZigAir.AggregateAir" }).step);
     b.step("emitted-control", "Compile one emitted control and its checked decoder dependencies").dependOn(&emitted_control.step);
     const counter_lean = if (lake) |path| b.addSystemCommand(&.{ path, "build", "Compiler.Tutorial.Counter.Comparison" }) else b.addSystemCommand(&.{ "elan", "run", lean_toolchain, "lake", "build", "Compiler.Tutorial.Counter.Comparison" });
     counter_lean.setEnvironmentVariable("LEAN_NUM_THREADS", "2");

@@ -14,6 +14,7 @@ const maximum_instructions = 1024;
 const maximum_switch_ranges = 256;
 pub const Extension = enum { none, assertion, hash_update, scalar_view, slice_view };
 pub const Options = struct {
+    guard_sources: ?*const @import("guard_sources.zig").Identities = null,
     source_parameters: ?[]const usize = null,
     explicit_type_specialization: bool = false,
     instruction_limit: usize = 512,
@@ -201,12 +202,22 @@ pub const Decoder = struct {
             try ctx.fields(item, "source anchor start end upperBound unsupportedReason");
             const source = try ctx.field(item, "source");
             try ctx.fields(source, "file sha256 span");
-            try ctx.require(c.equal(try ctx.field(source, "sha256"), try ctx.field(self.record, "sourceSha256")) and c.equal(try ctx.field(source, "file"), try ctx.field(self.record, "sourceFile")), "source guard identity mismatch");
+            const file = try ctx.str(try ctx.field(source, "file"));
+            const sha = try ctx.field(source, "sha256");
+            var source_limit: usize = std.math.maxInt(u32);
+            if (c.tag(self.record, "sourceFile", file)) {
+                try ctx.require(c.equal(sha, try ctx.field(self.record, "sourceSha256")), "source guard identity mismatch");
+            } else {
+                const sources = self.options.guard_sources orelse return ctx.fail("inline slice guard from {s} requires captured source evidence", .{file});
+                const identity = sources.get(file) orelse return ctx.fail("unknown inline slice guard source {s}", .{file});
+                try ctx.require(c.stringIs(sha, &identity.sha), "inline slice guard digest mismatch");
+                source_limit = @min(source_limit, identity.size);
+            }
             const span = try ctx.field(source, "span");
             try ctx.fields(span, "start end main");
-            const start = try ctx.nat(try ctx.field(span, "start"), std.math.maxInt(u32));
-            const main = try ctx.nat(try ctx.field(span, "main"), std.math.maxInt(u32));
-            const end = try ctx.nat(try ctx.field(span, "end"), std.math.maxInt(u32));
+            const start = try ctx.nat(try ctx.field(span, "start"), source_limit);
+            const main = try ctx.nat(try ctx.field(span, "main"), source_limit);
+            const end = try ctx.nat(try ctx.field(span, "end"), source_limit);
             try ctx.require(start <= main and main < end, "invalid source guard span");
             const anchor = try ctx.field(item, "anchor");
             try ctx.fields(anchor, "kind index inSupportedBody");
@@ -310,7 +321,7 @@ pub const Decoder = struct {
         const ctx = self.ctx;
         var primitive = guard;
         if (self.profile.hasCalls()) primitive = try ctx.fmt("(.memory {s})", .{primitive});
-        if (self.options.extension == .hash_update) primitive = try ctx.fmt("(.primitive (.memory {s}))", .{primitive}) else if (self.options.extension == .slice_view) primitive = try ctx.fmt("(.memory {s})", .{primitive});
+        if (self.options.extension == .hash_update) primitive = try ctx.fmt("(.primitive (.memory {s}))", .{primitive}) else if (self.profile == .aggregate) primitive = try ctx.fmt("(.memory {s})", .{primitive});
         try prefixes.append(ctx.allocator, .{ .id = id, .ty = "(.scalar .unit)", .child = primitive });
     }
 
@@ -319,7 +330,7 @@ pub const Decoder = struct {
         return c.oneOf(try self.ctx.str(try self.ctx.field(self.instructions[id], "tag")), &.{ "arg", "load" });
     }
 
-    fn copyLength(self: *Decoder, value: Value, operand: Value, env: Env) Error!?Reference {
+    fn copyLength(self: *Decoder, value: Value, operand: Value, env: Env, source_length: ?Value) Error!?Reference {
         const ctx = self.ctx;
         const operand_ty = (try self.memoryReference(operand, env)).ty;
         var view = operand;
@@ -335,8 +346,18 @@ pub const Decoder = struct {
             // A destination that borrowed the source length is lowered to a slice.
             if (operand_ty.* == .slice) {
                 const id = (try self.refId(operand)) orelse return ctx.fail("copy destination has no instruction", .{});
-                try ctx.require(original_ty.pointer.mutable and c.tag(self.instructions[id], "tag", "slice"), "copy destination lost its synthesized slice");
-            } else try ctx.require(c.equal(original, view), "copy pointer identity changed");
+                const slice = self.instructions[id];
+                try ctx.require(original_ty.pointer.mutable and c.tag(slice, "tag", "slice") and
+                    c.equal(try ctx.field(slice, "lhs"), original), "copy destination lost its original pointer");
+                try ctx.require(source_length != null and c.equal(try ctx.field(slice, "rhs"), source_length.?), "copy destination did not borrow its source length");
+            } else {
+                try ctx.require(c.equal(original, view), "copy pointer identity changed");
+                if (source_length) |borrowed| {
+                    // A known source length can lower the destination to *[N]u8.
+                    try ctx.require(operand_ty.* == .pointer and operand_ty.pointer.child.* == .array and
+                        c.tag(borrowed, "kind", "constant") and try ctx.nat(try ctx.field(borrowed, "value"), std.math.maxInt(u64)) == operand_ty.pointer.child.array.len, "copy destination array did not borrow its source length");
+                }
+            }
             return null;
         }
         const length = try self.memoryReference(value, env);
@@ -362,8 +383,9 @@ pub const Decoder = struct {
         const ctx = self.ctx;
         if (c.get(inst, "copyLengths")) |lengths| {
             try ctx.fields(lengths, "destination source");
-            const destination = try self.copyLength(try ctx.field(lengths, "destination"), try ctx.field(inst, "lhs"), env);
-            const source = try self.copyLength(try ctx.field(lengths, "source"), try ctx.field(inst, "rhs"), env);
+            const source_length = try ctx.field(lengths, "source");
+            const source = try self.copyLength(source_length, try ctx.field(inst, "rhs"), env, null);
+            const destination = try self.copyLength(try ctx.field(lengths, "destination"), try ctx.field(inst, "lhs"), env, source_length);
             try ctx.require(destination != null or source != null, "byte copy lacks a source length");
             if (destination != null and source != null) {
                 // Disjoint from captured registers, slice guards and element-pointer temporaries.

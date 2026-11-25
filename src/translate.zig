@@ -71,6 +71,11 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
         const closure_hash = c.digest(try ctx.json(try c.ordered(ctx, source_files)));
         try lines.append(ctx.allocator, try ctx.fmt("-- Source closure SHA-256: {s}\n", .{&closure_hash}));
     }
+    var guard_sources: @import("guard_sources.zig").Sources = .{
+        .directory = std.fs.path.dirname(options.capture) orelse ".",
+        .inventory = source_inventory,
+    };
+    defer guard_sources.checked.deinit(ctx.allocator);
     const module = options.profile.module();
     const vocabulary = options.profile.vocabulary();
     if (emit_certificate) try lines.append(ctx.allocator, if (options.profile == .scalar) "import Compiler.ZigAir.CapturedScalar\n" else if (call_machine) "import Compiler.ZigAir.CapturedCallMachine\n" else "import Compiler.ZigAir.Captured\n");
@@ -101,6 +106,7 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
         for (closure.units.items, 0..) |unit, machine_index| {
             const profile: air.Profile = if (closure.allow_recursion or !unit.called) options.profile else if (options.profile == .nested_calls) try @import("call_closure.zig").interpreter(ctx, unit.record, callees.items) else .calls;
             var decoder = try air.Decoder.initWith(ctx, unit.record, profile, .{
+                .guard_sources = try guard_sources.forRecord(ctx, io, unit.record),
                 .source_parameters = unit.source_parameters,
                 .explicit_type_specialization = unit.source_parameters != null,
                 .callees = callees.items,
@@ -163,7 +169,11 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
         }
         if (declaration_bytes) |bytes| try @import("declaration_source.zig").select(ctx, record, try ctx.field(report, "sourceFiles"), std.fs.path.basename(options.declaration_source.?), bytes);
         const mapping = if (specialized_bytes) |bytes| try @import("specialized_source.zig").select(ctx, record, std.fs.path.basename(options.specialized_source.?), bytes) else null;
-        var decoder = try air.Decoder.initWith(ctx, record, options.profile, .{ .source_parameters = if (mapping) |mapped| mapped.indices else null, .explicit_type_specialization = mapping != null });
+        var decoder = try air.Decoder.initWith(ctx, record, options.profile, .{
+            .guard_sources = try guard_sources.forRecord(ctx, io, record),
+            .source_parameters = if (mapping) |mapped| mapped.indices else null,
+            .explicit_type_specialization = mapping != null,
+        });
         const program = try decoder.program();
         try lines.append(ctx.allocator, try ctx.fmt("-- AIR SHA-256: {s}\ndef {s} : Program{s} :=\n{s}\n\n", .{ sha, name, if (options.profile.hasLoops()) " true" else "", program }));
         if (emit_certificate) {
@@ -219,6 +229,7 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
         const bytes = try ctx.read(io, identity.path, c.max_json_bytes + 1);
         try ctx.require(std.mem.eql(u8, &c.digest(bytes), identity.sha), "capture inputs changed during translation");
     }
+    try guard_sources.revalidate(ctx, io);
     if (specialized_bytes) |bytes| try ctx.require(std.mem.eql(u8, bytes, try ctx.read(io, options.specialized_source.?, 64 * 1024 * 1024)), "specialization source changed during translation");
     if (options.profile.hasCalls()) {
         try closure.revalidateSources();
