@@ -106,9 +106,13 @@ inductive Prim where
   | arithmetic (op : Arithmetic) (mode : Overflow) (left right : Ref)
   | extremum (maximum : Bool) (left right : Ref)
   | bitAnd (left right : Ref)
+  | bitOr (left right : Ref)
   | bitXor (left right : Ref)
   | shiftRight (left right : Ref)
+  | shiftLeft (left right : Ref)
+  | boolToInt (operand : Ref)
   | comparison (op : Comparison) (left right : Ref)
+  | inRanges (operand : Ref) (ranges : List (Int × Int))
   | cast (op : Cast) (destination : Ty) (operand : Ref)
   deriving DecidableEq, Repr
 
@@ -126,6 +130,9 @@ def Prim.eval (prim : Prim) (args : List Value) (env : Env) : Result := do
     let .int s n x ← left.eval env | .error .malformed
     let .int t m y ← right.eval env | .error .malformed
     if s = t ∧ n = m then .ok (.bool (op.eval x y)) else .error .malformed
+  | .inRanges operand ranges =>
+    let .int _ _ value ← operand.eval env | .error .malformed
+    .ok (.bool (ranges.any fun (low, high) => low ≤ value && value ≤ high))
   | .extremum maximum left right =>
     let .int s n x ← left.eval env | .error .malformed
     let .int t m y ← right.eval env | .error .malformed
@@ -135,6 +142,10 @@ def Prim.eval (prim : Prim) (args : List Value) (env : Env) : Result := do
     let .int false n x ← left.eval env | .error .malformed
     let .int false m y ← right.eval env | .error .malformed
     if n = m then .ok (.int false n (x.toNat &&& y.toNat)) else .error .malformed
+  | .bitOr left right =>
+    let .int false n x ← left.eval env | .error .malformed
+    let .int false m y ← right.eval env | .error .malformed
+    if n = m then .ok (.int false n (x.toNat ||| y.toNat)) else .error .malformed
   | .bitXor left right =>
     let .int false n x ← left.eval env | .error .malformed
     let .int false m y ← right.eval env | .error .malformed
@@ -145,6 +156,15 @@ def Prim.eval (prim : Prim) (args : List Value) (env : Env) : Result := do
     if n = 0 ∨ m ≠ shiftCountWidth n then .error .malformed
     else if y.toNat < n then .ok (.int false n (x.toNat >>> y.toNat))
     else .error .illegalBehavior
+  | .shiftLeft left right =>
+    let .int false n x ← left.eval env | .error .malformed
+    let .int false m y ← right.eval env | .error .malformed
+    if n = 0 ∨ m ≠ shiftCountWidth n then .error .malformed
+    else if y.toNat < n then integer false n (x.toNat <<< y.toNat : Nat) .wrapping
+    else .error .illegalBehavior
+  | .boolToInt operand =>
+    let .bool value ← operand.eval env | .error .malformed
+    .ok (.int false 1 (if value then 1 else 0))
   | .cast op destination operand =>
     let .int s n x ← operand.eval env | .error .malformed
     let .int t m := destination | .error .malformed

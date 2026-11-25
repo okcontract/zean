@@ -156,6 +156,15 @@ private def scalarRef (raw : Raw) : Option Scalar.Ref := do
   | .constant (.scalar value) => pure (.constant value)
   | _ => none
 
+private def instruction (table : List Raw) (operand : Raw) : Option Raw := do
+  require ((← operand.textAt "kind") == "instruction")
+  table[← operand.natAt "index"]?
+
+private def referenceType (table : List Raw) (operand : Raw) : Option Ty := do
+  let typed ← if (← operand.textAt "kind") == "instruction" then instruction table operand
+    else some operand
+  typeOf 17 (← typed.get "type")
+
 private def binary (inst : Raw) (operation : Ref → Ref → Prim) : Option Prim := do
   pure (operation (← reference (← inst.get "lhs")) (← reference (← inst.get "rhs")))
 private def unary (inst : Raw) (operation : Ref → Prim) : Option Prim := do
@@ -226,8 +235,10 @@ def primitive (parameters : List Nat) (inst : Raw) (table : List Raw := []) : Op
   | "sub_wrap" => scalarBinary inst (.arithmetic .sub .wrapping)
   | "mul_wrap" => scalarBinary inst (.arithmetic .mul .wrapping)
   | "bit_and" => scalarBinary inst .bitAnd
+  | "bit_or" => scalarBinary inst .bitOr
   | "xor" => scalarBinary inst .bitXor
   | "shr" => scalarBinary inst .shiftRight
+  | "shl" => scalarBinary inst .shiftLeft
   | "min" => scalarBinary inst (.extremum false)
   | "max" => scalarBinary inst (.extremum true)
   | "cmp_eq" => scalarBinary inst (.comparison .eq)
@@ -243,7 +254,13 @@ def primitive (parameters : List Nat) (inst : Raw) (table : List Raw := []) : Op
       | "bit_cast" => pure Scalar.Cast.bitcast
       | "trunc" => pure Scalar.Cast.trunc
       | _ => none
-    pure (.scalar (.cast kind (← scalarType (← inst.get "type")) (← scalarRef (← inst.get "operand"))))
+    let destination ← scalarType (← inst.get "type")
+    let operand ← inst.get "operand"
+    let ref ← scalarRef operand
+    if kind == .bitcast && destination == .int false 1 &&
+        referenceType table operand == some (.scalar .bool) then
+      pure (.scalar (.boolToInt ref))
+    else pure (.scalar (.cast kind destination ref))
   | _ => none
 
 private def guardPrimitive (item : Raw) : Option Prim := do
@@ -270,10 +287,6 @@ private def prefixGuards (lift : Prim → P) (count id : Nat) (guards : List Raw
   | [] => pure code
   | [(item, ordinal)] => pure (.bind (count + ordinal) (.scalar .unit) (lift (← guardPrimitive item)) code)
   | _ => none
-
-private def instruction (table : List Raw) (operand : Raw) : Option Raw := do
-  require ((← operand.textAt "kind") == "instruction")
-  table[← operand.natAt "index"]?
 
 private def copyView (table : List Raw) (tag : String) (operand : Raw) : Raw :=
   ((do
@@ -333,6 +346,30 @@ private def copyLengthCheck (table : List Raw) (inst : Raw) : Option (Option Pri
     require (directCopyPointer source && (hasSliceLength || directCopyPointer target))
     pure none
 
+private def switchBound (type : Scalar.Ty) (raw : Raw) : Option Int := do
+  let .constant (.int signed bits value) ← scalarRef raw | none
+  require (type == .int signed bits)
+  pure value
+
+private def switchArms (type : Scalar.Ty) (inst : Raw) :
+    Option (List (List (Int × Int) × List Raw)) := do
+  let arms ← inst.listAt "cases"
+  require (!arms.isEmpty && arms.length ≤ 256)
+  let decoded ← arms.mapM fun arm => do
+    let rawRanges ← arm.listAt "ranges"
+    require (!rawRanges.isEmpty && rawRanges.length ≤ 256)
+    let ranges ← rawRanges.mapM fun raw => do
+      let [lower, upper] ← raw.list | none
+      let low ← switchBound type lower
+      let high ← switchBound type upper
+      require (low ≤ high)
+      pure (low, high)
+    pure (ranges, ← arm.listAt "body")
+  let allRanges := decoded.flatMap Prod.fst
+  require (allRanges.length ≤ 256 &&
+    decide (allRanges.Pairwise fun left right => left.2 < right.1 ∨ right.2 < left.1))
+  pure decoded
+
 /-- Fuel bounds parsing, not program execution. Each recursive call consumes a
 unit, including sequential operations and nested control. No instruction is
 removed based on the liveness of its result. -/
@@ -369,6 +406,21 @@ def bodyWith (lift : Prim → P) (operation : Raw → Option P) (loops : Bool)
         pure (.branch (← reference (← inst.get "condition"))
           (← bodyWith lift operation loops table guards fuel (← inst.listAt "thenBody"))
           (← bodyWith lift operation loops table guards fuel (← inst.listAt "elseBody")))
+      | "switch_br" => do
+        require (tail.isEmpty && (← (← inst.get "type").textAt "kind") == "noreturn")
+        let operand ← inst.get "operand"
+        let .scalar (.int signed bits) ← referenceType table operand | none
+        require (bits > 0)
+        let ref ← scalarRef operand
+        let arms ← switchArms (.int signed bits) inst
+        let fallback ← bodyWith lift operation loops table guards fuel (← inst.listAt "elseBody")
+        let decoded ← arms.zipIdx.mapM fun ((ranges, body), ordinal) => do
+          let register := 3 * table.length + guards.length + id * 256 + ordinal
+          let selected ← bodyWith lift operation loops table guards fuel body
+          pure (register, ranges, selected)
+        pure (decoded.foldr (fun (register, ranges, selected) rest =>
+          .bind register (.scalar .bool) (lift (.scalar (.inRanges ref ranges)))
+            (.branch (.local register) selected rest)) fallback)
       | "block" =>
         pure (.block id (← typeOf 17 (← inst.get "type"))
           (← bodyWith lift operation loops table guards fuel (← inst.listAt "body"))

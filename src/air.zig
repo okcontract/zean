@@ -11,6 +11,7 @@ const Value = c.Value;
 const Error = c.Error;
 const eq = std.mem.eql;
 const maximum_instructions = 1024;
+const maximum_switch_ranges = 256;
 pub const Extension = enum { none, assertion, hash_update, scalar_view, slice_view };
 pub const Options = struct {
     source_parameters: ?[]const usize = null,
@@ -720,6 +721,49 @@ pub const Decoder = struct {
         return null;
     }
 
+    fn switchBranch(self: *Decoder, inst: Value, index: usize, env: Env, labels: Labels, depth: usize) Error![]const u8 {
+        const ctx = self.ctx;
+        try ctx.fields(inst, "index tag payloadVisited type operand cases elseBody");
+        const operand = try self.reference(try ctx.field(inst, "operand"), env, self.profile != .scalar);
+        try ctx.require(operand.ty.* == .int and operand.ty.int.bits > 0, "switch requires an integer selector");
+        const arms = try ctx.array(try ctx.field(inst, "cases"));
+        try ctx.require(arms.len > 0 and arms.len <= maximum_switch_ranges, "integer switch arm limit");
+        const Interval = struct { low: i1024, high: i1024 };
+        var checked: std.ArrayList(Interval) = .empty;
+        var code = try self.body(try ctx.field(inst, "elseBody"), env, labels, depth + 1);
+        var ordinal = arms.len;
+        while (ordinal > 0) {
+            ordinal -= 1;
+            const arm = arms[ordinal];
+            try ctx.fields(arm, "ranges body");
+            const ranges = try ctx.array(try ctx.field(arm, "ranges"));
+            try ctx.require(ranges.len > 0 and ranges.len <= maximum_switch_ranges - checked.items.len, "integer switch range limit");
+            var encoded: std.ArrayList([]const u8) = .empty;
+            for (ranges) |pair| {
+                const bounds = try ctx.array(pair);
+                try ctx.require(bounds.len == 2, "switch requires closed ranges");
+                for (bounds) |bound| {
+                    try ctx.require(c.tag(bound, "kind", "constant") and Ty.same((try scalarConstant(ctx, bound)).ty, operand.ty), "switch bound changes integer type");
+                }
+                const low = try ctx.integer(try ctx.field(bounds[0], "value"));
+                const high = try ctx.integer(try ctx.field(bounds[1], "value"));
+                try ctx.require(low <= high, "reversed integer switch range");
+                for (checked.items) |other| try ctx.require(high < other.low or other.high < low, "overlapping integer switch ranges");
+                try checked.append(ctx.allocator, .{ .low = low, .high = high });
+                try encoded.append(ctx.allocator, try ctx.fmt("(({d}), ({d}))", .{ low, high }));
+            }
+            const selected = try self.body(try ctx.field(arm, "body"), env, labels, depth + 1);
+            var test_primitive = try self.scalarPrimitive(try ctx.fmt("(.inRanges {s} [{s}])", .{ operand.text, try std.mem.join(ctx.allocator, ", ", encoded.items) }));
+            if (self.profile.hasCalls()) test_primitive = try ctx.fmt("(.memory {s})", .{test_primitive});
+            const register = 3 * self.instructions.len + self.slice_guard_count + index * maximum_switch_ranges + ordinal;
+            const bool_ty = if (self.profile == .scalar) ".bool" else "(.scalar .bool)";
+            code = try ctx.fmt("(.bind {d} {s} {s}\n  (.branch (.local {d})\n    {s}\n    {s}))", .{
+                register, bool_ty, test_primitive, register, selected, code,
+            });
+        }
+        return code;
+    }
+
     fn body(self: *Decoder, indices_value: Value, incoming: Env, labels: Labels, depth: usize) Error![]const u8 {
         const ctx = self.ctx;
         const indices = try ctx.array(indices_value);
@@ -781,17 +825,18 @@ pub const Decoder = struct {
                 const stop = std.mem.indexOfScalar(u8, tag, '_') orelse tag.len;
                 const mode = if (std.mem.endsWith(u8, tag, "_safe")) "checked" else if (std.mem.endsWith(u8, tag, "_wrap")) "wrapping" else "unchecked";
                 primitive = try self.scalarPrimitive(try ctx.fmt("(.arithmetic .{s} .{s} {s} {s})", .{ tag[0..stop], mode, left.text, right.text }));
-            } else if (c.oneOf(tag, &.{ "bit_and", "xor", "shr" })) {
+            } else if (c.oneOf(tag, &.{ "bit_and", "bit_or", "xor", "shr", "shl" })) {
                 try ctx.fields(inst, base ++ "lhs rhs");
                 const left = try self.reference(try ctx.field(inst, "lhs"), env, self.profile != .scalar);
                 const right = try self.reference(try ctx.field(inst, "rhs"), env, self.profile != .scalar);
                 try ctx.require(Ty.same(left.ty, ty) and left.ty.* == .int and !left.ty.int.signed and right.ty.* == .int and !right.ty.int.signed, "unsupported or ill-typed unsigned AIR bit operation");
-                if (eq(u8, tag, "shr")) {
-                    try ctx.require(left.ty.int.bits > 0, "right shift has an invalid count type");
+                if (c.oneOf(tag, &.{ "shr", "shl" })) {
+                    try ctx.require(left.ty.int.bits > 0, "shift has an invalid count type");
                     const width: u16 = 16 - @clz(left.ty.int.bits - 1);
-                    try ctx.require(right.ty.int.bits == width, "right shift has an invalid count type");
+                    try ctx.require(right.ty.int.bits == width, "shift has an invalid count type");
                 } else try ctx.require(Ty.same(left.ty, right.ty), "bitwise operation changes operand width");
-                primitive = try self.scalarPrimitive(try ctx.fmt("(.{s} {s} {s})", .{ if (eq(u8, tag, "shr")) "shiftRight" else if (eq(u8, tag, "xor")) "bitXor" else "bitAnd", left.text, right.text }));
+                const op = if (eq(u8, tag, "shr")) "shiftRight" else if (eq(u8, tag, "shl")) "shiftLeft" else if (eq(u8, tag, "xor")) "bitXor" else if (eq(u8, tag, "bit_or")) "bitOr" else "bitAnd";
+                primitive = try self.scalarPrimitive(try ctx.fmt("(.{s} {s} {s})", .{ op, left.text, right.text }));
             } else if (c.oneOf(tag, &.{ "min", "max" })) {
                 try ctx.fields(inst, base ++ "lhs rhs");
                 const left = try self.reference(try ctx.field(inst, "lhs"), env, self.profile != .scalar);
@@ -808,10 +853,14 @@ pub const Decoder = struct {
             } else if (c.oneOf(tag, &.{ "int_cast", "int_cast_safe", "bit_cast", "trunc" })) {
                 try ctx.fields(inst, base ++ "operand");
                 const source = try self.reference(try ctx.field(inst, "operand"), env, self.profile != .scalar);
-                try ctx.require(source.ty.* == .int and ty.* == .int, "unsupported AIR cast types");
-                if (eq(u8, tag, "bit_cast")) try ctx.require(source.ty.int.bits == ty.int.bits, "bitcast changes width");
-                if (eq(u8, tag, "trunc")) try ctx.require(source.ty.int.signed == ty.int.signed and source.ty.int.bits >= ty.int.bits, "invalid truncation");
-                primitive = try self.scalarPrimitive(try ctx.fmt("(.cast .{s} {s} {s})", .{ if (eq(u8, tag, "int_cast")) "unchecked" else if (eq(u8, tag, "int_cast_safe")) "checked" else if (eq(u8, tag, "bit_cast")) "bitcast" else "trunc", try ty.lean(ctx, .scalar), source.text }));
+                if (eq(u8, tag, "bit_cast") and source.ty.* == .boolean and ty.isInt(false, 1)) {
+                    primitive = try self.scalarPrimitive(try ctx.fmt("(.boolToInt {s})", .{source.text}));
+                } else {
+                    try ctx.require(source.ty.* == .int and ty.* == .int, "unsupported AIR cast types");
+                    if (eq(u8, tag, "bit_cast")) try ctx.require(source.ty.int.bits == ty.int.bits, "bitcast changes width");
+                    if (eq(u8, tag, "trunc")) try ctx.require(source.ty.int.signed == ty.int.signed and source.ty.int.bits >= ty.int.bits, "invalid truncation");
+                    primitive = try self.scalarPrimitive(try ctx.fmt("(.cast .{s} {s} {s})", .{ if (eq(u8, tag, "int_cast")) "unchecked" else if (eq(u8, tag, "int_cast_safe")) "checked" else if (eq(u8, tag, "bit_cast")) "bitcast" else "trunc", try ty.lean(ctx, .scalar), source.text }));
+                }
             } else if (eq(u8, tag, "block")) {
                 try ctx.fields(inst, base ++ "body");
                 const nested = try ctx.allocator.dupe(?Label, labels);
@@ -842,6 +891,9 @@ pub const Decoder = struct {
                     try ctx.fmt(".branch {s}\n  (\n{s}\n  )\n  (\n{s}\n  )", .{ condition.text, try indent(ctx, yes, 4), try indent(ctx, no, 4) })
                 else
                     try ctx.fmt("(.branch {s}\n  {s}\n  {s})", .{ condition.text, yes, no });
+            } else if (eq(u8, tag, "switch_br")) {
+                try ctx.require(ty.* == .noreturn and self.options.extension == .none, "unsupported integer switch result or profile");
+                terminal = try self.switchBranch(inst, index, env, labels, depth);
             } else if (eq(u8, tag, "br")) {
                 try ctx.fields(inst, base ++ "target operand");
                 const target = try ctx.nat(try ctx.field(inst, "target"), self.instructions.len - 1);

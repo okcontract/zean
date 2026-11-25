@@ -418,7 +418,14 @@ pub fn build(b: *std.Build) void {
     const check_ziglings_bounds = rejectExampleProof(b, lake, "examples/ziglings/BoundsProof.lean", &check_ziglings_init.step);
     check.dependOn(&check_ziglings_bounds.step);
     const release_output = b.option([]const u8, "release-output", "New external evidence directory for release-check");
-    const compatibility = b.step("compatibility-check", "Check held-out call rejections and certified fixed-length slice admission");
+    const compatibility = b.step("compatibility-check", "Check certified ASCII call chains and fixed-length slices");
+    const ascii_tests = b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("examples/compatibility/ascii_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) }));
+    test_step.dependOn(&ascii_tests.step);
+    compatibility.dependOn(&ascii_tests.step);
     var compatibility_first: ?*std.Build.Step = null;
     if (toolchain_report != null and release_output != null) {
         const probe = b.addRunArtifact(executable);
@@ -438,13 +445,24 @@ pub fn build(b: *std.Build) void {
             rejection.step.dependOn(previous);
             previous = &rejection.step;
         }
+        const ascii_translation = b.addRunArtifact(executable);
+        ascii_translation.addArgs(&.{
+            "translate",                                                       "--capture",                                                 b.fmt("{s}/report.json", .{capture_path}),
+            "--root",                                                          "ascii_driver.upper",                                        "--root",
+            "ascii_driver.lower",                                              "--profile",                                                 "nested-calls",
+            "--output",                                                        b.fmt("{s}/compatibility/ascii-model", .{release_output.?}), "--certify",
+            b.fmt("{s}/compatibility/ascii-certificate", .{release_output.?}),
+        });
+        if (lake) |path| ascii_translation.addArgs(&.{ "--lake", path });
+        ascii_translation.has_side_effects = true;
+        ascii_translation.step.dependOn(previous);
         const fixed_probe = b.addRunArtifact(executable);
         const fixed_capture = b.fmt("{s}/compatibility/ziglings-slice", .{release_output.?});
         fixed_probe.addArgs(&.{ "capture", "--toolchain", toolchain_report.?, "--source" });
         fixed_probe.addFileArg(b.path("examples/compatibility/ziglings_slice.zig"));
         fixed_probe.addArgs(&.{ "--root", "ziglings_slice.select", "--output", fixed_capture });
         fixed_probe.has_side_effects = true;
-        fixed_probe.step.dependOn(previous);
+        fixed_probe.step.dependOn(&ascii_translation.step);
         const fixed_translation = b.addRunArtifact(executable);
         fixed_translation.addArgs(&.{ "translate", "--capture", b.fmt("{s}/report.json", .{fixed_capture}), "--root", "ziglings_slice.select", "--profile", "memory", "--output", b.fmt("{s}/compatibility/ziglings-slice-model", .{release_output.?}), "--certify", b.fmt("{s}/compatibility/ziglings-slice-certificate", .{release_output.?}) });
         if (lake) |path| fixed_translation.addArgs(&.{ "--lake", path });

@@ -23,6 +23,9 @@ test "integer extrema and byte copies retain their types and effects" {
     try @import("bulk_copy.zig").controls();
     try @import("byte_reads.zig").controls();
 }
+test "integer switches keep typed disjoint cases and own each body" {
+    try @import("integer_switch.zig").controls();
+}
 const fixtures = @import("fixtures.zig");
 
 test "versioned admission vocabulary is closed and records its evidence boundary" {

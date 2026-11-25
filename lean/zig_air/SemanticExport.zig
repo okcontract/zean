@@ -443,6 +443,11 @@ fn collectBodyEntries(air: *const Air, gpa: std.mem.Allocator) !std.bit_set.Dyna
                 try pending.appendSlice(gpa, branch.then_body);
                 try pending.appendSlice(gpa, branch.else_body);
             },
+            .switch_br => {
+                var cases = air.unwrapSwitch(index).iterateCases();
+                while (cases.next()) |arm| try pending.appendSlice(gpa, arm.body);
+                try pending.appendSlice(gpa, cases.elseBody());
+            },
             // Other containers are unsupported. Their unvisited descendants
             // cannot be treated as unreachable by a semantic consumer.
             else => {},
@@ -589,12 +594,44 @@ fn writeInstruction(w: *Writer, air: *const Air, index: Air.Inst.Index, visited:
             try w.writeAll(",\"elseBody\":");
             try writeIndices(w, branch.else_body);
         },
+        .switch_br => {
+            const branch = air.unwrapSwitch(index);
+            try w.writeAll(",\"operand\":");
+            try writeRef(w, branch.operand, zcu);
+            try w.writeAll(",\"cases\":[");
+            var cases = branch.iterateCases();
+            while (cases.next()) |arm| {
+                if (arm.idx != 0) try w.writeByte(',');
+                try w.writeAll("{\"ranges\":[");
+                for (arm.items, 0..) |item, i| {
+                    if (i != 0) try w.writeByte(',');
+                    try writeSwitchRange(w, item, item, zcu);
+                }
+                for (arm.ranges, 0..) |range, i| {
+                    if (i != 0 or arm.items.len != 0) try w.writeByte(',');
+                    try writeSwitchRange(w, range[0], range[1], zcu);
+                }
+                try w.writeAll("],\"body\":");
+                try writeIndices(w, arm.body);
+                try w.writeByte('}');
+            }
+            try w.writeAll("],\"elseBody\":");
+            try writeIndices(w, cases.elseBody());
+        },
         .dbg_stmt, .dbg_var_val, .dbg_var_ptr, .dbg_arg_inline => {
             try w.writeAll(",\"debugOnly\":true");
         },
         else => try w.writeAll(",\"unsupportedPayload\":true"),
     }
     try w.writeByte('}');
+}
+
+fn writeSwitchRange(w: *Writer, low: Air.Inst.Ref, high: Air.Inst.Ref, zcu: *Zcu) Writer.Error!void {
+    try w.writeByte('[');
+    try writeRef(w, low, zcu);
+    try w.writeByte(',');
+    try writeRef(w, high, zcu);
+    try w.writeByte(']');
 }
 
 pub fn captureFunction(pt: Zcu.PerThread, func_index: InternPool.Index, air: *const Air) !void {
