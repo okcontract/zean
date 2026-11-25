@@ -76,6 +76,19 @@ proof continuation to observe the resulting registers and memory.
 which stops at its original next instruction with its control and caller
 stacks intact. [Prefix projection and replay](../lean/Compiler/ZigAir/MemoryCallMachinePrefix.lean)
 
+## Check register-only helpers
+
+Import `Compiler.ZigAir.MemoryRegisterOnly`. `projectFiniteMemory`
+recovers a finite memory body from a captured call-machine function.
+`steps_finite_memory` transfers its result back to the captured call
+table. Projection rejects calls and back edges in the selected body.
+
+When `MemoryAir.Code.registerOnly` holds, prove the result on a small valid
+reference state. `MemoryAir.Program.run_registerOnly` gives the same result
+on any valid initial state and preserves that entire state. This also
+applies to modeled faults. The register check includes all branches and
+block continuations. [Proof rules](../lean/Compiler/ZigAir/MemoryRegisterOnly.lean)
+
 ## Termination of finite closures
 
 Import `Compiler.ZigAir.MemoryCallMachineTermination`. `Finite.infer`
