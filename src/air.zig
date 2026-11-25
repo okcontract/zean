@@ -372,7 +372,7 @@ pub const Decoder = struct {
         }
         // Earlier records can only establish the source lengths when the
         // pointer operands have not been produced by view decay or an upgrade.
-        try ctx.require(!self.copy_lengths_recorded, "byte copy lacks captured source lengths");
+        try ctx.require(!self.copy_lengths_recorded and c.tag(inst, "tag", "memcpy"), "byte transfer lacks captured source lengths");
         const destination = try ctx.field(inst, "lhs");
         const target = try self.memoryReference(destination, env);
         try ctx.require(try self.directCopyPointer(try ctx.field(inst, "rhs")) and
@@ -433,14 +433,15 @@ pub const Decoder = struct {
             try ctx.require(ty.* == .boolean and operand.ty.* == .boolean, "unsupported nonboolean complement");
             return try ctx.fmt("(.booleanNot {s})", .{operand.text});
         }
-        if (eq(u8, tag, "memcpy")) {
+        if (c.oneOf(tag, &.{ "memcpy", "memmove" })) {
             try ctx.fields(inst, if (c.get(inst, "copyLengths") != null) base ++ "lhs rhs copyLengths" else base ++ "lhs rhs");
             const target = try self.memoryReference(try ctx.field(inst, "lhs"), env);
             const input = try self.memoryReference(try ctx.field(inst, "rhs"), env);
             const dest = (target.ty.* == .slice and target.ty.slice.mutable and target.ty.slice.child.isInt(false, 8)) or (target.ty.* == .pointer and target.ty.pointer.mutable and !target.ty.pointer.many and target.ty.pointer.child.* == .array and target.ty.pointer.child.array.child.isInt(false, 8));
             const src = input.ty.* == .pointer and ((input.ty.pointer.many and input.ty.pointer.child.isInt(false, 8)) or (!input.ty.pointer.many and input.ty.pointer.child.* == .array and input.ty.pointer.child.array.child.isInt(false, 8)));
             try ctx.require(dest and src and ty.* == .unit, "unsupported byte-copy operands");
-            return try ctx.fmt("(.copyBytes {s} {s})", .{ target.text, input.text });
+            const operation = if (eq(u8, tag, "memmove")) "moveBytes" else "copyBytes";
+            return try ctx.fmt("(.{s} {s} {s})", .{ operation, target.text, input.text });
         }
         if (eq(u8, tag, "alloc")) {
             try ctx.fields(inst, base ++ "allocationKind");
@@ -782,7 +783,8 @@ pub const Decoder = struct {
             const ty = try types.parse(ctx, try ctx.field(inst, "type"), self.profile, 0);
             const base = "index tag payloadVisited type ";
             try self.before(index, env, &prefixes);
-            if (eq(u8, tag, "memcpy") and self.profile != .scalar) try self.copyLengthGuard(inst, index, env, &prefixes);
+            if (c.oneOf(tag, &.{ "memcpy", "memmove" }) and self.profile != .scalar)
+                try self.copyLengthGuard(inst, index, env, &prefixes);
             const direct_call = self.profile.hasCalls() and c.oneOf(tag, &.{ "call", "call_never_inline", "call_never_tail" });
             var primitive: ?[]const u8 = if (direct_call) try self.callPrimitive(inst, ty, env) else try self.extraPrimitive(inst, ty, env);
             if (primitive == null and c.oneOf(tag, &.{ "slice_elem_val", "ptr_elem_val" })) {

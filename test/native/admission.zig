@@ -7,10 +7,11 @@ pub fn controls() !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var ctx: z.common.Context = .{ .allocator = arena.allocator() };
-    for ([_][]const u8{ "call_always_tail", "atomic_load", "atomic_store_release", "atomic_rmw", "cmpxchg_weak", "memmove", "struct_field_ptr_index_4", "ret_safe_extra", "", "add sub" }) |tag|
+    for ([_][]const u8{ "call_always_tail", "atomic_load", "atomic_store_release", "atomic_rmw", "cmpxchg_weak", "memmove_safe", "struct_field_ptr_index_4", "ret_safe_extra", "", "add sub" }) |tag|
         try std.testing.expectError(error.InvalidInput, z.admission.require(&ctx, tag));
     try std.testing.expectEqual(z.admission.Origin.source_and_air, z.admission.lookup("slice").?.origin);
     try std.testing.expectEqual(z.admission.Origin.source_and_air, z.admission.lookup("memcpy").?.origin);
+    try std.testing.expectEqual(z.admission.Origin.source_and_air, z.admission.lookup("memmove").?.origin);
     var seen: std.StringHashMap(void) = .init(arena.allocator());
     for (z.admission.operations) |operation| {
         var tags = std.mem.tokenizeScalar(u8, operation.tags, ' ');

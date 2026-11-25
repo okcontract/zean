@@ -274,6 +274,26 @@ theorem copy_valid (state : State) (target input : Value) (initial : state.valid
       · exact initial
       · exact copyLoop_valid _ _ _ _ _ initial
 
+theorem copyBackward_valid (state : State) (source target : Address) (count : Nat)
+    (initial : state.valid = true) : (copyBackward state source target count).2.valid = true := by
+  induction count generalizing state with
+  | zero => exact initial
+  | succ count ih =>
+    rw [copyBackward]
+    cases copied : copyByte state source target count with
+    | error fault => exact initial
+    | ok after => exact ih after (copyByte_valid _ _ _ _ _ initial copied)
+
+theorem move_valid (state : State) (target input : Value) (initial : state.valid = true) :
+    (move state target input).2.valid = true := by
+  unfold move
+  split
+  · exact initial
+  · split
+    · exact initial
+    · split
+      · exact copyBackward_valid _ _ _ _ initial
+      · exact copyLoop_valid _ _ _ _ _ initial
 
 end ByteRange
 
@@ -316,14 +336,21 @@ theorem Prim.preserves_valid (prim : Prim) (args : List Value) (env : Env)
     (state : State) (initial : state.valid = true) : (prim.eval args env state).2.valid = true := by
   by_cases bulk : ∃ target source, prim = .copyBytes target source
   · obtain ⟨target, source, rfl⟩ := bulk
-    simp only [Prim.eval]
+    simp only [Prim.eval, evalByteTransfer]
     cases target.eval env <;> cases source.eval env <;> simp only
     all_goals first | exact initial | exact ByteRange.copy_valid _ _ _ initial
+  by_cases moving : ∃ target source, prim = .moveBytes target source
+  · obtain ⟨target, source, rfl⟩ := moving
+    simp only [Prim.eval, evalByteTransfer]
+    cases target.eval env <;> cases source.eval env <;> simp only
+    all_goals first | exact initial | exact ByteRange.move_valid _ _ _ initial
   have atomic : ∀ target source, prim ≠ .copyBytes target source := by simpa using bulk
+  have atomicMove : ∀ target source, prim ≠ .moveBytes target source := by simpa using moving
   have equation : prim.eval args env state =
       match prim.transition args env state with
       | .ok (value, after) => (.ok value, after)
-      | .error fault => (.error fault, state) := by cases prim <;> first | rfl | exact False.elim (atomic _ _ rfl)
+      | .error fault => (.error fault, state) := by
+    cases prim <;> first | rfl | exact False.elim (atomic _ _ rfl) | exact False.elim (atomicMove _ _ rfl)
   rw [equation]
   cases step : prim.transition args env state with
   | error fault => exact initial

@@ -172,6 +172,19 @@ private def unary (inst : Raw) (operation : Ref → Prim) : Option Prim := do
 private def scalarBinary (inst : Raw) (operation : Scalar.Ref → Scalar.Ref → Scalar.Prim) : Option Prim := do
   pure (.scalar (operation (← scalarRef (← inst.get "lhs")) (← scalarRef (← inst.get "rhs"))))
 
+private def byteTransfer (table : List Raw) (inst : Raw) (operation : Ref → Ref → Prim) : Option Prim := do
+  let destination ← referenceType table (← inst.get "lhs")
+  let source ← referenceType table (← inst.get "rhs")
+  let byte := Ty.scalar (.int false 8)
+  let writable := match destination with
+    | .slice true child | .pointer true false (.array _ child) => child == byte
+    | _ => false
+  let readable := match source with
+    | .pointer _ true child | .pointer _ false (.array _ child) => child == byte
+    | _ => false
+  require (writable && readable && (← typeOf 17 (← inst.get "type")) == .scalar .unit)
+  binary inst operation
+
 def primitive (parameters : List Nat) (inst : Raw) (table : List Raw := []) : Option Prim := do
   match ← inst.textAt "tag" with
   | "arg" =>
@@ -183,7 +196,8 @@ def primitive (parameters : List Nat) (inst : Raw) (table : List Raw := []) : Op
     pure (.alloc child)
   | "load" => unary inst .load
   | "store" | "store_safe" => binary inst .store
-  | "memcpy" => binary inst .copyBytes
+  | "memcpy" => byteTransfer table inst .copyBytes
+  | "memmove" => byteTransfer table inst .moveBytes
   | "ptr_elem_ptr" => binary inst .elementPointer
   | "ptr_add" => binary inst (.offsetPointer false)
   | "ptr_sub" => binary inst (.offsetPointer true)
@@ -339,6 +353,7 @@ private def copyLengthCheck (table : List Raw) (inst : Raw) : Option (Option Pri
     | some destination, some source => pure (some (.checkCopyLengths destination source))
     | _, _ => pure none
   else
+    require (inst.textAt "tag" == some "memcpy")
     let target ← instruction table (← inst.get "lhs")
     let source ← instruction table (← inst.get "rhs")
     let view ← typeOf 17 (← target.get "type")
@@ -444,7 +459,7 @@ def bodyWith (lift : Prim → P) (operation : Raw → Option P) (loops : Bool)
         pure (.bind temporary (.pointer writable false byte) (lift (← binary inst pointer))
           (.bind id byte (lift (.load (.local temporary)))
             (← bodyWith lift operation loops table guards fuel tail)))
-      | "memcpy" => do
+      | "memcpy" | "memmove" => do
         let guard ← copyLengthCheck table inst
         let code := .bind id (← typeOf 17 (← inst.get "type")) (← operation inst)
           (← bodyWith lift operation loops table guards fuel tail)
@@ -514,7 +529,8 @@ def checkCopyCoverage (raw validity : Raw) (table : List Raw) : Option Unit := d
   | none => require (!sourceCopy)
   | some flag =>
     require (flag.flag == some true && table.all fun inst =>
-      inst.textAt "tag" != some "memcpy" || inst.boolAt "payloadVisited" != some true ||
+      (inst.textAt "tag" != some "memcpy" && inst.textAt "tag" != some "memmove") ||
+        inst.boolAt "payloadVisited" != some true ||
         (inst.get "copyLengths").isSome)
 
 def prepare (raw : Raw) (policy : SpecializationPolicy := .standalone) : Option Input := do

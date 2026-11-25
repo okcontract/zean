@@ -526,7 +526,7 @@ fn writeInstruction(w: *Writer, air: *const Air, index: Air.Inst.Index, visited:
             try w.writeAll(",\"rhs\":");
             try writeRef(w, inst.data.bin_op.rhs, zcu);
         },
-        .memcpy => {
+        .memcpy, .memmove => {
             try w.writeAll(",\"lhs\":");
             try writeRef(w, inst.data.bin_op.lhs, zcu);
             try w.writeAll(",\"rhs\":");

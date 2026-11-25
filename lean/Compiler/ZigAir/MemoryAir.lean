@@ -6,7 +6,7 @@ import Compiler.ZigAir.MemoryByteAccess
 import Compiler.ZigAir.MemoryByteCopy
 
 /-! Memory primitives plug into the same structured interpreter as scalar AIR.
-Bulk-copy faults retain their completed prefix. Stack cleanup occurs at the invocation
+Bulk transfer faults retain the writes already reached. Stack cleanup occurs at the invocation
 boundary and does not rewind lifetime identities. Source guards are explicit
 primitives, positioned by the decoder; they are never inferred from heap extent.
 The current client admits 64-bit target layouts only. -/
@@ -51,6 +51,7 @@ inductive Prim where
   | load (pointer : Ref)
   | store (pointer value : Ref)
   | copyBytes (target source : Ref)
+  | moveBytes (target source : Ref)
   | pointerField (length : Bool) (pointer : Ref)
   | fieldPointer (pointer : Ref) (offset : Nat)
   | booleanNot (value : Ref)
@@ -131,17 +132,21 @@ def Prim.transition (prim : Prim) (args : List Value) (env : Env) (state : State
       | .checkCopyLengths destination source =>
         if (← destination.natural env) = (← source.natural env) then .ok (.scalar .unit)
         else .error .sourceBounds
-      | .alloc _ | .store .. | .wordByteStore .. | .copyBytes .. => .error .malformed
+      | .alloc _ | .store .. | .wordByteStore .. | .copyBytes .. | .moveBytes .. => .error .malformed
     .ok (value, state)
+
+def evalByteTransfer (transfer : State → Value → Value → Except Fault Unit × State)
+    (target source : Ref) (env : Env) (state : State) : Except Fault Value × State :=
+  match target.eval env, source.eval env with
+  | .ok target, .ok source =>
+    let (result, after) := transfer state target source
+    (result.map (fun _ => .scalar .unit), after)
+  | .error fault, _ | _, .error fault => (.error fault, state)
 
 def Prim.eval (prim : Prim) (args : List Value) (env : Env) (state : State) : Except Fault Value × State :=
   match prim with
-  | .copyBytes target source =>
-    match target.eval env, source.eval env with
-    | .ok target, .ok source =>
-      let (result, after) := ByteRange.copy state target source
-      (result.map (fun _ => .scalar .unit), after)
-    | .error fault, _ | _, .error fault => (.error fault, state)
+  | .copyBytes target source => evalByteTransfer ByteRange.copy target source env state
+  | .moveBytes target source => evalByteTransfer ByteRange.move target source env state
   | _ =>
     match prim.transition args env state with
     | .ok (value, after) => (.ok value, after)

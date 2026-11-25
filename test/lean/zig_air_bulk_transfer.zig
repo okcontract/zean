@@ -12,3 +12,7 @@ export fn copy_from_pointer(dst: [*]u8, length: usize, src: [*]const u8) void {
 export fn copy_erased(dst: [*]u8, dst_len: usize, src: *const [0]u8) void {
     @memcpy(dst[0..dst_len], src);
 }
+
+export fn move_slices(dst: [*]u8, dst_len: usize, src: [*]const u8, src_len: usize) void {
+    @memmove(dst[0..dst_len], src[0..src_len]);
+}

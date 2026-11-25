@@ -39,6 +39,30 @@ theorem ByteRange.copy_retains_shape (state : State) (target source : Value) :
       · exact Heap.RetainsShape.refl _
       · exact ByteRange.copyLoop_retains_shape _ _ _ _ _
 
+theorem ByteRange.copyBackward_retains_shape (state : State) (source target : Address) (count : Nat) :
+    state.heap.RetainsShape (ByteRange.copyBackward state source target count).2.heap := by
+  induction count generalizing state with
+  | zero => exact Heap.RetainsShape.refl _
+  | succ count ih =>
+    rw [ByteRange.copyBackward]
+    cases copied : ByteRange.copyByte state source target count with
+    | error fault => exact Heap.RetainsShape.refl _
+    | ok after =>
+      rcases ByteRange.copyByte_success copied with ⟨bits, _, written⟩ | ⟨_, forgotten⟩
+      · exact (store_retains_shape _ _ _ _ written).trans (ih after)
+      · exact (invalidate_retains_shape _ _ _ _ _ forgotten).trans (ih after)
+
+theorem ByteRange.move_retains_shape (state : State) (target source : Value) :
+    state.heap.RetainsShape (ByteRange.move state target source).2.heap := by
+  unfold ByteRange.move
+  split
+  · exact Heap.RetainsShape.refl _
+  · split
+    · exact Heap.RetainsShape.refl _
+    · split
+      · exact ByteRange.copyBackward_retains_shape _ _ _ _
+      · exact ByteRange.copyLoop_retains_shape _ _ _ _ _
+
 theorem Prim.transition_retains_shape (prim : Prim) (args : List Value) (env : Env)
     (state : State) (value : Value) (after : State) (initial : state.valid = true)
     (success : prim.transition args env state = .ok (value, after)) :
@@ -65,19 +89,26 @@ theorem Prim.transition_retains_shape (prim : Prim) (args : List Value) (env : E
       | contradiction
       | (cases (Prod.mk.inj (Except.ok.inj success)).2; exact Heap.RetainsShape.refl _)
 
-/-- Includes bulk-copy faults after a completed prefix of writes. -/
+/-- Includes bulk transfer faults after a completed prefix of writes. -/
 theorem Prim.retains_shape (prim : Prim) (args : List Value) (env : Env)
     (state : State) (initial : state.valid = true) : state.heap.RetainsShape (prim.eval args env state).2.heap := by
   by_cases bulk : ∃ target source, prim = .copyBytes target source
   · obtain ⟨target, source, rfl⟩ := bulk
-    simp only [Prim.eval]
+    simp only [Prim.eval, evalByteTransfer]
     cases target.eval env <;> cases source.eval env <;> simp only
     all_goals first | exact Heap.RetainsShape.refl _ | exact ByteRange.copy_retains_shape _ _ _
+  by_cases moving : ∃ target source, prim = .moveBytes target source
+  · obtain ⟨target, source, rfl⟩ := moving
+    simp only [Prim.eval, evalByteTransfer]
+    cases target.eval env <;> cases source.eval env <;> simp only
+    all_goals first | exact Heap.RetainsShape.refl _ | exact ByteRange.move_retains_shape _ _ _
   have atomic : ∀ target source, prim ≠ .copyBytes target source := by simpa using bulk
+  have atomicMove : ∀ target source, prim ≠ .moveBytes target source := by simpa using moving
   have equation : prim.eval args env state =
       match prim.transition args env state with
       | .ok (value, after) => (.ok value, after)
-      | .error fault => (.error fault, state) := by cases prim <;> first | rfl | exact False.elim (atomic _ _ rfl)
+      | .error fault => (.error fault, state) := by
+    cases prim <;> first | rfl | exact False.elim (atomic _ _ rfl) | exact False.elim (atomicMove _ _ rfl)
   rw [equation]
   cases step : prim.transition args env state with
   | error fault => exact Heap.RetainsShape.refl state.heap

@@ -51,7 +51,8 @@ profiles reject volatile and atomic accesses. [Call machine](call-machine.md) ·
 | Loads and stores | Access order, liveness, type, initialization for reads, and permissions for writes |
 | Pointer arithmetic and casts | Child type, permissions, scaling, bounds, and overflow |
 | Slices and projections | Pointer and logical extent. Source slice guards execute at their recorded anchors. |
-| Byte `memcpy` | Equality of lengths supplied by both source operands, live extents, write permission, non-overlap, and per-byte initialization. A fault preserves writes already reached. Unsupported element types and `memmove` reject. |
+| Byte `memcpy` | Equality of lengths supplied by both source operands, live extents, write permission, non-overlap, and per-byte initialization. A fault preserves writes already reached. |
+| Byte `memmove` | The same length, extent, permission, and initialization checks, with backwards traversal when the destination overlaps the source to its right. |
 | Array to slice | Static extent, pointer, and permissions. Conversion itself performs no storage access. |
 | Record fields | Complete owner layout and declared field. Padding accesses reject. |
 | Opaque enum storage | Identity, exhaustive tag table, backing width and layout. Runtime enum values and operations reject. |

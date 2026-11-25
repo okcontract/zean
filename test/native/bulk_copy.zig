@@ -62,6 +62,10 @@ const missing_lengths = f.derive(&copy_slices, &.{f.remove("/instructions/5/copy
 const pointer_source = f.derive(&copy_slices, &.{
     f.set("/instructions/5/copyLengths/source", f.obj(&.{ .{ "kind", f.s("manyPointer") }, .{ "operand", ref("4") } })),
 });
+const move_slices = f.derive(&copy_slices, &.{
+    f.set("/sourceOperationTags/0", f.s("memmove")),
+    f.set("/instructions/5/tag", f.s("memmove")),
+});
 
 pub fn controls() !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -104,6 +108,67 @@ pub fn controls() !void {
         f.derive(&copy_slices, &.{f.remove("/sourceValidity/copyLengthsAnchored")}),
         f.derive(&copy_slices, &.{f.set("/sourceValidity/copyLengthsAnchored", f.b(false))}),
     }) |input| try std.testing.expectError(error.InvalidInput, z.air.decode(&ctx, try f.load(ctx.allocator, input), .memory));
+    const moved = try z.air.decode(&ctx, try f.load(ctx.allocator, move_slices), .memory);
+    try std.testing.expect(std.mem.indexOf(u8, moved, "(.moveBytes (.local 0) (.local 4))") != null);
+    for ([_]f.Value{
+        f.derive(&move_slices, &.{f.remove("/instructions/5/copyLengths")}),
+        f.derive(&move_slices, &.{f.set("/instructions/5/type", word)}),
+        f.derive(&move_slices, &.{f.set("/instructions/5/rhs/index", f.n("0"))}),
+    }) |input| try std.testing.expectError(error.InvalidInput, z.air.decode(&ctx, try f.load(ctx.allocator, input), .memory));
+}
+
+pub fn nativeMoves() !void {
+    var bytes = "abcde".*;
+    @memmove(bytes[1..], bytes[0..4]);
+    try std.testing.expectEqualStrings("aabcd", &bytes);
+    bytes = "abcde".*;
+    @memmove(bytes[0..4], bytes[1..]);
+    try std.testing.expectEqualStrings("bcdee", &bytes);
+    @memmove(&bytes, &bytes);
+    try std.testing.expectEqualStrings("bcdee", &bytes);
+}
+
+pub fn moveEmitted(ctx: *z.common.Context) ![]const u8 {
+    const raw = try f.load(ctx.allocator, move_slices);
+    const copy_raw = try f.load(ctx.allocator, copy_slices);
+    return ctx.fmt(
+        \\import Compiler.ZigAir.Captured
+        \\open Compiler.ZigAir Compiler.ZigAir.Memory Compiler.ZigAir.MemoryAir
+        \\def move : Program := {s}
+        \\{s}
+        \\def copy : Program := {s}
+        \\def byte : Ty := .scalar (.int false 8)
+        \\def value (n : Nat) : Value := .scalar (.int false 8 n)
+        \\def before : State :=
+        \\  ⟨[(0, ⟨1, .array 5 byte, [(0, value 97), (1, value 98), (2, value 99),
+        \\    (3, value 100), (4, value 101)], true, false⟩)], 1, 6⟩
+        \\def dest (offset len : Nat) : Value := .slice (.slice true byte) ⟨0, offset⟩ len
+        \\def src (offset len : Nat) : Value := .slice (.slice false byte) ⟨0, offset⟩ len
+        \\def atByte (state : State) (index : Nat) : Except Fault Value :=
+        \\  load state (.pointer (.pointer false false byte) ⟨0, index⟩)
+        \\def bytes (state : State) : List (Except Fault Value) := (List.range 5).map (atByte state)
+        \\def observes (target source : Value) (initial : State) :=
+        \\  let after := move.run [target, source] initial
+        \\  (after.1, bytes after.2)
+        \\set_option maxHeartbeats 1000000
+        \\example : observes (dest 1 4) (src 0 4) before =
+        \\  (.ok (.scalar .unit), [97, 97, 98, 99, 100].map (fun n => .ok (value n))) := rfl
+        \\example : observes (dest 0 4) (src 1 4) before =
+        \\  (.ok (.scalar .unit), [98, 99, 100, 101, 101].map (fun n => .ok (value n))) := rfl
+        \\example : observes (dest 0 5) (src 0 5) before = (.ok (.scalar .unit), bytes before) := rfl
+        \\example : move.run [dest 1 0, src 0 0] before = (.ok (.scalar .unit), before) := rfl
+        \\example : move.run [dest 1 4, src 0 3] before = (.error .sourceBounds, before) := rfl
+        \\example : copy.run [dest 1 4, src 0 4] before = (.error .memoryValidity, before) := rfl
+        \\def holes : State :=
+        \\  ⟨[(0, ⟨1, .array 5 byte, [(0, value 97), (2, value 99),
+        \\    (3, value 100), (4, value 101)], true, false⟩)], 1, 6⟩
+        \\example : observes (dest 1 4) (src 0 4) holes =
+        \\  (.ok (.scalar .unit), [.ok (value 97), .ok (value 97), .error .uninitialized,
+        \\    .ok (value 99), .ok (value 100)]) := rfl
+        \\example : observes (dest 4 2) (src 0 2) before =
+        \\  (.error .memoryValidity, [97, 98, 99, 100, 97].map (fun n => .ok (value n))) := rfl
+        \\
+    , .{ try z.air.decode(ctx, raw, .memory), try z.certificate.declaration(ctx, raw, "move", false), try z.air.decode(ctx, copy_raw, .memory) });
 }
 
 pub fn lengthsEmitted(ctx: *z.common.Context) ![]const u8 {
