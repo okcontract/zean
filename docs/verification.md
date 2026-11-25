@@ -66,6 +66,7 @@ stack capacity needs a native argument.
 | `WordArray.Represents` | Initialized words corresponding to a list |
 | `WordArray.Initialized` | Initialized words with arbitrary contents |
 | `ReadView.Represents` | Initialized readonly elements of a given type, layout, and extent |
+| `ReadView.Writable` | Writable declared leaf elements in typed slice geometry, including uninitialized destinations |
 | `ByteArray.Region` | Live byte storage and extent with the requested permissions, including fields in complete records |
 | `ByteArray.ByteField` | Static byte-leaf geometry in a complete owner |
 | `ByteArray.Represents` | Initialized bytes for a logical view |
