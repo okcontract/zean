@@ -69,6 +69,11 @@ fn run(ctx: *z.common.Context, init: std.process.Init) !void {
             std.debug.print("Compiled emitted control: {s}.\n", .{label});
             return;
         }
+        if (std.mem.eql(u8, label, "unsigned-division")) {
+            try checker.check(label, try @import("bulk_copy.zig").divisionEmitted(ctx));
+            std.debug.print("Compiled emitted control: {s}.\n", .{label});
+            return;
+        }
         if (std.mem.eql(u8, label, "integer-switch")) {
             try checker.check(label, try @import("integer_switch.zig").emitted(ctx));
             std.debug.print("Compiled emitted control: {s}.\n", .{label});
@@ -95,6 +100,7 @@ fn run(ctx: *z.common.Context, init: std.process.Init) !void {
     for (0..@import("certificate.zig").scalar_mutations.len) |index| try checker.reject("scalar-certificate-mutation", try @import("certificate.zig").scalarEmitted(ctx, index));
     try checker.check("specialization-certificate", try @import("specialized_source.zig").emitted(ctx));
     try checker.check("integer-extrema", try @import("bulk_copy.zig").emitted(ctx));
+    try checker.check("unsigned-division", try @import("bulk_copy.zig").divisionEmitted(ctx));
     try checker.check("copy-lengths", try @import("bulk_copy.zig").lengthsEmitted(ctx));
     try checker.check("integer-switch", try @import("integer_switch.zig").emitted(ctx));
     try checker.check("byte-move", try @import("bulk_copy.zig").moveEmitted(ctx));

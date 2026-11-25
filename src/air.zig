@@ -861,6 +861,12 @@ pub const Decoder = struct {
                 const stop = std.mem.indexOfScalar(u8, tag, '_') orelse tag.len;
                 const mode = if (std.mem.endsWith(u8, tag, "_safe")) "checked" else if (std.mem.endsWith(u8, tag, "_wrap")) "wrapping" else "unchecked";
                 primitive = try self.scalarPrimitive(try ctx.fmt("(.arithmetic .{s} .{s} {s} {s})", .{ tag[0..stop], mode, left.text, right.text }));
+            } else if (eq(u8, tag, "div_trunc")) {
+                try ctx.fields(inst, base ++ "lhs rhs");
+                const left = try self.reference(try ctx.field(inst, "lhs"), env, self.profile != .scalar);
+                const right = try self.reference(try ctx.field(inst, "rhs"), env, self.profile != .scalar);
+                try ctx.require(ty.* == .int and !ty.int.signed and ty.int.bits > 0 and Ty.same(left.ty, ty) and Ty.same(right.ty, ty), "ill-typed unsigned AIR division");
+                primitive = try self.scalarPrimitive(try ctx.fmt("(.divideUnsigned {s} {s})", .{ left.text, right.text }));
             } else if (c.oneOf(tag, &.{ "bit_and", "bit_or", "xor", "shr", "shl" })) {
                 try ctx.fields(inst, base ++ "lhs rhs");
                 const left = try self.reference(try ctx.field(inst, "lhs"), env, self.profile != .scalar);

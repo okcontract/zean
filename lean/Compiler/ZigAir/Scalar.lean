@@ -104,6 +104,7 @@ def shiftCountWidth (width : Nat) : Nat :=
 inductive Prim where
   | argument (index : Nat)
   | arithmetic (op : Arithmetic) (mode : Overflow) (left right : Ref)
+  | divideUnsigned (left right : Ref)
   | extremum (maximum : Bool) (left right : Ref)
   | bitAnd (left right : Ref)
   | bitOr (left right : Ref)
@@ -126,6 +127,12 @@ def Prim.eval (prim : Prim) (args : List Value) (env : Env) : Result := do
     let .int s n x ← left.eval env | .error .malformed
     let .int t m y ← right.eval env | .error .malformed
     if s = t ∧ n = m then integer s n (op.eval x y) mode else .error .malformed
+  | .divideUnsigned left right =>
+    let .int false n x ← left.eval env | .error .malformed
+    let .int false m y ← right.eval env | .error .malformed
+    if n = 0 ∨ n ≠ m then .error .malformed
+    else if y = 0 then .error .illegalBehavior
+    else .ok (.int false n (x.toNat / y.toNat : Nat))
   | .comparison op left right =>
     let .int s n x ← left.eval env | .error .malformed
     let .int t m y ← right.eval env | .error .malformed

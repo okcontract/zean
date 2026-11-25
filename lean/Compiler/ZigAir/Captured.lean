@@ -290,6 +290,12 @@ def primitive (parameters : List Nat) (inst : Raw) (table : List Raw := []) : Op
   | "add_wrap" => scalarBinary inst (.arithmetic .add .wrapping)
   | "sub_wrap" => scalarBinary inst (.arithmetic .sub .wrapping)
   | "mul_wrap" => scalarBinary inst (.arithmetic .mul .wrapping)
+  | "div_trunc" =>
+    let .scalar (.int false width) ← typeOf 17 (← inst.get "type") | none
+    let type := Ty.scalar (.int false width)
+    require (width > 0 && referenceType table (← inst.get "lhs") == some type &&
+      referenceType table (← inst.get "rhs") == some type)
+    scalarBinary inst .divideUnsigned
   | "bit_and" => scalarBinary inst .bitAnd
   | "bit_or" => scalarBinary inst .bitOr
   | "xor" => scalarBinary inst .bitXor

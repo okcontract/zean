@@ -17,6 +17,7 @@ pub const Operation = struct {
 pub const operations = [_]Operation{
     .{ .name = "argument", .tags = "arg", .obligations = "signature, runtime parameter map, SSA ownership", .interpretation = "MemoryAir.Prim.argument", .controls = "test/native/cases/air.zig" },
     .{ .name = "arithmetic", .tags = "add sub mul add_safe sub_safe mul_safe add_wrap sub_wrap mul_wrap", .obligations = "widths, signedness, overflow mode, reached dead results", .interpretation = "Scalar.Arithmetic.eval", .controls = "test/native/cases/air.zig" },
+    .{ .name = "unsigned_division", .tags = "div_trunc", .obligations = "matching positive-width unsigned operands and result, nonzero divisor", .interpretation = "Scalar.Prim.eval", .controls = "test/native/bulk_copy.zig" },
     .{ .name = "bitwise", .tags = "bit_and bit_or xor shr shl", .obligations = "unsigned widths and shift count", .interpretation = "Scalar.Prim.eval", .controls = "test/native/cases/air.zig" },
     .{ .name = "comparison", .tags = "cmp_eq cmp_neq cmp_lt cmp_lte cmp_gt cmp_gte min max", .obligations = "matching integer operands and result type", .interpretation = "Scalar.Prim.eval", .controls = "test/native/bulk_copy.zig" },
     .{ .name = "integer_cast", .tags = "int_cast int_cast_safe bit_cast trunc", .obligations = "widths, range, signedness; byte contracts for specialized casts", .interpretation = "Scalar.Prim.eval", .controls = "test/native/cases/air.zig" },

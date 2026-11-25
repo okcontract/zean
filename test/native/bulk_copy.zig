@@ -20,6 +20,13 @@ const maximum = f.derive(&shared.air_memory_program_2_input_13, &.{
     })),
 });
 const minimum = f.derive(&maximum, &.{f.set("/instructions/0/tag", f.s("min"))});
+const division = f.derive(&maximum, &.{
+    f.set("/instructions/0/tag", f.s("div_trunc")),
+    f.set("/instructions/0/rhs/value", f.n("2")),
+});
+const division_by_zero = f.derive(&division, &.{f.set("/instructions/0/rhs/value", f.n("0"))});
+const signed_divisor = f.derive(&division, &.{f.set("/instructions/0/rhs/type/signedness", f.s("signed"))});
+const wrong_divisor_width = f.derive(&division, &.{f.set("/instructions/0/rhs/type/bits", f.n("32"))});
 const byte_slice = f.derive(&shared.pointer_21, &.{f.set("/flags/isConst", f.b(false))});
 const byte_pointer = f.ref(&shared.pointer_17);
 const copy = f.derive(&maximum, &.{
@@ -123,6 +130,12 @@ pub fn controls() !void {
         const raw = try f.load(ctx.allocator, input);
         const output = try z.air.decode(&ctx, raw, .memory);
         try std.testing.expect(std.mem.indexOf(u8, output, "(.extremum ") != null);
+    }
+    for ([_]z.air.Profile{ .scalar, .memory }) |profile| {
+        const decoded = try z.air.decode(&ctx, try f.load(ctx.allocator, division), profile);
+        try std.testing.expect(std.mem.indexOf(u8, decoded, "(.divideUnsigned ") != null);
+        for ([_]f.Value{ signed_divisor, wrong_divisor_width }) |input|
+            try std.testing.expectError(error.InvalidInput, z.air.decode(&ctx, try f.load(ctx.allocator, input), profile));
     }
     const invalid = [_]f.Value{
         f.derive(&maximum, &.{f.set("/instructions/0/rhs/type/bits", f.n("32"))}),
@@ -268,6 +281,34 @@ pub fn lengthsEmitted(ctx: *z.common.Context) ![]const u8 {
         try z.air.decode(ctx, raw, .aggregate),
         try z.air.decode(ctx, try f.load(ctx.allocator, move_slices), .aggregate),
         try z.certificate.lift(ctx, try f.load(ctx.allocator, missing_lengths), 0),
+    });
+}
+
+pub fn divisionEmitted(ctx: *z.common.Context) ![]const u8 {
+    const raw = try f.load(ctx.allocator, division);
+    const zero = try f.load(ctx.allocator, division_by_zero);
+    return ctx.fmt(
+        \\import Compiler.ZigAir.CapturedScalar
+        \\open Compiler.ZigAir
+        \\def quotient : Scalar.Program := {s}
+        \\{s}
+        \\def quotientMemory : MemoryAir.Program := {s}
+        \\{s}
+        \\def zeroDivisor : Scalar.Program := {s}
+        \\example : quotient.run [] = .ok (.int false 64 3) := rfl
+        \\example : quotientMemory.run [] {{}} = (.ok (.scalar (.int false 64 3)), {{}}) := rfl
+        \\example : zeroDivisor.run [] = .error .illegalBehavior := rfl
+        \\example : CapturedScalar.decode {s} = none := rfl
+        \\example : Captured.decode false {s} = none := rfl
+        \\
+    , .{
+        try z.air.decode(ctx, raw, .scalar),
+        try z.certificate.scalarDeclaration(ctx, raw, "quotient"),
+        try z.air.decode(ctx, raw, .memory),
+        try z.certificate.declaration(ctx, raw, "quotientMemory", false),
+        try z.air.decode(ctx, zero, .scalar),
+        try z.certificate.lift(ctx, try f.load(ctx.allocator, signed_divisor), 0),
+        try z.certificate.lift(ctx, try f.load(ctx.allocator, wrong_divisor_width), 0),
     });
 }
 

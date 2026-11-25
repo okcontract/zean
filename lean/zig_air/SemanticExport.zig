@@ -503,6 +503,7 @@ fn writeInstruction(w: *Writer, air: *const Air, index: Air.Inst.Index, visited:
         .mul,
         .mul_safe,
         .mul_wrap,
+        .div_trunc,
         .min,
         .max,
         .bit_and,
