@@ -138,33 +138,49 @@ theorem Region.write (valid : state.valid = true) (cap : Region state view true)
     subst entry
     simpa only [Nat.add_zero, Value.type, Scalar.Value.type, byte] using declared
 
-theorem Represents.readByte (valid : state.valid = true) (cap : Region state view false)
-    (represented : Represents state view contents) (inside : index < view.length) :
-    ScalarBytes.readAt state (view.at index) = .ok (contents index) := by
+theorem Region.readByte_of_load (valid : state.valid = true) (cap : Region state view false)
+    (inside : index < view.length)
+    (loaded : load state (view.pointer false false index) = .ok (number value)) :
+    ScalarBytes.readAt state (view.at index) = .ok value := by
   obtain ⟨cell, _, _, located, accessed⟩ := cap.access valid inside
-  have loaded := represented index inside
   simp only [View.pointer] at loaded
   simp only [ScalarBytes.readAt, accessed, located, loaded, bind, Except.bind, Nat.sub_self,
     Nat.pow_zero, Nat.div_one]
   simp [number]
+
+theorem Represents.readByte (valid : state.valid = true) (cap : Region state view false)
+    (represented : Represents state view contents) (inside : index < view.length) :
+    ScalarBytes.readAt state (view.at index) = .ok (contents index) :=
+  cap.readByte_of_load valid inside (represented index inside)
+
+theorem load_byte_after_store_distinct {view target : View}
+    (stored : store before (target.pointer true false index) (number byteValue) = .ok after)
+    (apart : view.address.allocation ≠ target.address.allocation ∨
+      view.address.offset + other ≠ target.address.offset + index) :
+    load after (view.pointer false false other) = load before (view.pointer false false other) := by
+  by_cases same : view.address.allocation = target.address.allocation
+  · have different := apart.resolve_left (not_not_intro same)
+    have result := load_disjoint_after_store before true false byte (target.at index) (number byteValue)
+      after false false byte (view.at other).offset stored (by
+        intro position read entry written
+        simp only [Ty.readOffsets, List.mem_singleton] at read
+        simp only [number, Value.leaves, List.mem_singleton] at written
+        subst position entry
+        exact different)
+    simpa only [View.pointer, View.at, same] using result
+  · exact load_other_after_store before true false byte (target.at index) (number byteValue) after
+      false false byte (view.at other) stored same
 
 theorem Represents.stored (represented : Represents before source contents)
     (separate : Disjoint source target) (inside : index < target.length)
     (stored : store before (target.pointer true false index) (number value) = .ok after) :
     Represents after source contents := by
   intro other within
-  have old := represented other within
-  by_cases same : source.address.allocation = target.address.allocation
-  · have apart : (source.at other).offset ≠ (target.at index).offset := by
-      simp only [Disjoint] at separate
-      simp only [View.at]
-      omega
-    have kept := load_disjoint_after_store before true false byte (target.at index) (number value)
-      after false false byte (source.at other).offset stored (by
-        simpa [Ty.readOffsets, number, Value.leaves] using apart)
-    simpa only [View.pointer, View.at, same] using kept.trans (by simpa only [View.pointer, View.at, same] using old)
-  · exact (load_other_after_store before true false byte (target.at index) (number value) after
-      false false byte (source.at other) stored same).trans old
+  refine (load_byte_after_store_distinct stored ?_).trans (represented other within)
+  rcases separate with allocations | left | right
+  · exact .inl allocations
+  · exact .inr (by omega)
+  · exact .inr (by omega)
 
 set_option maxRecDepth 4096 in
 theorem copyLoop_safe (valid : state.valid = true) (readable : Region state source false)

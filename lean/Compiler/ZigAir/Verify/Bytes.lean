@@ -6,6 +6,7 @@ import Compiler.ZigAir.Verify.Core
 import Compiler.ZigAir.MemoryByteCopyAutomation
 import Compiler.ZigAir.MemoryByteReadAutomation
 import Compiler.ZigAir.MemoryByteFields
+import Compiler.ZigAir.MemoryByteMoveContracts
 
-/-! Optional initialized byte-region and bulk-copy contracts, including declared
+/-! Optional initialized byte-region, copy, and move contracts, including declared
 byte fields inside a complete record. -/

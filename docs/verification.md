@@ -13,7 +13,7 @@ experimental `vcgen` tactic locally through `air_vcgen`.
 2. Import the generated module and `Compiler.ZigAir.Verify.Core`. Add the
    domain you need, such as `Verify.Words` for word views, `Verify.Slices`
    for writable slices, `Verify.Reads` for readonly views, `Verify.Bytes`
-   for byte ranges and copies, or `Verify.Records` for complete record fields.
+   for byte ranges, copies, and overlapping moves, or `Verify.Records` for complete record fields.
 3. State the precondition, successful result, and allowed faults. Give each
    loop label an invariant about the live locals and memory.
 4. Prove a `Std.WP.Triple` over `MemoryAir.Verify.Invocation.mk program args invariants`.
@@ -138,3 +138,13 @@ file. This measures proof elaboration for those files. Transitive proof size,
 aggregate memory, and native execution costs require separate measurements.
 [Shared-context experiment](automation-measurements.md) ·
 [Historical buffer proof](../lean/Compiler/Baselines/BufferExecution.lean)
+
+## Prove a move that can overlap its source
+
+With `Verify.Bytes`, use `ByteArray.move_refines` for the initialized contents
+of a `ByteRange.move`. Supply live readable and writable regions, an initial
+source snapshot through `Represents`, and a destination length within the
+source. The destination represents the original source snapshot on return.
+The heap frame preserves reads outside the destination. The proof tracks the
+unread source bytes in the actual forward or backward traversal.
+[Move contract](../lean/Compiler/ZigAir/MemoryByteMoveContracts.lean)

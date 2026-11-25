@@ -41,4 +41,18 @@ example : ByteRange.copy partialState (.slice (.slice true byte) ⟨1, 2⟩ 2) s
         (1, ⟨4, .array 3 byte, [(2, number 41)], true, false⟩)], 2, 7⟩) := by rfl
 example : ByteRange.copy partialState (target 0) source = (.ok (), partialState) := by rfl
 
+private def moveInput : State :=
+  ⟨[(0, ⟨8, .array 5 byte, [(0, number 1), (1, number 2), (2, number 3), (3, number 4),
+    (4, number 5)], true, false⟩)], 1, 16⟩
+
+private def observeMove (source target : Nat) : Except Fault Unit × Except Fault (List (BitVec 8)) :=
+  let (result, after) := ByteRange.move moveInput (.slice (.slice true byte) ⟨0, target⟩ 4)
+    (.pointer (.pointer false true byte) ⟨0, source⟩)
+  (result, ByteRange.read after ⟨0, 0⟩ 5)
+
+-- Both directions overlap, so a fixed traversal order would destroy a source byte.
+example : observeMove 1 0 = (.ok (), .ok [2, 3, 4, 5, 5]) := by rfl
+example : observeMove 0 1 = (.ok (), .ok [1, 1, 2, 3, 4]) := by rfl
+example : observeMove 0 0 = (.ok (), .ok [1, 2, 3, 4, 5]) := by rfl
+
 end Compiler.ZigAir.Memory.ByteCopyControls
