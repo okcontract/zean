@@ -113,3 +113,15 @@ limit. Lake dependency builds use two workers. [Reports and scope](../../docs/ev
 
 Call profiles emit the explicit call machine. `"executionModel": "call-machine"`
 can assert that choice in a manifest. [Caller and helper example](calls/README.md)
+
+## Replay a client declared in a project
+
+Pass `--project` to use the source mappings and capture target from the
+project's `zean.json`. The manifest path is relative to the project and
+must appear in its client list. The new output directory contains the
+retained project and client manifests, generated Lean, and proof receipts.
+
+```sh
+zean verify-client --project "$project" --manifest verification/gap.json \
+  --toolchain "$toolchain_report" --output "$evidence_dir"
+```

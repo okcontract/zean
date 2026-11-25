@@ -46,6 +46,10 @@ test "project workflows retain explicit paths and protect existing Lean sources"
     try @import("project.zig").controls();
 }
 
+test "project client replay selects only a declared manifest" {
+    try @import("project.zig").replayControls();
+}
+
 test "project freshness reports obsolete outputs and keeps evidence outside the checkout" {
     try @import("project.zig").inventoryControls();
 }

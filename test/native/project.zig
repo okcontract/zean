@@ -398,3 +398,32 @@ pub fn fileDirectoryControls() !void {
         try std.testing.expectEqualStrings(try ctx.fmt("generated destination {s} belongs to an enclosing Zean project", .{path}), ctx.diagnostic);
     }
 }
+
+pub fn replayControls() !void {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx: z.common.Context = .{ .allocator = arena.allocator() };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const directory = try tmp.dir.realPathFileAlloc(io, ".", ctx.allocator);
+    const output = try std.fs.path.join(ctx.allocator, &.{ directory, "replay" });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "zean.json",
+        .data = "{\"schema\":\"zean.project.v1\",\"clients\":[\"proofs/client.json\"]}",
+    });
+    var env: std.process.Environ.Map = .init(ctx.allocator);
+    defer env.deinit();
+    var options: z.client.Options = .{
+        .manifest = "unlisted.json",
+        .toolchain = "unused.json",
+        .output = output,
+    };
+    try std.testing.expectError(error.InvalidInput, z.project.replayClient(&ctx, io, directory, options, &env));
+    try std.testing.expectEqualStrings("client is not declared in zean.json", ctx.diagnostic);
+    options.manifest = "../client.json";
+    try std.testing.expectError(error.InvalidInput, z.project.replayClient(&ctx, io, directory, options, &env));
+    options.manifest = "proofs/client.json";
+    try std.testing.expectError(error.FileNotFound, z.project.replayClient(&ctx, io, directory, options, &env));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "replay", .{}));
+}

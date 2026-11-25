@@ -70,6 +70,29 @@ fn parseConfig(ctx: *c.Context, bytes: []const u8) !Config {
     return config;
 }
 
+/// Replay a declared client with the same source mapping and capture target
+/// used for project generation. All replay artifacts go to the evidence path.
+pub fn replayClient(ctx: *c.Context, io: std.Io, directory: []const u8, options: client.Options, environment: *const std.process.Environ.Map) !c.Value {
+    const repo = Dir.cwd().openDir(io, directory, .{}) catch |err|
+        return ctx.fail("cannot open project directory {s} ({s})", .{ directory, @errorName(err) });
+    defer repo.close(io);
+    const bytes = files.readContained(ctx, io, repo, "zean.json") catch |err| return configError(ctx, "zean.json", err);
+    var config = try parseConfig(ctx, bytes);
+    defer config.source_map.deinit(ctx.allocator);
+    try client.relative(ctx, options.manifest);
+    try ctx.require(c.oneOf(options.manifest, config.clients), "client is not declared in zean.json");
+    const plan = try client.load(ctx, io, repo, options.manifest, &config.source_map);
+    const result = try client.execute(ctx, io, repo, plan, .{
+        .toolchain = options.toolchain,
+        .output = options.output,
+        .capture_target = config.capture_target,
+        .verify = true,
+        .lake = options.lake,
+        .project_config = bytes,
+    }, environment);
+    return result.report;
+}
+
 const Snapshot = struct { identity: files.Identity, sha: [64]u8 };
 
 const Model = struct {

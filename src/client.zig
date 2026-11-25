@@ -137,6 +137,7 @@ pub const RunOptions = struct {
     capture_target: ?z.capture.Target = null,
     verify: bool = false,
     lake: ?[]const u8 = null,
+    project_config: ?[]const u8 = null,
 };
 pub const InputHash = struct { path: []const u8, sha: [64]u8 };
 pub const Result = struct { report: c.Value, generated: []const u8, input_hashes: []const InputHash };
@@ -149,6 +150,12 @@ pub fn execute(ctx: *c.Context, io: std.Io, base: Dir, plan: Plan, options: RunO
     var report = try ctx.parse(try ctx.json(.{ .schema = if (options.verify) "zean.client-replay.v1" else "zean.client-generation.v1", .status = "failed", .manifestSha256 = &c.digest(plan.bytes), .provenance = try z.provenance.identity(ctx), .airCorrespondenceEmitted = false, .airCorrespondenceChecked = false, .modelProofsChecked = false, .nativeObjectComparisons = false, .sourceSafetyVerified = false, .nativeRefinementVerified = false, .wholeApplicationVerified = false, .theoremMeaning = "user-specified contracts; theorem checking alone does not establish a source-safety claim" }));
     errdefer files.write(io, report_path, ctx.json(report) catch "{\"status\":\"failed\"}") catch {};
     if (options.verify) try z.provenance.verifyWorkspace(ctx, io);
+    const retained_project = if (options.project_config) |project| path: {
+        const path = try files.join(ctx, &.{ output, "zean.json" });
+        try files.write(io, path, project);
+        try z.toolchain.set(ctx, &report, "projectSha256", &c.digest(project));
+        break :path path;
+    } else null;
     const retained_manifest = try files.join(ctx, &.{ output, "client.json" });
     try files.write(io, retained_manifest, plan.bytes);
     const retained_inputs = try files.join(ctx, &.{ output, "inputs" });
@@ -203,6 +210,10 @@ pub fn execute(ctx: *c.Context, io: std.Io, base: Dir, plan: Plan, options: RunO
     try ctx.require(c.tag(translated, "leanSha256", &c.digest(generated)), "generated Lean changed after translation");
     if (options.verify) {
         try checkProofs(ctx, io, options, environment, output, manifest, generated, snapshots[source_count..]);
+    }
+    if (options.project_config) |project| {
+        try revalidate(ctx, io, base, &.{.{ .path = "zean.json", .sha = c.digest(project) }});
+        try ctx.require(std.mem.eql(u8, project, try ctx.read(io, retained_project.?, c.max_json_bytes)), "retained project manifest changed during verification");
     }
     try revalidate(ctx, io, base, input_hashes);
     try ctx.require(std.mem.eql(u8, plan.bytes, try ctx.read(io, retained_manifest, c.max_json_bytes)), "retained client manifest changed during verification");
