@@ -94,6 +94,11 @@ fn run(ctx: *z.common.Context, init: std.process.Init) !void {
             std.debug.print("Compiled emitted control: {s}.\n", .{label});
             return;
         }
+        if (std.mem.eql(u8, label, "error-status")) {
+            try checker.check(label, try @import("error_status.zig").emitted(ctx));
+            std.debug.print("Compiled emitted control: {s}.\n", .{label});
+            return;
+        }
         if (std.mem.eql(u8, label, "scalar-certificate")) {
             try checker.check(label, try @import("certificate.zig").scalarEmitted(ctx, null));
             for (0..@import("certificate.zig").scalar_mutations.len) |index| try checker.reject("scalar-certificate-mutation", try @import("certificate.zig").scalarEmitted(ctx, index));
@@ -138,6 +143,7 @@ fn run(ctx: *z.common.Context, init: std.process.Init) !void {
     }
     try checker.check("calls", try @import("call_admission.zig").emitted(ctx));
     try checker.check("singleton-arguments", try @import("call_admission.zig").singletonEmitted(ctx));
+    try checker.check("error-status", try @import("error_status.zig").emitted(ctx));
     covered.insert(.calls);
     covered.insert(.call_loops);
     covered.insert(.nested_calls);

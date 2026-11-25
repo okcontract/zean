@@ -58,6 +58,7 @@ profiles reject volatile and atomic accesses. [Call machine](call-machine.md) ·
 | Record fields | Complete owner layout and declared field. An unused pointer projection to a validated zero-storage field checks the live owner and representable address. Admission rejects uses of that pointer and accesses to padding. |
 | Opaque enum storage | Identity, exhaustive tag table, backing width and layout. Runtime enum values and operations reject. |
 | Direct calls | Exact callee identity and execution of its captured body, including faults and effects. A by-value singleton is omitted only after checking its exact zero-storage declaration and sole defined value. The other arguments keep their source order. |
+| Void error unions and `try` | Concrete error sets and named values in registers. The selected branch executes, and a failure arm can use its own labels. An absent component faults on extraction. Byte layouts and nonvoid payloads remain outside this subset. |
 | Branches, blocks, and loops | Branch selection, labels, block results, continuations, and back edges |
 | Integer switches | Typed, disjoint constant items and inclusive ranges. All bodies and the explicit default must pass admission. |
 | Return | Result type and reference, followed by release of private stack storage |

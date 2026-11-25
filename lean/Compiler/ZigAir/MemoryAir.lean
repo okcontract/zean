@@ -5,6 +5,7 @@
 import Compiler.ZigAir.MemoryByteAccess
 import Compiler.ZigAir.MemoryByteCopy
 import Compiler.ZigAir.MemorySliceInvalidationModel
+import Compiler.ZigAir.MemoryErrorValues
 
 /-! Memory primitives plug into the same structured interpreter as scalar AIR.
 Bulk transfer faults retain the writes already reached. Stack cleanup occurs at the invocation
@@ -58,6 +59,9 @@ inductive Prim where
   | fieldPointer (pointer : Ref) (offset : Nat)
   | checkZeroField (pointer : Ref) (offset : Nat)
   | booleanNot (value : Ref)
+  | testError (nonError : Bool) (value : Ref)
+  | unwrapError (payload : Bool) (value : Ref)
+  | wrapError (allowed : List String) (value : Ref)
   | unreachable
   | pointerCast (target : Ty) (pointer : Ref)
   | sliceCast (target : Ty) (slice : Ref)
@@ -115,6 +119,9 @@ def Prim.transition (prim : Prim) (args : List Value) (env : Env) (state : State
         Memory.checkZeroField state (← pointer.eval env) offset
         .ok (.scalar .unit)
       | .booleanNot reference => do MemoryAir.booleanNot (← reference.eval env)
+      | .testError nonError reference => do Memory.testError nonError (← reference.eval env)
+      | .unwrapError payload reference => do Memory.unwrapError payload (← reference.eval env)
+      | .wrapError allowed reference => do Memory.wrapError allowed (← reference.eval env)
       | .unreachable => .error (.scalar .illegalBehavior)
       | .pointerCast target pointer => do Memory.pointerCast state target (← pointer.eval env)
       | .sliceCast target reference => do MemoryAir.sliceCast target (← reference.eval env)

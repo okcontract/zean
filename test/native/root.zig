@@ -110,6 +110,10 @@ test "direct-call closure rejects identity, signature, recursion and unsupported
     try @import("call_admission.zig").controls();
 }
 
+test "void-payload error unions keep checked try branches and named errors" {
+    try @import("error_status.zig").controls();
+}
+
 test "counter regeneration compares complete programs and admits only replayed imports" {
     try @import("tutorial_replay.zig").controls();
 }

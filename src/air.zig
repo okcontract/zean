@@ -38,6 +38,23 @@ const FieldSelection = struct { owner: Reference, field: Ty.Field };
 const field_tags: []const []const u8 = &.{ "struct_field_ptr", "struct_field_ptr_index_0", "struct_field_ptr_index_1", "struct_field_ptr_index_2", "struct_field_ptr_index_3" };
 
 pub fn constant(ctx: *Context, value: Value, profile: Profile) Error!Reference {
+    if (c.tag(value, "kind", "errorValue") or c.tag(value, "kind", "errorStatus")) {
+        try ctx.fields(value, "kind type name");
+        const ty = try types.parse(ctx, try ctx.field(value, "type"), profile, 0);
+        try ctx.require(ty.* == .error_value and ty.error_value.result == c.tag(value, "kind", "errorStatus"), "error constant disagrees with its declared kind");
+        const raw_name = try ctx.field(value, "name");
+        const name = if (raw_name == .null) blk: {
+            try ctx.require(ty.error_value.result, "an error tag requires a name");
+            break :blk "none";
+        } else blk: {
+            const named = try ctx.str(raw_name);
+            try ctx.require(ty.error_value.contains(named), "error constant is outside its declared set");
+            break :blk try ctx.fmt("(some {s})", .{try ctx.json(named)});
+        };
+        return .{ .ty = ty, .text = try ctx.fmt("(.constant (.errorValue .{s} {s} {s}))", .{
+            ty.error_value.leanKind(), try ctx.json(ty.error_value.names), name,
+        }) };
+    }
     if (profile == .aggregate and (c.tag(value, "kind", "aggregate") or c.tag(value, "kind", "undefined"))) {
         const ty = try types.parse(ctx, try ctx.field(value, "type"), profile, 0);
         try ctx.require(ty.* == .structure, "undefined scalar/array cannot be an evaluated register");
@@ -465,10 +482,41 @@ pub const Decoder = struct {
         return ctx.fail("call target is missing from the admitted closure", .{});
     }
 
+    fn errorPrimitive(self: *Decoder, inst: Value, tag: []const u8, ty: *const Ty, env: Env) Error!?[]const u8 {
+        const tags: []const []const u8 = &.{
+            "is_err",                "is_non_err",        "unwrap_errunion_payload", "unwrap_errunion_err",
+            "wrap_errunion_payload", "wrap_errunion_err",
+        };
+        if (!c.oneOf(tag, tags)) return null;
+        const ctx = self.ctx;
+        try ctx.require(self.profile == .memory or self.profile == .loops or self.profile.hasCalls(), "error values require the memory or call vocabulary");
+        try ctx.fields(inst, "index tag payloadVisited type operand");
+        const operand = try self.memoryReference(try ctx.field(inst, "operand"), env);
+        if (c.oneOf(tag, &.{ "wrap_errunion_payload", "wrap_errunion_err" })) {
+            try ctx.require(ty.* == .error_value and ty.error_value.result, "error wrapping requires a void error union");
+            const valid = if (eq(u8, tag, "wrap_errunion_payload"))
+                operand.ty.* == .unit
+            else
+                operand.ty.* == .error_value and !operand.ty.error_value.result and ty.error_value.includes(operand.ty.error_value);
+            try ctx.require(valid, "error wrapping changes the declared set or payload");
+            return try ctx.fmt("(.wrapError {s} {s})", .{ try ctx.json(ty.error_value.names), operand.text });
+        }
+        try ctx.require(operand.ty.* == .error_value and operand.ty.error_value.result, "expected an error union operand");
+        if (c.oneOf(tag, &.{ "is_err", "is_non_err" })) {
+            try ctx.require(ty.* == .boolean, "error test requires a boolean result");
+            return try ctx.fmt("(.testError {s} {s})", .{ c.boolText(eq(u8, tag, "is_non_err")), operand.text });
+        }
+        const payload = eq(u8, tag, "unwrap_errunion_payload");
+        const expected: Ty = .{ .error_value = .{ .result = false, .names = operand.ty.error_value.names } };
+        try ctx.require(if (payload) ty.* == .unit else Ty.same(ty, &expected), "error extraction changes the declared set or payload");
+        return try ctx.fmt("(.unwrapError {s} {s})", .{ c.boolText(payload), operand.text });
+    }
+
     fn memoryPrimitive(self: *Decoder, inst: Value, ty: *const Ty, env: Env) Error!?[]const u8 {
         const ctx = self.ctx;
         const tag = try ctx.str(try ctx.field(inst, "tag"));
         const base = "index tag payloadVisited type ";
+        if (try self.errorPrimitive(inst, tag, ty, env)) |operation| return operation;
         if (try self.fieldPrimitive(inst, ty, env)) |field| return field;
         if (eq(u8, tag, "not")) {
             try ctx.fields(inst, base ++ "operand");
@@ -840,8 +888,29 @@ pub const Decoder = struct {
     }
 
     fn body(self: *Decoder, indices_value: Value, incoming: Env, labels: Labels, depth: usize) Error![]const u8 {
+        return self.bodyIndices(try self.ctx.array(indices_value), incoming, labels, depth);
+    }
+
+    fn branchText(self: *Decoder, condition: []const u8, yes: []const u8, no: []const u8) Error![]const u8 {
         const ctx = self.ctx;
-        const indices = try ctx.array(indices_value);
+        return if (self.options.call_machine)
+            ctx.fmt(".branch {s}\n  (\n{s}\n  )\n  (\n{s}\n  )", .{ condition, try indent(ctx, yes, 4), try indent(ctx, no, 4) })
+        else
+            ctx.fmt("(.branch {s}\n  {s}\n  {s})", .{ condition, yes, no });
+    }
+
+    fn prepend(self: *Decoder, prefix: Prefix, rest: []const u8) Error![]const u8 {
+        const ctx = self.ctx;
+        return if (!self.options.call_machine)
+            ctx.fmt("(.{s} {d} {s}\n  {s}\n  {s})", .{ prefix.kind, prefix.id, prefix.ty, prefix.child, rest })
+        else if (eq(u8, prefix.kind, "block"))
+            ctx.fmt(".block {d} {s} (\n{s}\n) <|\n{s}", .{ prefix.id, prefix.ty, try indent(ctx, prefix.child, 2), rest })
+        else
+            ctx.fmt(".bind {d} {s} {s} <|\n{s}", .{ prefix.id, prefix.ty, prefix.child, rest });
+    }
+
+    fn bodyIndices(self: *Decoder, indices: []const Value, incoming: Env, labels: Labels, depth: usize) Error![]const u8 {
+        const ctx = self.ctx;
         try ctx.require(indices.len > 0 and depth <= 64, "empty, malformed or too deeply nested AIR body");
         const env = try ctx.allocator.dupe(?*const Ty, incoming);
         var prefixes: std.ArrayList(Prefix) = .empty;
@@ -980,10 +1049,35 @@ pub const Decoder = struct {
                 try ctx.require(condition.ty.* == .boolean and ty.* == .noreturn, "ill-typed AIR conditional branch");
                 const yes = try self.body(try ctx.field(inst, "thenBody"), env, labels, depth + 1);
                 const no = try self.body(try ctx.field(inst, "elseBody"), env, labels, depth + 1);
-                terminal = if (self.options.call_machine)
-                    try ctx.fmt(".branch {s}\n  (\n{s}\n  )\n  (\n{s}\n  )", .{ condition.text, try indent(ctx, yes, 4), try indent(ctx, no, 4) })
-                else
-                    try ctx.fmt("(.branch {s}\n  {s}\n  {s})", .{ condition.text, yes, no });
+                terminal = try self.branchText(condition.text, yes, no);
+            } else if (c.oneOf(tag, &.{ "try", "try_cold" })) {
+                try ctx.fields(inst, base ++ "operand errorBody");
+                try ctx.require((self.profile == .memory or self.profile == .loops or self.profile.hasCalls()) and
+                    self.options.extension == .none and ty.* == .unit, "try requires a void payload and memory or call semantics");
+                const operand = try self.memoryReference(try ctx.field(inst, "operand"), env);
+                try ctx.require(operand.ty.* == .error_value and operand.ty.error_value.result, "try requires an admitted error union");
+                // The error arm has its own labels. It can return or fault,
+                // but it cannot jump into the enclosing success continuation.
+                const handler_labels = try ctx.allocator.alloc(?Label, labels.len);
+                @memset(handler_labels, null);
+                const handler = try self.body(try ctx.field(inst, "errorBody"), env, handler_labels, depth + 1);
+                env[index] = ty;
+                const continuation = try self.bodyIndices(indices[position + 1 ..], env, labels, depth + 1);
+                const test_error = try ctx.fmt("(.testError false {s})", .{operand.text});
+                const unwrap = try ctx.fmt("(.unwrapError true {s})", .{operand.text});
+                const condition_id = 2 * self.instructions.len + self.slice_guard_count + index;
+                try prefixes.append(ctx.allocator, .{
+                    .id = condition_id,
+                    .ty = "(.scalar .bool)",
+                    .child = if (self.profile.hasCalls()) try ctx.fmt("(.memory {s})", .{test_error}) else test_error,
+                });
+                const success = try self.prepend(.{
+                    .id = index,
+                    .ty = "(.scalar .unit)",
+                    .child = if (self.profile.hasCalls()) try ctx.fmt("(.memory {s})", .{unwrap}) else unwrap,
+                }, continuation);
+                terminal = try self.branchText(try ctx.fmt("(.local {d})", .{condition_id}), handler, success);
+                break;
             } else if (eq(u8, tag, "switch_br")) {
                 try ctx.require(ty.* == .noreturn and self.options.extension == .none, "unsupported integer switch result or profile");
                 terminal = try self.switchBranch(inst, index, env, labels, depth);
@@ -1021,13 +1115,7 @@ pub const Decoder = struct {
         var next = prefixes.items.len;
         while (next > 0) {
             next -= 1;
-            const prefix = prefixes.items[next];
-            result = if (!self.options.call_machine)
-                try ctx.fmt("(.{s} {d} {s}\n  {s}\n  {s})", .{ prefix.kind, prefix.id, prefix.ty, prefix.child, result })
-            else if (eq(u8, prefix.kind, "block"))
-                try ctx.fmt(".block {d} {s} (\n{s}\n) <|\n{s}", .{ prefix.id, prefix.ty, try indent(ctx, prefix.child, 2), result })
-            else
-                try ctx.fmt(".bind {d} {s} {s} <|\n{s}", .{ prefix.id, prefix.ty, prefix.child, result });
+            result = try self.prepend(prefixes.items[next], result);
         }
         return result;
     }

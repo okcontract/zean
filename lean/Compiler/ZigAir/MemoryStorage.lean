@@ -14,10 +14,12 @@ namespace Compiler.ZigAir.Memory
 def acceptsView (owner : Ty) (offset : Nat) (wanted : Ty) : Bool :=
   (Ty.project (fun type => decide (type = wanted)) owner offset).isSome
 
-/-- A leaf is a scalar, atomic optional or pointer; a slice occupies two independently initialized
-leaves. Recursion follows the declared type, not a fabricated pointer view. -/
+/-- Error values, scalars, optionals and pointers use atomic cell entries. Slices
+use two entries. Region access also requires a checked layout for the type. -/
 def leafType (owner : Ty) (offset : Nat) : Option Ty :=
-  Ty.project (fun type => match type with | .scalar _ | .optionalScalar _ | .optionalObject .. | .pointer .. => true | _ => false) owner offset
+  Ty.project (fun type => match type with
+    | .scalar _ | .errorValue .. | .optionalScalar _ | .optionalObject .. | .pointer .. => true
+    | _ => false) owner offset
 
 @[simp] theorem acceptsView_array (length : Nat) (child wanted : Ty) (offset : Nat) :
     acceptsView (.array length child) offset wanted =

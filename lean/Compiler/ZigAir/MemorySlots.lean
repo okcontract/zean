@@ -12,7 +12,7 @@ whole-array values or manufactured defaults in this storage vocabulary. -/
 theorem Cells.write_root (cells : Cells) (value : Value) (valid : value.valid = true) :
     ∃ contents, cells.write value.type 0 value = .ok contents := by
   cases value with
-  | scalar value | optionalScalar _ value | optionalObject _ _ value =>
+  | scalar value | errorValue _ _ value | optionalScalar _ value | optionalObject _ _ value =>
     refine ⟨_, Cells.write_single _ _ _ _ valid ?_ ?_ rfl⟩
     · simp [acceptsView, Value.type]
     · simpa [leafFits, leafType, Value.type] using valid

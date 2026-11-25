@@ -87,6 +87,28 @@ fn writeTypeDepth(w: *Writer, ty: Type, zcu: *Zcu, depth: u8, remaining: *usize)
         .bool => try json(w, .{ .kind = "bool" }),
         .void => try json(w, .{ .kind = "void" }),
         .noreturn => try json(w, .{ .kind = "noreturn" }),
+        .error_set => {
+            const errors = switch (zcu.intern_pool.indexToKey(ty.toIntern())) {
+                .error_set_type => |set| set.names,
+                else => return json(w, .{ .kind = "unsupported", .reason = "nonconcrete-error-set" }),
+            };
+            if (errors.len > 64)
+                return json(w, .{ .kind = "unsupported", .reason = "error-set-size" });
+            try w.writeAll("{\"kind\":\"errorSet\",\"names\":[");
+            for (errors.get(&zcu.intern_pool), 0..) |name, i| {
+                if (i != 0) try w.writeByte(',');
+                try json(w, name.toSlice(&zcu.intern_pool));
+            }
+            try w.writeAll("]}");
+        },
+        .error_union => {
+            const payload = ty.errorUnionPayload(zcu);
+            if (payload.zigTypeTag(zcu) != .void)
+                return json(w, .{ .kind = "unsupported", .reason = "nonvoid-error-union" });
+            try w.writeAll("{\"kind\":\"errorStatus\",\"errors\":");
+            try writeTypeDepth(w, ty.errorUnionSet(zcu), zcu, depth + 1, remaining);
+            try w.writeByte('}');
+        },
         .@"enum" => {
             const loaded = resolvedEnum(ty, zcu) orelse
                 return json(w, .{ .kind = "unsupported", .reason = "unresolved-enum" });
@@ -263,6 +285,23 @@ fn writeValue(w: *Writer, value: Value, zcu: *Zcu, depth: u8, remaining: *usize)
         return w.writeByte('}');
     }
     if (ty.zigTypeTag(zcu) == .void) return json(w, .{ .kind = "unit" });
+    if (ty.zigTypeTag(zcu) == .error_set or ty.zigTypeTag(zcu) == .error_union) {
+        const kind: []const u8 = switch (zcu.intern_pool.indexToKey(value.toIntern())) {
+            .err => "errorValue",
+            .error_union => "errorStatus",
+            else => return json(w, .{ .kind = "unsupported", .reason = "error-constant-storage" }),
+        };
+        try w.writeAll("{\"kind\":");
+        try json(w, kind);
+        try w.writeAll(",\"type\":");
+        try writeType(w, ty, zcu);
+        try w.writeAll(",\"name\":");
+        if (value.getErrorName(zcu).unwrap()) |name|
+            try json(w, name.toSlice(&zcu.intern_pool))
+        else
+            try w.writeAll("null");
+        return w.writeByte('}');
+    }
     if (ty.zigTypeTag(zcu) == .@"enum") {
         const loaded = resolvedEnum(ty, zcu) orelse
             return json(w, .{ .kind = "unsupported", .reason = "constant-type" });
@@ -452,6 +491,7 @@ fn collectBodyEntries(air: *const Air, gpa: std.mem.Allocator) !std.bit_set.Dyna
         visited.set(i);
         switch (air.instructions.items(.tag)[i]) {
             .block, .loop => try pending.appendSlice(gpa, air.unwrapBlock(index).body),
+            .@"try", .try_cold => try pending.appendSlice(gpa, air.unwrapTry(index).else_body),
             .cond_br => {
                 const branch = air.unwrapCondBr(index);
                 try pending.appendSlice(gpa, branch.then_body);
@@ -558,11 +598,15 @@ fn writeInstruction(w: *Writer, air: *const Air, index: Air.Inst.Index, visited:
                 break;
             }
         },
-        .ret, .ret_safe, .ret_load => {
+        .ret, .ret_safe, .ret_load, .is_err, .is_non_err => {
             try w.writeAll(",\"operand\":");
             try writeRef(w, inst.data.un_op, zcu);
         },
         .int_cast, .int_cast_safe, .bit_cast, .ptr_cast, .array_to_slice, .trunc, .load, .slice_len, .slice_ptr, .ptr_slice_len_ptr, .ptr_slice_ptr_ptr, .not => {
+            try w.writeAll(",\"operand\":");
+            try writeRef(w, inst.data.ty_op.operand, zcu);
+        },
+        .unwrap_errunion_payload, .unwrap_errunion_err, .wrap_errunion_payload, .wrap_errunion_err => {
             try w.writeAll(",\"operand\":");
             try writeRef(w, inst.data.ty_op.operand, zcu);
         },
@@ -609,6 +653,13 @@ fn writeInstruction(w: *Writer, air: *const Air, index: Air.Inst.Index, visited:
             try w.writeAll(",\"thenBody\":");
             try writeIndices(w, branch.then_body);
             try w.writeAll(",\"elseBody\":");
+            try writeIndices(w, branch.else_body);
+        },
+        .@"try", .try_cold => {
+            const branch = air.unwrapTry(index);
+            try w.writeAll(",\"operand\":");
+            try writeRef(w, branch.error_union, zcu);
+            try w.writeAll(",\"errorBody\":");
             try writeIndices(w, branch.else_body);
         },
         .switch_br => {

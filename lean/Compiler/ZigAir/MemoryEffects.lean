@@ -21,7 +21,7 @@ def Ty.readOffsets (wanted : Ty) (offset : Nat) : List Nat :=
 theorem Value.leaf_offsets (value : Value) (offset : Nat) (valid : value.valid = true) :
     (value.leaves offset).map Prod.fst = value.type.readOffsets offset := by
   cases value with
-  | scalar value | optionalScalar _ value | optionalObject _ _ value => rfl
+  | scalar value | errorValue _ _ value | optionalScalar _ value | optionalObject _ _ value => rfl
   | pointer type address => cases type <;> simp_all [Value.valid, Value.leaves, Value.type, Ty.readOffsets]
   | slice type address length => cases type <;> simp_all [Value.valid, Value.leaves, Value.type, Ty.readOffsets]
 
@@ -29,7 +29,7 @@ theorem Cells.read_eq_of_lookup (before after : Cells) (owner : Ty) (offset : Na
     (same : ∀ position ∈ wanted.readOffsets offset, after.lookup position = before.lookup position) :
     after.read owner offset wanted = before.read owner offset wanted := by
   cases wanted with
-  | scalar type | optionalScalar type | optionalObject type _ =>
+  | scalar type | errorValue _ type | optionalScalar type | optionalObject type _ =>
     have here := same offset (by simp [Ty.readOffsets])
     simp only [Cells.read, Cells.readLeaf, here]
   | pointer writable many child =>

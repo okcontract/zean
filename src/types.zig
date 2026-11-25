@@ -88,6 +88,7 @@ pub const Ty = union(enum) {
     boolean,
     unit,
     noreturn,
+    error_value: ErrorValue,
     pointer: struct { mutable: bool, many: bool, child: *const Ty },
     slice: struct { mutable: bool, child: *const Ty },
     array: struct { len: u64, child: *const Ty },
@@ -96,6 +97,29 @@ pub const Ty = union(enum) {
     // loads, stores and conversions remain outside this vocabulary.
     enumeration: struct { declaration: Value, name: []const u8, size: u64, alignment: u64 },
     structure: struct { name: []const u8, source: []const u8, sha: []const u8, size: u64, alignment: u64, fields: []const Field },
+    pub const ErrorValue = struct {
+        result: bool,
+        names: []const []const u8,
+
+        pub fn contains(self: ErrorValue, name: []const u8) bool {
+            return c.oneOf(name, self.names);
+        }
+
+        pub fn includes(self: ErrorValue, other: ErrorValue) bool {
+            for (other.names) |name| if (!self.contains(name)) return false;
+            return true;
+        }
+
+        pub fn leanKind(self: ErrorValue) []const u8 {
+            return if (self.result) "result" else "tag";
+        }
+
+        fn same(self: ErrorValue, other: ErrorValue) bool {
+            if (self.result != other.result or self.names.len != other.names.len) return false;
+            for (self.names, other.names) |left, right| if (!std.mem.eql(u8, left, right)) return false;
+            return true;
+        }
+    };
     pub const Field = struct {
         name: []const u8,
         offset: u64,
@@ -114,6 +138,7 @@ pub const Ty = union(enum) {
         return switch (a.*) {
             .int => |v| v.signed == b.int.signed and v.bits == b.int.bits,
             .boolean, .unit, .noreturn => true,
+            .error_value => |v| v.same(b.error_value),
             .pointer => |v| v.mutable == b.pointer.mutable and v.many == b.pointer.many and same(v.child, b.pointer.child),
             .slice => |v| v.mutable == b.slice.mutable and same(v.child, b.slice.child),
             .array => |v| v.len == b.array.len and same(v.child, b.array.child),
@@ -173,6 +198,7 @@ pub const Ty = union(enum) {
             .boolean => if (profile == .scalar) ".bool" else "(.scalar .bool)",
             .unit => if (profile == .scalar) ".unit" else "(.scalar .unit)",
             .noreturn => ctx.fail("noreturn cannot be a runtime value type", .{}),
+            .error_value => |v| ctx.fmt("(.errorValue .{s} {s})", .{ v.leanKind(), try ctx.json(v.names) }),
             .pointer => |v| ctx.fmt("(.pointer {s} {s} {s})", .{ c.boolText(v.mutable), c.boolText(v.many), try v.child.lean(ctx, .memory) }),
             .slice => |v| ctx.fmt("(.slice {s} {s})", .{ c.boolText(v.mutable), try v.child.lean(ctx, .memory) }),
             .array => |v| ctx.fmt("(.array {d} {s})", .{ v.len, try v.child.lean(ctx, .memory) }),
@@ -292,6 +318,21 @@ pub fn checkSingletonPointer(ctx: *Context, value: Value, declaration: Value, wr
     try ctx.require(pointer.* == .pointer and !pointer.pointer.many and pointer.pointer.mutable == writable, "zero-storage field pointer changed kind or permissions");
 }
 
+fn errorNames(ctx: *Context, value: Value) Error![]const []const u8 {
+    try ctx.fields(value, "kind names");
+    try ctx.require(c.tag(value, "kind", "errorSet"), "expected a concrete error set");
+    const raw = try ctx.array(try ctx.field(value, "names"));
+    try ctx.require(raw.len <= 64, "error set exceeds the admitted size");
+    const names = try ctx.allocator.alloc([]const u8, raw.len);
+    for (raw, names, 0..) |item, *name, index| {
+        name.* = try ctx.str(item);
+        try ctx.require(name.len > 0 and name.len <= 128 and std.unicode.utf8ValidateSlice(name.*) and
+            !c.oneOf(name.*, names[0..index]), "invalid or duplicate error name");
+        for (name.*) |byte| try ctx.require(!std.ascii.isControl(byte), "unsupported error name control character");
+    }
+    return names;
+}
+
 pub fn parse(ctx: *Context, value: Value, profile: Profile, depth: usize) Error!*const Ty {
     if (depth > 16 or value != .object) return ctx.fail("type depth or shape", .{});
     if (c.tag(value, "kind", "int")) {
@@ -299,6 +340,14 @@ pub fn parse(ctx: *Context, value: Value, profile: Profile, depth: usize) Error!
         const signedness = try ctx.str(try ctx.field(value, "signedness"));
         try ctx.require(c.oneOf(signedness, &.{ "signed", "unsigned" }), "unknown integer signedness");
         return ctx.make(Ty, .{ .int = .{ .signed = std.mem.eql(u8, signedness, "signed"), .bits = @intCast(try ctx.nat(try ctx.field(value, "bits"), 512)) } });
+    }
+    if (profile == .memory or profile == .loops or profile.hasCalls()) {
+        if (c.tag(value, "kind", "errorSet"))
+            return ctx.make(Ty, .{ .error_value = .{ .result = false, .names = try errorNames(ctx, value) } });
+        if (c.tag(value, "kind", "errorStatus")) {
+            try ctx.fields(value, "kind errors");
+            return ctx.make(Ty, .{ .error_value = .{ .result = true, .names = try errorNames(ctx, try ctx.field(value, "errors")) } });
+        }
     }
     if (profile != .scalar and c.tag(value, "kind", "pointer")) {
         const child = try parse(ctx, try ctx.field(value, "child"), profile, depth + 1);

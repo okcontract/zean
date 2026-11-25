@@ -147,12 +147,25 @@ private def pointerType (raw : Raw) (child : Ty) : Option Ty := do
   layoutMatches (← raw.get "pointeeLayout") child
   pure ty
 
+private def errorNames (raw : Raw) : Option (List String) := do
+  let .object fields := raw | none
+  require (fields.length == 2 && (← raw.textAt "kind") == "errorSet")
+  let names ← (← raw.listAt "names").mapM Raw.text
+  require (names.length ≤ 64 && names.all (fun name => !name.isEmpty && name.utf8ByteSize ≤ 128 &&
+    name.toList.all (fun char => 32 ≤ char.toNat && char.toNat != 127)) && decide names.Nodup)
+  pure names
+
 def typeOf : Nat → Raw → Option Ty
   | 0, _ => none
   | fuel + 1, raw => do
     match ← raw.textAt "kind" with
     | "void" => pure (.scalar .unit)
     | "bool" => pure (.scalar .bool)
+    | "errorSet" => pure (.errorValue .tag (← errorNames raw))
+    | "errorStatus" => do
+      let .object fields := raw | none
+      require (fields.length == 2)
+      pure (.errorValue .result (← errorNames (← raw.get "errors")))
     | "int" =>
       let bits ← raw.natAt "bits"
       let signed ← raw.textAt "signedness"
@@ -203,9 +216,19 @@ private def scalarType (raw : Raw) : Option Scalar.Ty := do
   pure ty
 
 def reference (raw : Raw) : Option Ref := do
-  match ← raw.textAt "kind" with
+  let kind ← raw.textAt "kind"
+  match kind with
   | "instruction" => pure (.local (← raw.natAt "index"))
   | "unit" => pure (.constant (.scalar .unit))
+  | "errorValue" | "errorStatus" => do
+    let .object fields := raw | none
+    let .errorValue status allowed ← typeOf 17 (← raw.get "type") | none
+    require (fields.length == 3 && ((kind == "errorStatus") == (status == .result)))
+    let name ← raw.get "name"
+    let named ← if name.isNull then pure none else pure (some (← name.text))
+    let value := Value.errorValue status allowed named
+    require value.valid
+    pure (.constant value)
   | "constant" =>
     let ty ← scalarType (← raw.get "type")
     let n ← (← raw.get "value").integer
@@ -257,6 +280,7 @@ private def instruction (table : List Raw) (operand : Raw) : Option Raw := do
   table[← operand.natAt "index"]?
 
 private def referenceType (table : List Raw) (operand : Raw) : Option Ty := do
+  if (← operand.textAt "kind") == "unit" then return .scalar .unit
   let typed ← if (← operand.textAt "kind") == "instruction" then instruction table operand
     else some operand
   typeOf 17 (← typed.get "type")
@@ -321,6 +345,29 @@ private def zeroFieldProjection (table : List Raw) (inst result : Raw) : Option 
     (← pointerType result (.scalar .unit)) == .pointer field.writable false (.scalar .unit))
   pure (.checkZeroField field.reference field.offset)
 
+private def errorOperation (table : List Raw) (inst : Raw) (tag : String) : Option Prim := do
+  let operand ← inst.get "operand"
+  let reference ← reference operand
+  let input ← referenceType table operand
+  let result ← typeOf 17 (← inst.get "type")
+  if tag == "wrap_errunion_payload" || tag == "wrap_errunion_err" then
+    let .errorValue .result allowed := result | none
+    if tag == "wrap_errunion_payload" then
+      require (input == .scalar .unit)
+    else
+      let .errorValue .tag source := input | none
+      require (source.all allowed.contains)
+    pure (.wrapError allowed reference)
+  else
+    let .errorValue .result allowed := input | none
+    if tag == "is_err" || tag == "is_non_err" then
+      require (result == .scalar .bool)
+      pure (.testError (tag == "is_non_err") reference)
+    else
+      let payload := tag == "unwrap_errunion_payload"
+      require (result == if payload then .scalar .unit else .errorValue .tag allowed)
+      pure (.unwrapError payload reference)
+
 def primitive (parameters : List Nat) (inst : Raw) (table : List Raw := []) : Option Prim := do
   match ← inst.textAt "tag" with
   | "arg" =>
@@ -359,6 +406,8 @@ def primitive (parameters : List Nat) (inst : Raw) (table : List Raw := []) : Op
   | "not" =>
     require ((← typeOf 17 (← inst.get "type")) == .scalar .bool)
     unary inst .booleanNot
+  | "is_err" | "is_non_err" | "unwrap_errunion_payload" | "unwrap_errunion_err" |
+      "wrap_errunion_payload" | "wrap_errunion_err" => errorOperation table inst (← inst.textAt "tag")
   | "struct_field_ptr" | "struct_field_ptr_index_0" | "struct_field_ptr_index_1" |
       "struct_field_ptr_index_2" | "struct_field_ptr_index_3" =>
     let field ← fieldProjection table inst
@@ -527,6 +576,18 @@ private def switchArms (type : Scalar.Ty) (inst : Raw) :
     decide (allRanges.Pairwise fun left right => left.2 < right.1 ∨ right.2 < left.1))
   pure decoded
 
+/-- An error arm may use its own structure while all outer continuations
+remain out of scope. Its only exits cross the ordinary return/fault boundary. -/
+private def localDestinations (code : Control.Code Ty P Ref loops) (blocks repeats : List Nat) : Bool :=
+  match code with
+  | .bind _ _ _ rest => localDestinations rest blocks repeats
+  | .branch _ yes no => localDestinations yes blocks repeats && localDestinations no blocks repeats
+  | .block id _ body rest => localDestinations body (id :: blocks) repeats && localDestinations rest blocks repeats
+  | .loop _ id body => localDestinations body blocks (id :: repeats)
+  | .jump target _ => blocks.contains target
+  | .repeat _ target => repeats.contains target
+  | .ret _ => true
+
 /-- Fuel bounds parsing, not program execution. Each recursive call consumes a
 unit, including sequential operations and nested control. No instruction is
 removed based on the liveness of its result. -/
@@ -578,6 +639,18 @@ def bodyWith (lift : Prim → P) (operation : Raw → Option P) (loops : Bool)
         pure (decoded.foldr (fun (register, ranges, selected) rest =>
           .bind register (.scalar .bool) (lift (.scalar (.inRanges ref ranges)))
             (.branch (.local register) selected rest)) fallback)
+      | "try" | "try_cold" => do
+        require ((← typeOf 17 (← inst.get "type")) == .scalar .unit)
+        let operand ← inst.get "operand"
+        let .errorValue .result _ ← referenceType table operand | none
+        let ref ← reference operand
+        let handler ← bodyWith lift operation loops table guards fuel (← inst.listAt "errorBody")
+        require (localDestinations handler [] [])
+        let continuation ← bodyWith lift operation loops table guards fuel tail
+        let condition := 2 * table.length + guards.length + id
+        pure (.bind condition (.scalar .bool) (lift (.testError false ref))
+          (.branch (.local condition) handler
+            (.bind id (.scalar .unit) (lift (.unwrapError true ref)) continuation)))
       | "block" =>
         pure (.block id (← typeOf 17 (← inst.get "type"))
           (← bodyWith lift operation loops table guards fuel (← inst.listAt "body"))
