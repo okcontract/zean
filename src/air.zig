@@ -86,7 +86,10 @@ fn leaves(ctx: *Context, value: Value, expected: *const Ty, offset: u64, cells: 
         try ctx.require(expected.* == .structure and Ty.same(try types.parse(ctx, try ctx.field(value, "type"), .aggregate, 0), expected), "aggregate constant changes type");
         const values = try ctx.array(try ctx.field(value, "fields"));
         try ctx.require(values.len == expected.structure.fields.len, "incomplete aggregate constant");
-        for (expected.structure.fields, values) |field, item| try leaves(ctx, item, field.ty, offset + field.offset, cells);
+        for (expected.structure.fields, values) |field, item| {
+            try ctx.require(field.ty == .stored, "zero-storage fields are not supported in aggregate values");
+            try leaves(ctx, item, field.ty.stored, offset + field.offset, cells);
+        }
         return;
     }
     const leaf = try constant(ctx, value, .memory);
@@ -519,8 +522,10 @@ pub const Decoder = struct {
         try ctx.require(fields.len > 0, "field pointer has no declared field");
         const index = try ctx.nat(try ctx.field(inst, "fieldIndex"), fields.len - 1);
         if (!eq(u8, tag, "struct_field_ptr")) try ctx.require(c.oneOf(tag, &.{ "struct_field_ptr_index_0", "struct_field_ptr_index_1", "struct_field_ptr_index_2", "struct_field_ptr_index_3" }) and tag[tag.len - 1] - '0' == index, "fixed field pointer changes index");
-        try ctx.require(isPointer(ty, owner.ty.pointer.mutable, false, fields[index].ty), "field pointer changes type or permissions");
-        return try ctx.fmt("(.fieldPointer {s} {d})", .{ owner.text, fields[index].offset });
+        const field = fields[index];
+        try ctx.require(field.ty == .stored, "zero-storage fields cannot be accessed");
+        try ctx.require(isPointer(ty, owner.ty.pointer.mutable, false, field.ty.stored), "field pointer changes type or permissions");
+        return try ctx.fmt("(.fieldPointer {s} {d})", .{ owner.text, field.offset });
     }
     fn aggregatePrimitive(self: *Decoder, inst: Value, ty: *const Ty, env: Env) Error!?[]const u8 {
         const ctx = self.ctx;

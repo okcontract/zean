@@ -1,0 +1,11 @@
+{
+  "schema": "zean.client.v1",
+  "source": "client.zig",
+  "sources": [],
+  "roots": ["client.append_reserved"],
+  "profile": "nested-calls",
+  "generatedModule": "ReservedAppend.Generated",
+  "libraries": ["Compiler.ZigAir.MemoryCallMachine"],
+  "proofs": [{"module": "ReservedAppend.Proofs", "path": "ReservedProofs.lean"}],
+  "theorems": ["ReservedAppend.append_with_room", "ReservedAppend.append_at_capacity"]
+}

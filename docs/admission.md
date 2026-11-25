@@ -54,7 +54,7 @@ profiles reject volatile and atomic accesses. [Call machine](call-machine.md) ·
 | Byte `memcpy` | Equality of lengths supplied by both source operands, live extents, write permission, non-overlap, and per-byte initialization. A fault preserves writes already reached. |
 | Byte `memmove` | The same length, extent, permission, and initialization checks, with backwards traversal when the destination overlaps the source to its right. |
 | Array to slice | Static extent, pointer, and permissions. Conversion itself performs no storage access. |
-| Record fields | Complete owner layout and declared field. Padding accesses reject. |
+| Record fields | Complete owner layout and declared field. Validated zero-storage fields retain their declaration indices and contribute no heap storage. Projections into them and accesses to padding reject. |
 | Opaque enum storage | Identity, exhaustive tag table, backing width and layout. Runtime enum values and operations reject. |
 | Direct calls | Exact callee identity and execution of its captured body, including faults and effects |
 | Branches, blocks, and loops | Branch selection, labels, block results, continuations, and back edges |

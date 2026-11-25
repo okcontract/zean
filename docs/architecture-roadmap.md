@@ -35,10 +35,10 @@ size, time, memory, repairs, and unsafe mutations.
 [Measurement protocol](automation-measurements.md)
 
 Extend client support for named Zig modules and additional specializations
-with explicit admission rules. The allocator evaluation certified
-`client.reset` and rejected five generic-owner paths. Those paths need a
-checked link from instantiated types to source constructors, then allocator
-lifetime and container contracts. [Allocator results](../examples/allocator/README.md)
+with explicit admission rules. The allocator examples certify
+`client.reset` and the reserved-capacity append. Growth and release need
+checked optionals, error unions, allocator dispatch, and lifetime contracts.
+[Allocator examples](../examples/allocator/README.md)
 
 ## Evaluation
 

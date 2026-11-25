@@ -52,15 +52,18 @@ private def insertField (field : Nat × Field) : List (Nat × Field) → List (N
   | [] => [field]
   | first :: rest => if field.1 ≤ first.1 then field :: first :: rest else first :: insertField field rest
 
-/-- Inactive enum storage has its complete captured tag table checked, but no
-runtime enum values or scalar views are introduced. The nominal record type
-only supplies extent and alignment to its enclosing owner. -/
-private def opaqueEnum (raw : Raw) : Option Ty := do
+private def identityName (raw : Raw) : Option String := do
   let identity ← raw.get "identity"
   let name ← identity.textAt "name"
   let hash ← identity.textAt "sourceSha256"
   require (!name.isEmpty && !(← identity.textAt "sourceFile").isEmpty && hash.length == 64 &&
     hash.toList.all (fun ch => ch.isDigit || ('a' ≤ ch && ch ≤ 'f')))
+  pure name
+
+/-- Inactive enum storage has its complete captured tag table checked. The
+nominal record supplies extent and alignment to its enclosing owner. -/
+private def opaqueEnum (raw : Raw) : Option Ty := do
+  let name ← identityName raw
   let backing ← raw.get "backingType"
   let bits ← backing.natAt "bits"
   require ((← backing.textAt "kind") == "int" && (← backing.textAt "signedness") == "unsigned" &&
@@ -77,6 +80,34 @@ private def opaqueEnum (raw : Raw) : Option Ty := do
   let type := Ty.record ("enum:" ++ name) ⟨size, size⟩
   layoutMatches (← raw.get "layout") type
   pure type
+
+/-- Zero-storage declarations have no heap fields. Only validated automatic
+structures of zero-storage fields and exhaustive single-tag u0 enums qualify. -/
+private def zeroStorage : Nat → Raw → Option Unit
+  | 0, _ => none
+  | fuel + 1, raw => do
+    let _ ← identityName raw
+    let layout ← raw.get "layout"
+    require ((← layout.textAt "kind") == "abi" && (← layout.natAt "bytes") == 0 &&
+      (← layout.natAt "alignment") == 1)
+    let fields ← raw.listAt "fields"
+    match ← raw.textAt "kind" with
+    | "enum" =>
+      let [field] := fields | none
+      let backing ← raw.get "backingType"
+      require ((← backing.textAt "kind") == "int" &&
+        (← backing.textAt "signedness") == "unsigned" && (← backing.natAt "bits") == 0 &&
+        !(← raw.boolAt "nonexhaustive") && (← field.natAt "index") == 0 &&
+        (← field.natAt "value") == 0 && !(← field.textAt "name").isEmpty)
+    | "struct" =>
+      require ((← raw.textAt "containerLayout") == "auto" && !fields.isEmpty && fields.length ≤ 64)
+      let names ← fields.mapM (·.textAt "name")
+      require (decide names.Nodup)
+      for (field, index) in fields.zipIdx do
+        require ((← field.natAt "index") == index && (← field.natAt "offset") == 0 &&
+          (← field.get "explicitAlignment").isNull && !(← field.textAt "name").isEmpty)
+        zeroStorage fuel (← field.get "type")
+    | _ => none
 
 def typeOf : Nat → Raw → Option Ty
   | 0, _ => none
@@ -119,14 +150,25 @@ def typeOf : Nat → Raw → Option Ty
       require ((← rawLayout.textAt "kind") == "abi")
       let layout : Layout := ⟨← rawLayout.natAt "bytes", ← rawLayout.natAt "alignment"⟩
       let rawFields ← raw.listAt "fields"
-      require (!rawFields.isEmpty && rawFields.length ≤ 64)
+      require (layout.bytes > 0 && !rawFields.isEmpty && rawFields.length ≤ 64)
+      let names ← rawFields.mapM (·.textAt "name")
+      require (decide names.Nodup)
       let fields ← rawFields.zipIdx |>.mapM fun (rawField, index) => do
         require ((← rawField.natAt "index") == index && (← rawField.get "explicitAlignment").isNull &&
           !(← rawField.textAt "name").isEmpty)
-        let child ← typeOf fuel (← rawField.get "type")
-        let field := match child with | .scalar scalar => Field.scalar scalar | _ => Field.object child
-        pure ((← rawField.natAt "offset"), field)
-      let ty := Ty.aggregate name layout (fields.foldr insertField [])
+        let offset ← rawField.natAt "offset"
+        let captured ← rawField.get "type"
+        if (captured.get "layout" >>= (·.natAt "bytes")) == some 0 then
+          require (offset ≤ layout.bytes)
+          zeroStorage fuel captured
+          pure none
+        else
+          let child ← typeOf fuel captured
+          let field := match child with | .scalar scalar => Field.scalar scalar | _ => Field.object child
+          pure (some (offset, field))
+      let stored := fields.filterMap id
+      require (!stored.isEmpty)
+      let ty := Ty.aggregate name layout (stored.foldr insertField [])
       layoutMatches rawLayout ty
       pure ty
     | _ => none

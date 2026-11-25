@@ -16,7 +16,24 @@ named functions in both library files, and attempts certified call-machine
 translation. The inventory includes private and nested declarations.
 Uninstantiated declarations are recorded as untested.
 
-## Recorded results
+## Verify an append into reserved capacity
+
+~~~sh
+zig build verify-client -- \
+  --manifest examples/allocator/reserved.json \
+  --toolchain /path/to/toolchain/report.json \
+  --output /path/outside/checkout/reserved-append
+~~~
+
+The call closure includes the original list methods and their
+capacity assertion. The Lean controls check that an
+append with room increments length, writes the new byte, and preserves the
+existing byte and capacity. An append at capacity faults before changing the
+heap, even with a backing allocation large enough for another byte.
+The native test checks that a reserved append keeps the list pointer and
+the fixed-buffer allocator cursor. [Model proofs](ReservedProofs.lean)
+
+## Historical results
 
 The ordinary and instrumented objects matched for all six drivers in the
 first run. Admission then failed at source identity checks.

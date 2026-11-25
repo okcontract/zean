@@ -259,6 +259,12 @@ pub fn build(b: *std.Build) void {
     replace_native_run.has_side_effects = true;
     test_step.dependOn(&replace_native_run.step);
     replace_step.dependOn(&replace_native_run.step);
+    const allocator_native = b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("examples/allocator/client.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) }));
+    test_step.dependOn(&allocator_native.step);
     const lake = b.option([]const u8, "lake", "Lake executable matching lean-toolchain; default uses the pinned elan toolchain");
     const publication = b.step("atomic-publication", "Run the dispatch-table tests and check the release/acquire proof and counterexamples");
     const publication_check = publicationChecker(b, executable, lake);
@@ -518,13 +524,20 @@ pub fn build(b: *std.Build) void {
         ziglings_replay.has_side_effects = true;
         ziglings_replay.step.dependOn(&replace_replay.step);
         compatibility_first.?.dependOn(&ziglings_replay.step);
+        const reserved_append = b.addRunArtifact(executable);
+        reserved_append.addArgs(&.{ "verify-client", "--manifest" });
+        reserved_append.addFileArg(b.path("examples/allocator/reserved.json"));
+        reserved_append.addArgs(&.{ "--toolchain", toolchain_report.?, "--output", b.fmt("{s}/reserved-append", .{release_output.?}) });
+        if (lake) |path| reserved_append.addArgs(&.{ "--lake", path });
+        reserved_append.has_side_effects = true;
+        reserved_append.step.dependOn(compatibility);
         const publication_dir = b.fmt("{s}/atomic-publication/capture", .{release_output.?});
         const publication_capture = b.addRunArtifact(executable);
         publication_capture.addArgs(&.{ "capture", "--toolchain", toolchain_report.?, "--source" });
         publication_capture.addFileArg(b.path("examples/atomic_publication/publication.zig"));
         publication_capture.addArgs(&.{ "--root", "publication.publish", "--root", "publication.readEntry", "--output", publication_dir });
         publication_capture.has_side_effects = true;
-        publication_capture.step.dependOn(compatibility);
+        publication_capture.step.dependOn(&reserved_append.step);
         const publication_replay = publicationChecker(b, executable, lake);
         publication_replay.addArgs(&.{ "--capture", b.fmt("{s}/report.json", .{publication_dir}), "--output", b.fmt("{s}/atomic-publication/proof", .{release_output.?}) });
         publication_replay.step.dependOn(&publication_capture.step);

@@ -57,6 +57,40 @@ const invalid_enums = [_]f.Value{
     f.derive(&opaque_enum, &.{f.set("/identity/sourceSha256", f.s("bad"))}),
 };
 
+const empty_layout = f.derive(&layout, &.{ f.set("/bytes", f.n("0")), f.set("/alignment", f.n("1")) });
+const singleton = f.derive(&opaque_enum, &.{
+    f.set("/backingType/bits", f.n("0")),
+    f.set("/layout", empty_layout),
+    f.remove("/fields/1"),
+});
+const lock = f.derive(&shared.struct_38, &.{
+    f.set("/identity/name", f.s("fixture.Lock")),
+    f.set("/layout", empty_layout),
+    f.set("/fields", f.arr(&.{f.obj(&.{
+        .{ "index", f.n("0") },          .{ "name", f.s("state") }, .{ "offset", f.n("0") },
+        .{ "explicitAlignment", .null }, .{ "type", singleton },
+    })})),
+});
+const zero_field = f.obj(&.{
+    .{ "index", f.n("2") },          .{ "name", f.s("lock") }, .{ "offset", f.n("16") },
+    .{ "explicitAlignment", .null }, .{ "type", lock },
+});
+const zero_owner = f.derive(&read_field, &.{
+    f.add("/signature/parameters/0/child/fields/2", zero_field),
+    f.add("/instructions/0/type/child/fields/2", zero_field),
+});
+const zero_projection = f.derive(&zero_owner, &.{
+    f.set("/instructions/1/fieldIndex", f.n("2")),
+    f.set("/instructions/1/tag", f.s("struct_field_ptr_index_2")),
+});
+const invalid_zero_storage = [_]f.Value{
+    zero_projection,
+    f.derive(&zero_owner, &.{f.set("/signature/parameters/0/child/fields/2/offset", f.n("17"))}),
+    f.derive(&zero_owner, &.{f.set("/signature/parameters/0/child/fields/2/type/fields/0/type/backingType/bits", f.n("1"))}),
+    f.derive(&zero_owner, &.{f.set("/signature/parameters/0/child/fields/2/type/fields/0/type/fields/0/value", f.n("1"))}),
+    f.derive(&zero_owner, &.{f.set("/signature/parameters/0/child/fields/2/type/fields/0/type/identity/sourceSha256", f.s("bad"))}),
+};
+
 const bytes_layout = f.derive(&layout, &.{ f.set("/bytes", f.n("3")), f.set("/alignment", f.n("1")) });
 const byte = f.derive(&word, &.{f.set("/bits", f.n("8"))});
 const array_pointer = f.derive(&pointer, &.{
@@ -117,6 +151,14 @@ pub fn controls() !void {
         };
         try std.testing.expectError(error.InvalidInput, z.air.decode(&ctx, try f.load(ctx.allocator, f.derive(&enum_owner, &mutations)), .memory));
     }
+    const zero_decoded = try z.air.decode(&ctx, try f.load(ctx.allocator, zero_owner), .memory);
+    try std.testing.expectEqualStrings(decoded, zero_decoded);
+    for (invalid_zero_storage) |invalid|
+        try std.testing.expectError(error.InvalidInput, z.air.decode(&ctx, try f.load(ctx.allocator, invalid), .memory));
+    const conflicting_zero_identity = f.derive(&zero_owner, &.{
+        f.set("/signature/parameters/0/child/fields/2/type/identity/sourceSha256", f.repeat('b', 64)),
+    });
+    try std.testing.expectError(error.InvalidInput, z.air.decode(&ctx, try f.load(ctx.allocator, conflicting_zero_identity), .memory));
     // Storage admission cannot be used as a runtime enum-value implementation.
     const runtime_enum = f.derive(&enum_owner, &.{ f.set("/signature/returnType", opaque_enum), f.set("/instructions/2/type", opaque_enum) });
     try std.testing.expectError(error.InvalidInput, z.air.decode(&ctx, try f.load(ctx.allocator, runtime_enum), .memory));
@@ -145,6 +187,10 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
     try parts.append(ctx.allocator, original);
     try parts.append(ctx.allocator, try ctx.fmt("def readWithEnum : Program := {s}\n{s}\n", .{ try z.air.decode(ctx, with_enum, .memory), try z.certificate.declaration(ctx, with_enum, "readWithEnum", false) }));
     for (invalid_enums) |invalid| try parts.append(ctx.allocator, try ctx.fmt("example : Captured.typeOf 17 {s} = none := by decide +kernel\n", .{try z.certificate.lift(ctx, try f.load(ctx.allocator, invalid), 0)}));
+    const with_zero = try f.load(ctx.allocator, zero_owner);
+    try parts.append(ctx.allocator, try ctx.fmt("def readWithZero : Program := {s}\n{s}\nexample : readWithZero = readField := rfl\n", .{ try z.air.decode(ctx, with_zero, .memory), try z.certificate.declaration(ctx, with_zero, "readWithZero", false) }));
+    for (invalid_zero_storage) |invalid|
+        try parts.append(ctx.allocator, try ctx.fmt("example : Captured.decode false {s} = none := rfl\n", .{try z.certificate.lift(ctx, try f.load(ctx.allocator, invalid), 0)}));
     const conversion = try f.load(ctx.allocator, array_slice);
     try parts.append(ctx.allocator, try ctx.fmt("def arraySlice : Program := {s}\n{s}\n", .{ try z.air.decode(ctx, conversion, .memory), try z.certificate.declaration(ctx, conversion, "arraySlice", false) }));
     try parts.append(ctx.allocator,

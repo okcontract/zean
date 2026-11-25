@@ -96,7 +96,19 @@ pub const Ty = union(enum) {
     // loads, stores and conversions remain outside this vocabulary.
     enumeration: struct { declaration: Value, name: []const u8, size: u64, alignment: u64 },
     structure: struct { name: []const u8, source: []const u8, sha: []const u8, size: u64, alignment: u64, fields: []const Field },
-    pub const Field = struct { name: []const u8, offset: u64, ty: *const Ty };
+    pub const Field = struct {
+        name: []const u8,
+        offset: u64,
+        ty: union(enum) { stored: *const Ty, zero_storage: Value },
+
+        fn same(left: Field, right: Field) bool {
+            if (!std.mem.eql(u8, left.name, right.name) or left.offset != right.offset) return false;
+            return switch (left.ty) {
+                .stored => |ty| right.ty == .stored and Ty.same(ty, right.ty.stored),
+                .zero_storage => |declaration| right.ty == .zero_storage and c.equal(declaration, right.ty.zero_storage),
+            };
+        }
+    };
     pub fn same(a: *const Ty, b: *const Ty) bool {
         if (std.meta.activeTag(a.*) != std.meta.activeTag(b.*)) return false;
         return switch (a.*) {
@@ -110,7 +122,7 @@ pub const Ty = union(enum) {
             .structure => |v| blk: {
                 const w = b.structure;
                 if (!std.mem.eql(u8, v.name, w.name) or !std.mem.eql(u8, v.source, w.source) or !std.mem.eql(u8, v.sha, w.sha) or v.size != w.size or v.alignment != w.alignment or v.fields.len != w.fields.len) break :blk false;
-                for (v.fields, w.fields) |x, y| if (!std.mem.eql(u8, x.name, y.name) or x.offset != y.offset or !same(x.ty, y.ty)) break :blk false;
+                for (v.fields, w.fields) |x, y| if (!x.same(y)) break :blk false;
                 break :blk true;
             },
         };
@@ -175,8 +187,10 @@ pub const Ty = union(enum) {
                 }.less);
                 var pieces: std.ArrayList([]const u8) = .empty;
                 for (ordered) |field| {
-                    const child = try field.ty.lean(ctx, .memory);
-                    const term = if (field.ty.* == .int or field.ty.* == .unit or field.ty.* == .boolean) child else try ctx.fmt("(.object {s})", .{child});
+                    if (field.ty != .stored) continue;
+                    const ty = field.ty.stored;
+                    const child = try ty.lean(ctx, .memory);
+                    const term = if (ty.* == .int or ty.* == .unit or ty.* == .boolean) child else try ctx.fmt("(.object {s})", .{child});
                     try pieces.append(ctx.allocator, try ctx.fmt("({d}, {s})", .{ field.offset, term }));
                 }
                 break :blk ctx.fmt("(.aggregate {s} ⟨{d}, {d}⟩ [{s}])", .{ try ctx.json(v.name), v.size, v.alignment, try std.mem.join(ctx.allocator, ", ", pieces.items) });
@@ -184,6 +198,42 @@ pub const Ty = union(enum) {
         };
     }
 };
+
+// Prove the recorded field has no storage before excluding it from the heap
+// layout. A zero extent alone is insufficient evidence.
+fn checkZeroStorage(ctx: *Context, raw: Value, depth: usize) Error!void {
+    try ctx.require(depth <= 16, "zero-storage type depth limit");
+    try checkLayout(ctx, try ctx.field(raw, "layout"), .{ 0, 1 });
+    const identity = try ctx.field(raw, "identity");
+    try ctx.fields(identity, "name sourceFile sourceSha256");
+    try ctx.require((try ctx.str(try ctx.field(identity, "name"))).len > 0 and
+        (try ctx.str(try ctx.field(identity, "sourceFile"))).len > 0 and
+        c.isDigest(try ctx.str(try ctx.field(identity, "sourceSha256"))), "invalid zero-storage identity");
+    const fields = try ctx.array(try ctx.field(raw, "fields"));
+    if (c.tag(raw, "kind", "enum")) {
+        try ctx.fields(raw, "kind identity backingType layout nonexhaustive fields");
+        const backing = try parse(ctx, try ctx.field(raw, "backingType"), .scalar, depth + 1);
+        try ctx.require(backing.isInt(false, 0) and c.flag(raw, "nonexhaustive", false) and fields.len == 1, "zero-storage enum must have a single u0 tag");
+        const field = fields[0];
+        try ctx.fields(field, "index name value");
+        try ctx.require(try ctx.nat(try ctx.field(field, "index"), 0) == 0 and
+            try ctx.nat(try ctx.field(field, "value"), 0) == 0 and
+            (try ctx.str(try ctx.field(field, "name"))).len > 0, "invalid zero-storage enum tag");
+        return;
+    }
+    try ctx.fields(raw, "kind identity containerLayout layout fields");
+    try ctx.require(c.tag(raw, "kind", "struct") and c.tag(raw, "containerLayout", "auto") and
+        fields.len > 0 and fields.len <= 64, "unsupported zero-storage declaration");
+    for (fields, 0..) |field, index| {
+        try ctx.fields(field, "index name offset explicitAlignment type");
+        const name = try ctx.field(field, "name");
+        try ctx.require(try ctx.nat(try ctx.field(field, "index"), 63) == index and
+            try ctx.nat(try ctx.field(field, "offset"), 0) == 0 and
+            c.none(field, "explicitAlignment") and (try ctx.str(name)).len > 0, "invalid zero-storage field");
+        for (fields[0..index]) |previous| try ctx.require(!c.equal(try ctx.field(previous, "name"), name), "duplicate zero-storage field");
+        try checkZeroStorage(ctx, try ctx.field(field, "type"), depth + 1);
+    }
+}
 
 pub fn parse(ctx: *Context, value: Value, profile: Profile, depth: usize) Error!*const Ty {
     if (depth > 16 or value != .object) return ctx.fail("type depth or shape", .{});
@@ -261,20 +311,34 @@ pub fn parse(ctx: *Context, value: Value, profile: Profile, depth: usize) Error!
         const raw_fields = try ctx.array(try ctx.field(value, "fields"));
         try ctx.require(raw_fields.len > 0 and raw_fields.len <= 64, "aggregate field count");
         const result = try ctx.allocator.alloc(Ty.Field, raw_fields.len);
+        var has_storage = false;
         for (raw_fields, 0..) |field, index| {
             try ctx.fields(field, "index name offset explicitAlignment type");
             const field_name = try ctx.str(try ctx.field(field, "name"));
             try ctx.require(try ctx.nat(try ctx.field(field, "index"), 63) == index and c.none(field, "explicitAlignment") and field_name.len > 0, "unsupported aggregate field declaration");
             const offset = try ctx.nat(try ctx.field(field, "offset"), std.math.maxInt(u64));
-            const child = try parse(ctx, try ctx.field(field, "type"), profile, depth + 1);
-            const child_layout = try child.layout(ctx);
-            try ctx.require(child_layout[0] > 0 and offset <= size and child_layout[0] <= size - offset and offset % child_layout[1] == 0 and alignment % child_layout[1] == 0, "invalid aggregate field geometry");
-            for (result[0..index]) |previous| {
-                const previous_size = (try previous.ty.layout(ctx))[0];
-                try ctx.require(!std.mem.eql(u8, field_name, previous.name) and (offset + child_layout[0] <= previous.offset or previous.offset + previous_size <= offset), "overlapping or duplicate aggregate fields");
+            try ctx.require(offset <= size, "aggregate field lies outside its owner");
+            for (result[0..index]) |previous| try ctx.require(!std.mem.eql(u8, field_name, previous.name), "duplicate aggregate field");
+            const raw_child = try ctx.field(field, "type");
+            if (c.get(c.get(raw_child, "layout") orelse .null, "bytes")) |bytes| {
+                if (try ctx.nat(bytes, std.math.maxInt(u64)) == 0) {
+                    try checkZeroStorage(ctx, raw_child, depth + 1);
+                    result[index] = .{ .name = field_name, .offset = offset, .ty = .{ .zero_storage = raw_child } };
+                    continue;
+                }
             }
-            result[index] = .{ .name = field_name, .offset = offset, .ty = child };
+            const child = try parse(ctx, raw_child, profile, depth + 1);
+            const child_layout = try child.layout(ctx);
+            try ctx.require(child_layout[0] > 0 and child_layout[0] <= size - offset and offset % child_layout[1] == 0 and alignment % child_layout[1] == 0, "invalid aggregate field geometry");
+            for (result[0..index]) |previous| {
+                if (previous.ty != .stored) continue;
+                const previous_size = (try previous.ty.stored.layout(ctx))[0];
+                try ctx.require(offset + child_layout[0] <= previous.offset or previous.offset + previous_size <= offset, "overlapping aggregate fields");
+            }
+            result[index] = .{ .name = field_name, .offset = offset, .ty = .{ .stored = child } };
+            has_storage = true;
         }
+        try ctx.require(has_storage, "aggregate has no stored field");
         return ctx.make(Ty, .{ .structure = .{ .name = name, .source = source, .sha = sha, .size = size, .alignment = alignment, .fields = result } });
     }
     try ctx.fields(value, "kind");
