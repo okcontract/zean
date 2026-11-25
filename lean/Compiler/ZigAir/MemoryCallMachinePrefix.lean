@@ -9,6 +9,37 @@ import Compiler.ZigAir.MemoryCallMachineEmbedding
 namespace Compiler.ZigAir.MemoryCallMachine
 open Memory
 
+/-- Select straight-line memory bindings from an actual call-machine body.
+The caller supplies a finite continuation for proving the prefix's effects. -/
+def projectMemoryPrefix : Nat → Code → MemoryAir.Code → Option MemoryAir.Code
+  | 0, _, tail => some tail
+  | count + 1, .bind id type (.memory operation) next, tail =>
+    (projectMemoryPrefix count next tail).map (.bind id type operation)
+  | _, _, _ => none
+
+theorem projectMemoryPrefix_sound (count : Nat) (code : Code) (tail result : MemoryAir.Code)
+    (found : projectMemoryPrefix count code tail = some result) :
+    count ≤ code.leadingBindings ∧
+      code.prefixBindings count (embedCode tail.enableLoops) = embedCode result.enableLoops := by
+  induction count generalizing code result with
+  | zero =>
+    cases found
+    exact ⟨Nat.zero_le _, rfl⟩
+  | succ count ih =>
+    cases code <;> try contradiction
+    case bind id type operation next =>
+      cases operation <;> try contradiction
+      case memory operation =>
+        cases selected : projectMemoryPrefix count next tail with
+        | none => simp [projectMemoryPrefix, selected] at found
+        | some body =>
+          have same : (.bind id type operation body : MemoryAir.Code) = result := by
+            simpa [projectMemoryPrefix, selected] using found
+          subst result
+          obtain ⟨enough, reembed⟩ := ih next body selected
+          exact ⟨Nat.succ_le_succ enough, by
+            simp only [Control.Code.prefixBindings, Control.Code.enableLoops, embedCode, reembed]⟩
+
 /-- Replay the checked effects of a straight-line memory fragment in the
 interprocedural machine. The synthetic jump supplies the resulting environment
 and state. The real activation stops at its original continuation before
@@ -69,5 +100,18 @@ theorem advance_memory_prefix (program : Program) (config : Config) (count : Nat
               simp only [advance, transitioned, Control.Code.dropBindings]
               exact ih resumed rest countOK tailEq ran
             · simp [typed] at ran
+
+/-- Replay a prefix selected directly from the suspended function's code. -/
+theorem advance_projected_prefix (program : Program) (config : Config) (count : Nat)
+    (projected : MemoryAir.Code)
+    (capture : projectMemoryPrefix count config.active.control.code (.jump tag exit) = some projected)
+    (ran : projected.eval MemoryAir.semantics config.active.arguments config.active.control.env
+        config.active.control.state = .jumped tag value env after) :
+    advance program count (.suspended config) =
+      .suspended { config with active := { config.active with control :=
+        { config.active.control with
+          code := config.active.control.code.dropBindings count, env := env, state := after } } } := by
+  obtain ⟨enough, exactCode⟩ := projectMemoryPrefix_sound _ _ _ _ capture
+  exact advance_memory_prefix program config count projected enough exactCode ran
 
 end Compiler.ZigAir.MemoryCallMachine

@@ -66,6 +66,16 @@ preserves writable root capabilities under either policy. Use the function
 contract for contents and initialization guarantees.
 [Checked local bindings](verification.md#checked-local-bindings)
 
+## Prove a straight-line prefix
+
+`projectMemoryPrefix` selects a fixed number of memory bindings from the
+captured call-machine body and appends a proof continuation. It returns
+`none` if selection reaches a call or a control edge. Use a jump as the
+proof continuation to observe the resulting registers and memory.
+`advance_projected_prefix` connects that result to the real execution,
+which stops at its original next instruction with its control and caller
+stacks intact. [Prefix projection and replay](../lean/Compiler/ZigAir/MemoryCallMachinePrefix.lean)
+
 ## Termination of finite closures
 
 Import `Compiler.ZigAir.MemoryCallMachineTermination`. `Finite.infer`
