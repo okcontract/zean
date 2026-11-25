@@ -31,6 +31,11 @@ def Code.blockBody? (target : Nat) (code : Code Ty Prim Ref loops) : Option (Cod
   | .block _ _ body _ => some body
   | _ => none
 
+/-- The initial straight-line sequence stops before the first control step. -/
+def Code.leadingBindings : Code Ty Prim Ref loops → Nat
+  | .bind _ _ _ next => next.leadingBindings + 1
+  | _ => 0
+
 /-- Split a leading sequence of bindings for compositional symbolic execution.
 Stop at the first control instruction; no branch or loop is crossed. -/
 def Code.dropBindings : Nat → Code Ty Prim Ref loops → Code Ty Prim Ref loops

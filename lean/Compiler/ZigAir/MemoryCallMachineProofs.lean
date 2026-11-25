@@ -84,4 +84,11 @@ theorem unsafe_of_witness (program : Program) (first : Execution) (fuel : Nat)
   intro safe
   exact invalid ((safe_iff_fuel program first).mp safe fuel fault after reached)
 
+/-- Two observed finite executions can be composed without a fuel budget. -/
+theorem Steps.trans (firstRun : Steps program first middle)
+    (suffix : Steps program middle last) : Steps program first last := by
+  induction firstRun with
+  | refl => exact suffix
+  | step config _ ih => exact .step config (ih suffix)
+
 end Compiler.ZigAir.MemoryCallMachine
