@@ -121,6 +121,24 @@ const move_slices = f.derive(&copy_slices, &.{
     f.set("/sourceOperationTags/0", f.s("memmove")),
     f.set("/instructions/5/tag", f.s("memmove")),
 });
+const undefined_byte = f.obj(&.{
+    .{ "kind", f.s("undefined") },
+    .{ "type", f.obj(&.{ .{ "kind", f.s("int") }, .{ "signedness", f.s("unsigned") }, .{ "bits", f.n("8") } }) },
+});
+const undefined_fill = f.derive(&copy, &.{
+    f.set("/signature/parameters", f.arr(&.{byte_slice})),
+    f.set("/body", f.arr(&.{ f.n("0"), f.n("1"), f.n("2") })),
+    f.remove("/instructions/1"),
+    f.set("/instructions/1/index", f.n("1")),
+    f.set("/instructions/1/tag", f.s("memset")),
+    f.set("/instructions/1/rhs", undefined_byte),
+    f.set("/instructions/2/index", f.n("2")),
+});
+const signed_fill = f.derive(&undefined_fill, &.{f.set("/instructions/1/rhs/type/signedness", f.s("signed"))});
+const readonly_fill = f.derive(&undefined_fill, &.{
+    f.set("/signature/parameters/0", const_slice),
+    f.set("/instructions/0/type", const_slice),
+});
 
 pub fn controls() !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -181,6 +199,50 @@ pub fn controls() !void {
         f.derive(&move_slices, &.{f.set("/instructions/5/type", word)}),
         f.derive(&move_slices, &.{f.set("/instructions/5/rhs/index", f.n("0"))}),
     }) |input| try std.testing.expectError(error.InvalidInput, z.air.decode(&ctx, try f.load(ctx.allocator, input), .memory));
+    const invalidated = try z.air.decode(&ctx, try f.load(ctx.allocator, undefined_fill), .memory);
+    try std.testing.expect(std.mem.indexOf(u8, invalidated, "(.invalidateSlice (.local 0))") != null);
+    for ([_]f.Value{
+        signed_fill,
+        readonly_fill,
+        f.derive(&undefined_fill, &.{f.set("/instructions/1/rhs", literal)}),
+        f.derive(&undefined_fill, &.{f.set("/instructions/1/type", word)}),
+        f.derive(&undefined_fill, &.{f.set("/instructions/1/tag", f.s("memset_safe"))}),
+    }) |input| try std.testing.expectError(error.InvalidInput, z.air.decode(&ctx, try f.load(ctx.allocator, input), .memory));
+}
+
+pub fn invalidationEmitted(ctx: *z.common.Context) ![]const u8 {
+    const raw = try f.load(ctx.allocator, undefined_fill);
+    return ctx.fmt(
+        \\import Compiler.ZigAir.Captured
+        \\open Compiler.ZigAir Compiler.ZigAir.Memory Compiler.ZigAir.MemoryAir
+        \\def fill : Program := {s}
+        \\{s}
+        \\def wrongType : Captured.Raw := {s}
+        \\def readOnly : Captured.Raw := {s}
+        \\example : Captured.decode false wrongType = none := rfl
+        \\example : Captured.decode false readOnly = none := rfl
+        \\def byte : Ty := .scalar (.int false 8)
+        \\def item (n : Nat) : Value := .scalar (.int false 8 n)
+        \\def initial : State :=
+        \\  ⟨[(0, ⟨1, .array 3 byte, [(0, item 1), (1, item 2), (2, item 3)], true, false⟩)], 1, 4⟩
+        \\def target (offset length : Nat) : Value := .slice (.slice true byte) ⟨0, offset⟩ length
+        \\def observations (state : State) :=
+        \\  [0, 1, 2].map (fun i => load state (.pointer (.pointer false false byte) ⟨0, i⟩))
+        \\def observes (offset length : Nat) :=
+        \\  let reached := fill.run [target offset length] initial
+        \\  (reached.1, observations reached.2, reached.2.nextId, reached.2.nextAddress)
+        \\example : observes 1 1 =
+        \\    (.ok (.scalar .unit), [.ok (item 1), .error .uninitialized, .ok (item 3)], 1, 4) := rfl
+        \\example : fill.run [target 3 0] initial = (.ok (.scalar .unit), initial) := rfl
+        \\example : observes 2 2 =
+        \\    (.error .memoryValidity, [.ok (item 1), .ok (item 2), .error .uninitialized], 1, 4) := rfl
+        \\
+    , .{
+        try z.air.decode(ctx, raw, .memory),
+        try z.certificate.declaration(ctx, raw, "fill", false),
+        try z.certificate.lift(ctx, try f.load(ctx.allocator, signed_fill), 0),
+        try z.certificate.lift(ctx, try f.load(ctx.allocator, readonly_fill), 0),
+    });
 }
 
 pub fn nativeMoves() !void {

@@ -4,6 +4,7 @@
 -/
 import Compiler.ZigAir.MemoryByteAccess
 import Compiler.ZigAir.MemoryByteCopy
+import Compiler.ZigAir.MemorySliceInvalidationModel
 
 /-! Memory primitives plug into the same structured interpreter as scalar AIR.
 Bulk transfer faults retain the writes already reached. Stack cleanup occurs at the invocation
@@ -52,6 +53,7 @@ inductive Prim where
   | store (pointer value : Ref)
   | copyBytes (target source : Ref)
   | moveBytes (target source : Ref)
+  | invalidateSlice (target : Ref)
   | pointerField (length : Bool) (pointer : Ref)
   | fieldPointer (pointer : Ref) (offset : Nat)
   | booleanNot (value : Ref)
@@ -87,8 +89,8 @@ def sliceCast (target : Ty) (source : Value) : Except Fault Value := do
   if (targetWritable && !writable) || targetChild != child then .error .unsupported
   else .ok (.slice target address length)
 
-/-- Single-step primitives commit only on success. Bulk copying is interpreted
-by `eval`, since a failed copy can have completed earlier byte stores. -/
+/-- Single-step primitives commit only on success. Bulk effects are interpreted
+by `eval`, since a fault can follow completed writes or invalidations. -/
 def Prim.transition (prim : Prim) (args : List Value) (env : Env) (state : State) :
     Except Fault (Value × State) := do
   match prim with
@@ -132,7 +134,8 @@ def Prim.transition (prim : Prim) (args : List Value) (env : Env) (state : State
       | .checkCopyLengths destination source =>
         if (← destination.natural env) = (← source.natural env) then .ok (.scalar .unit)
         else .error .sourceBounds
-      | .alloc _ | .store .. | .wordByteStore .. | .copyBytes .. | .moveBytes .. => .error .malformed
+      | .alloc _ | .store .. | .wordByteStore .. | .copyBytes .. | .moveBytes .. | .invalidateSlice _ =>
+        .error .malformed
     .ok (value, state)
 
 def evalByteTransfer (transfer : State → Value → Value → Except Fault Unit × State)
@@ -143,10 +146,18 @@ def evalByteTransfer (transfer : State → Value → Value → Except Fault Unit
     (result.map (fun _ => .scalar .unit), after)
   | .error fault, _ | _, .error fault => (.error fault, state)
 
+def evalSliceInvalidation (target : Ref) (env : Env) (state : State) : Except Fault Value × State :=
+  match target.eval env with
+  | .ok target =>
+    let (result, after) := SliceInvalidation.run state target
+    (result.map (fun _ => .scalar .unit), after)
+  | .error fault => (.error fault, state)
+
 def Prim.eval (prim : Prim) (args : List Value) (env : Env) (state : State) : Except Fault Value × State :=
   match prim with
   | .copyBytes target source => evalByteTransfer ByteRange.copy target source env state
   | .moveBytes target source => evalByteTransfer ByteRange.move target source env state
+  | .invalidateSlice target => evalSliceInvalidation target env state
   | _ =>
     match prim.transition args env state with
     | .ok (value, after) => (.ok value, after)

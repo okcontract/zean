@@ -24,7 +24,7 @@ def Footprint (view : View) (left right : Nat) (slot : Address) (event : Observa
   match event.site.2.2 with
   | .alloc child => child = usize ∧ event.state.nextId = slot.allocation
   | .load pointer | .store pointer _ => pointer.eval event.env = .ok (counter slot)
-  | .copyBytes .. | .moveBytes .. => False
+  | .copyBytes .. | .moveBytes .. | .invalidateSlice .. => False
   | .wordByteLoad _ pointer | .wordByteStore _ pointer _ => ByteBorrow view left right event.env pointer
   | .argument .. | .scalar .. | .pointerField .. | .fieldPointer .. | .booleanNot .. |
     .unreachable | .pointerCast .. | .sliceCast .. | .arrayToSlice .. | .offsetPointer .. |

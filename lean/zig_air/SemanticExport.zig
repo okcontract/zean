@@ -519,6 +519,8 @@ fn writeInstruction(w: *Writer, air: *const Air, index: Air.Inst.Index, visited:
         .cmp_gte,
         .store,
         .store_safe,
+        .memset,
+        .memset_safe,
         .slice_elem_val,
         .ptr_elem_val,
         => {

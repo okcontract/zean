@@ -227,6 +227,17 @@ private def byteTransfer (table : List Raw) (inst : Raw) (operation : Ref → Re
   require (writable && readable && (← typeOf 17 (← inst.get "type")) == .scalar .unit)
   binary inst operation
 
+private def undefinedFill (table : List Raw) (inst : Raw) : Option Prim := do
+  let destination ← inst.get "lhs"
+  let .slice true (.scalar element) ← referenceType table destination | none
+  let element := Ty.scalar element
+  let layout ← element.layout
+  let fill@(.object fields) ← inst.get "rhs" | none
+  require (fields.length == 2 && (← fill.textAt "kind") == "undefined" &&
+    (← typeOf 17 (← fill.get "type")) == element && layout.bytes > 0 &&
+    (← typeOf 17 (← inst.get "type")) == .scalar .unit)
+  pure (.invalidateSlice (← reference destination))
+
 def primitive (parameters : List Nat) (inst : Raw) (table : List Raw := []) : Option Prim := do
   match ← inst.textAt "tag" with
   | "arg" =>
@@ -240,6 +251,7 @@ def primitive (parameters : List Nat) (inst : Raw) (table : List Raw := []) : Op
   | "store" | "store_safe" => binary inst .store
   | "memcpy" => byteTransfer table inst .copyBytes
   | "memmove" => byteTransfer table inst .moveBytes
+  | "memset" => undefinedFill table inst
   | "ptr_elem_ptr" => binary inst .elementPointer
   | "ptr_add" => binary inst (.offsetPointer false)
   | "ptr_sub" => binary inst (.offsetPointer true)

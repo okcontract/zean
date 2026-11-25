@@ -312,29 +312,28 @@ theorem Prim.transition_preserves_valid (prim : Prim) (args : List Value) (env :
 
 theorem Prim.preserves_valid (prim : Prim) (args : List Value) (env : Env)
     (state : State) (initial : state.valid = true) : (prim.eval args env state).2.valid = true := by
-  by_cases bulk : ∃ target source, prim = .copyBytes target source
-  · obtain ⟨target, source, rfl⟩ := bulk
+  cases prim with
+  | copyBytes target source =>
     simp only [Prim.eval, evalByteTransfer]
     cases target.eval env <;> cases source.eval env <;> simp only
     all_goals first | exact initial | exact ByteRange.copy_valid _ _ _ initial
-  by_cases moving : ∃ target source, prim = .moveBytes target source
-  · obtain ⟨target, source, rfl⟩ := moving
+  | moveBytes target source =>
     simp only [Prim.eval, evalByteTransfer]
     cases target.eval env <;> cases source.eval env <;> simp only
     all_goals first | exact initial | exact ByteRange.move_valid _ _ _ initial
-  have atomic : ∀ target source, prim ≠ .copyBytes target source := by simpa using bulk
-  have atomicMove : ∀ target source, prim ≠ .moveBytes target source := by simpa using moving
-  have equation : prim.eval args env state =
-      match prim.transition args env state with
-      | .ok (value, after) => (.ok value, after)
-      | .error fault => (.error fault, state) := by
-    cases prim <;> first | rfl | exact False.elim (atomic _ _ rfl) | exact False.elim (atomicMove _ _ rfl)
-  rw [equation]
-  cases step : prim.transition args env state with
-  | error fault => exact initial
-  | ok result =>
-    rcases result with ⟨value, after⟩
-    exact prim.transition_preserves_valid args env state value after initial step
+  | invalidateSlice target =>
+    simp only [Prim.eval, evalSliceInvalidation]
+    cases target.eval env with
+    | error => exact initial
+    | ok value =>
+      exact SliceInvalidation.preserves (fun state => state.valid = true)
+        (fun valid erased => invalidate_valid _ _ _ _ _ valid erased) state value initial
+  | _ =>
+    simp only [Prim.eval]
+    split
+    · rename_i value after success
+      exact Prim.transition_preserves_valid _ args env state value after initial success
+    · exact initial
 
 /-- All finite bind/branch/block/jump/return paths, including every fault. -/
 theorem Code.preserves_valid (code : Code) (args : List Value) (env : Env)

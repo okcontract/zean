@@ -20,7 +20,7 @@ def dataSite (site : Nat × Ty × Prim) : Prop :=
   | .load _ => site = (13, usize, .load (.local 7))
   | .store .. => site = (8, .scalar .unit, .store (.local 7) (.constant (.scalar (.int false 64 0)))) ∨
       site = (28, .scalar .unit, .store (.local 7) (.local 27))
-  | .copyBytes .. | .moveBytes .. => False
+  | .copyBytes .. | .moveBytes .. | .invalidateSlice .. => False
   | .wordByteLoad .. => site = (20, ByteAccess.byte, .wordByteLoad .little (.local 18)) ∨
       site = (21, ByteAccess.byte, .wordByteLoad .little (.local 19))
   | .wordByteStore .. => site = (22, .scalar .unit, .wordByteStore .little (.local 18) (.local 21)) ∨

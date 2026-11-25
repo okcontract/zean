@@ -4,6 +4,7 @@ SPDX-License-Identifier: Apache-2.0
 -/
 import Compiler.ZigAir.MemoryReadView
 import Compiler.ZigAir.MemoryRecordWrites
+import Compiler.ZigAir.MemoryAllocationShape
 
 /-! Writable element capabilities for the same typed slice geometry used by
 readonly views. Storage can be uninitialized on entry. Access and declared
@@ -65,23 +66,16 @@ theorem Writable.store_total {view : ReadView} (cap : Writable state view) (inde
   simpa only [writePointer, eq] using store_subobject_total state (view.addressAt index) view.layout cell value
     valid (by simpa only [eq] using view.shaped) checked (by simpa only [eq] using accepted) field
 
-theorem Writable.stored {view : ReadView} {pointer : Value} (cap : Writable state view)
-    (stored : store state pointer value = .ok after) : Writable after view := by
-  obtain ⟨_, _, changed, layout, target, contents, _, _, _, accessed, _, rfl⟩ :=
-    store_success state pointer value after stored
-  have targetFound := (access_success_region _ _ _ _ _ accessed).1
+theorem Writable.retained {view : ReadView} (cap : Writable state view)
+    (shape : state.heap.RetainsShape after.heap) : Writable after view := by
   intro i inside
   obtain ⟨cell, checked, accepted, declared⟩ := cap i inside
-  have cellFound := (access_success_region _ _ _ _ _ checked).1
-  by_cases same : (view.addressAt i).allocation = changed.allocation
-  · have eq : cell = target := Option.some.inj (cellFound.symm.trans (same ▸ targetFound))
-    subst cell
-    have updated := access_replace_cells state (view.addressAt i) view.layout true target contents cellFound
-    rw [checked, same] at updated
-    exact ⟨{ target with cells := contents }, updated, accepted, declared⟩
-  · have unchanged := replace_other state.heap changed.allocation (view.addressAt i).allocation
-      { target with cells := contents } same
-    exact ⟨cell, by simpa only [access, State.heap, unchanged] using checked, accepted, declared⟩
+  obtain ⟨updated, accessed, same⟩ := shape.access checked
+  exact ⟨updated, accessed, same.2.1 ▸ accepted, same.2.1 ▸ declared⟩
+
+theorem Writable.stored {view : ReadView} {pointer : Value} (cap : Writable state view)
+    (stored : store state pointer value = .ok after) : Writable after view :=
+  cap.retained (store_retains_shape _ _ _ _ stored)
 
 theorem Represents.store_other {view : ReadView} {values : Nat → Value} {child : Ty}
     (represented : Represents state view values)

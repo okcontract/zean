@@ -92,32 +92,32 @@ theorem Prim.transition_retains_shape (prim : Prim) (args : List Value) (env : E
       | contradiction
       | (cases (Prod.mk.inj (Except.ok.inj success)).2; exact Heap.RetainsShape.refl _)
 
-/-- Includes bulk transfer faults after a completed prefix of writes. -/
+/-- Includes bulk faults after a completed prefix of writes or invalidations. -/
 theorem Prim.retains_shape (prim : Prim) (args : List Value) (env : Env)
     (state : State) (initial : state.valid = true) : state.heap.RetainsShape (prim.eval args env state).2.heap := by
-  by_cases bulk : ∃ target source, prim = .copyBytes target source
-  · obtain ⟨target, source, rfl⟩ := bulk
+  cases prim with
+  | copyBytes target source =>
     simp only [Prim.eval, evalByteTransfer]
     cases target.eval env <;> cases source.eval env <;> simp only
     all_goals first | exact Heap.RetainsShape.refl _ | exact ByteRange.copy_retains_shape _ _ _
-  by_cases moving : ∃ target source, prim = .moveBytes target source
-  · obtain ⟨target, source, rfl⟩ := moving
+  | moveBytes target source =>
     simp only [Prim.eval, evalByteTransfer]
     cases target.eval env <;> cases source.eval env <;> simp only
     all_goals first | exact Heap.RetainsShape.refl _ | exact ByteRange.move_retains_shape _ _ _
-  have atomic : ∀ target source, prim ≠ .copyBytes target source := by simpa using bulk
-  have atomicMove : ∀ target source, prim ≠ .moveBytes target source := by simpa using moving
-  have equation : prim.eval args env state =
-      match prim.transition args env state with
-      | .ok (value, after) => (.ok value, after)
-      | .error fault => (.error fault, state) := by
-    cases prim <;> first | rfl | exact False.elim (atomic _ _ rfl) | exact False.elim (atomicMove _ _ rfl)
-  rw [equation]
-  cases step : prim.transition args env state with
-  | error fault => exact Heap.RetainsShape.refl state.heap
-  | ok result =>
-    rcases result with ⟨value, after⟩
-    exact prim.transition_retains_shape args env state value after initial step
+  | invalidateSlice target =>
+    simp only [Prim.eval, evalSliceInvalidation]
+    cases target.eval env with
+    | error => exact Heap.RetainsShape.refl _
+    | ok value =>
+      exact SliceInvalidation.preserves (fun after => state.heap.RetainsShape after.heap)
+        (fun prior erased => prior.trans (invalidate_retains_shape _ _ _ _ _ erased))
+        state value (.refl _)
+  | _ =>
+    simp only [Prim.eval]
+    split
+    · rename_i value after success
+      exact Prim.transition_retains_shape _ args env state value after initial success
+    · exact Heap.RetainsShape.refl _
 
 theorem machine_steps_retain_shape (args : List Value)
     (first last : Execution Ty Prim Ref Value Fault State)

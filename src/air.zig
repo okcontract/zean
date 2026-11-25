@@ -469,6 +469,17 @@ pub const Decoder = struct {
             const operation = if (eq(u8, tag, "memmove")) "moveBytes" else "copyBytes";
             return try ctx.fmt("(.{s} {s} {s})", .{ operation, target.text, input.text });
         }
+        if (eq(u8, tag, "memset")) {
+            try ctx.fields(inst, base ++ "lhs rhs");
+            const target = try self.memoryReference(try ctx.field(inst, "lhs"), env);
+            try ctx.require(target.ty.* == .slice and target.ty.slice.mutable and ty.* == .unit, "undefined fill requires a writable slice and unit result");
+            const child = target.ty.slice.child;
+            try ctx.require((child.* == .int or child.* == .boolean) and (try child.layout(ctx))[0] > 0, "unsupported undefined fill element");
+            const fill = try ctx.field(inst, "rhs");
+            try ctx.fields(fill, "kind type");
+            try ctx.require(c.tag(fill, "kind", "undefined") and Ty.same(child, try types.parse(ctx, try ctx.field(fill, "type"), .memory, 0)), "fill must be undefined at the exact slice element type");
+            return try ctx.fmt("(.invalidateSlice {s})", .{target.text});
+        }
         if (eq(u8, tag, "alloc")) {
             try ctx.fields(inst, base ++ "allocationKind");
             try ctx.require(ty.* == .pointer and ty.pointer.mutable and !ty.pointer.many and c.tag(inst, "allocationKind", "stack"), "unsupported AIR allocation");
