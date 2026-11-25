@@ -56,12 +56,13 @@ pub fn constant(ctx: *Context, value: Value, profile: Profile) Error!Reference {
 }
 
 fn scalarConstant(ctx: *Context, value: Value) Error!Reference {
-    if (c.tag(value, "kind", "unit")) {
+    const kind = try ctx.str(try ctx.field(value, "kind"));
+    if (eq(u8, kind, "unit")) {
         try ctx.fields(value, "kind");
         return .{ .ty = try ctx.make(Ty, .unit), .text = "(.constant .unit)" };
     }
+    if (!eq(u8, kind, "constant")) return ctx.fail("unsupported AIR constant kind '{s}'", .{kind});
     try ctx.fields(value, "kind type value");
-    try ctx.require(c.tag(value, "kind", "constant"), "unsupported or malformed AIR constant");
     const ty = try types.parse(ctx, try ctx.field(value, "type"), .scalar, 0);
     const number = try ctx.integer(try ctx.field(value, "value"));
     if (ty.* == .boolean) {
@@ -804,8 +805,14 @@ pub const Decoder = struct {
             try ctx.require(!self.visited[index] and terminal == null, "duplicate AIR body ownership or code after terminator");
             self.visited[index] = true;
             const inst = self.instructions[index];
-            try ctx.require(c.flag(inst, "payloadVisited", true) and c.get(inst, "unsupportedPayload") == null, "unsupported or unvisited AIR body instruction");
             const tag = try ctx.str(try ctx.field(inst, "tag"));
+            const previous = ctx.diagnostic;
+            const prefix = "AIR instruction ";
+            // Keep the innermost location when a nested block is rejected.
+            errdefer if (ctx.diagnostic.ptr != previous.ptr and !std.mem.startsWith(u8, ctx.diagnostic, prefix)) {
+                ctx.diagnostic = std.fmt.allocPrint(ctx.allocator, prefix ++ "{d} ({s}) rejected. {s}", .{ index, tag, ctx.diagnostic }) catch ctx.diagnostic;
+            };
+            try ctx.require(c.flag(inst, "payloadVisited", true) and c.get(inst, "unsupportedPayload") == null, "unsupported or unvisited AIR body instruction");
             try @import("admission.zig").require(ctx, tag);
             const ty = try types.parse(ctx, try ctx.field(inst, "type"), self.profile, 0);
             const base = "index tag payloadVisited type ";

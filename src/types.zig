@@ -341,12 +341,17 @@ pub fn parse(ctx: *Context, value: Value, profile: Profile, depth: usize) Error!
         try ctx.require(has_storage, "aggregate has no stored field");
         return ctx.make(Ty, .{ .structure = .{ .name = name, .source = source, .sha = sha, .size = size, .alignment = alignment, .fields = result } });
     }
-    try ctx.fields(value, "kind");
     const kind = try ctx.str(try ctx.field(value, "kind"));
+    if (std.mem.eql(u8, kind, "unsupported")) {
+        try ctx.fields(value, "kind zigTypeTag");
+        const tag = try ctx.str(try ctx.field(value, "zigTypeTag"));
+        return ctx.fail("unsupported Zig AIR type '{s}'", .{tag});
+    }
+    try ctx.fields(value, "kind");
     if (std.mem.eql(u8, kind, "bool")) return ctx.make(Ty, .boolean);
     if (std.mem.eql(u8, kind, "void")) return ctx.make(Ty, .unit);
     if (std.mem.eql(u8, kind, "noreturn")) return ctx.make(Ty, .noreturn);
-    return ctx.fail("unsupported AIR type", .{});
+    return ctx.fail("unsupported AIR type kind '{s}'", .{kind});
 }
 pub fn checkLayout(ctx: *Context, value: Value, wanted: [2]u64) Error!void {
     try ctx.fields(value, "kind bytes alignment");
