@@ -254,46 +254,24 @@ theorem copyByte_valid (state after : State) (source target : Address) (index : 
   · exact invalidate_valid _ _ _ _ _ initial forgotten
 
 theorem copyLoop_valid (state : State) (source target : Address) (index count : Nat)
-    (initial : state.valid = true) : (copyLoop state source target index count).2.valid = true := by
-  induction count generalizing state index with
-  | zero => exact initial
-  | succ count ih =>
-    rw [copyLoop]
-    cases copied : copyByte state source target index with
-    | error fault => exact initial
-    | ok after => exact ih after (index + 1) (copyByte_valid _ _ _ _ _ initial copied)
+    (initial : state.valid = true) : (copyLoop state source target index count).2.valid = true :=
+  copyLoop_preserves (fun s => s.valid = true) (fun valid copied => copyByte_valid _ _ _ _ _ valid copied)
+    state source target index count initial
 
 theorem copy_valid (state : State) (target input : Value) (initial : state.valid = true) :
-    (copy state target input).2.valid = true := by
-  unfold copy
-  split
-  · exact initial
-  · split
-    · exact initial
-    · split
-      · exact initial
-      · exact copyLoop_valid _ _ _ _ _ initial
+    (copy state target input).2.valid = true :=
+  copy_preserves (fun s => s.valid = true) (fun valid copied => copyByte_valid _ _ _ _ _ valid copied)
+    state target input initial
 
 theorem copyBackward_valid (state : State) (source target : Address) (count : Nat)
-    (initial : state.valid = true) : (copyBackward state source target count).2.valid = true := by
-  induction count generalizing state with
-  | zero => exact initial
-  | succ count ih =>
-    rw [copyBackward]
-    cases copied : copyByte state source target count with
-    | error fault => exact initial
-    | ok after => exact ih after (copyByte_valid _ _ _ _ _ initial copied)
+    (initial : state.valid = true) : (copyBackward state source target count).2.valid = true :=
+  copyBackward_preserves (fun s => s.valid = true) (fun valid copied => copyByte_valid _ _ _ _ _ valid copied)
+    state source target count initial
 
 theorem move_valid (state : State) (target input : Value) (initial : state.valid = true) :
-    (move state target input).2.valid = true := by
-  unfold move
-  split
-  · exact initial
-  · split
-    · exact initial
-    · split
-      · exact copyBackward_valid _ _ _ _ initial
-      · exact copyLoop_valid _ _ _ _ _ initial
+    (move state target input).2.valid = true :=
+  move_preserves (fun s => s.valid = true) (fun valid copied => copyByte_valid _ _ _ _ _ valid copied)
+    state target input initial
 
 end ByteRange
 

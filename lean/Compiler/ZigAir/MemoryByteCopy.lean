@@ -100,4 +100,56 @@ def move (state : State) (target input : Value) : Except Fault Unit × State :=
         copyBackward state src dest count
       else copyLoop state src dest 0 count
 
+section
+variable (invariant : State → Prop)
+variable (transport : ∀ {before after source target index}, invariant before →
+  copyByte before source target index = .ok after → invariant after)
+include transport
+
+/-- A per-byte invariant holds at every stopping point, including a fault
+after a completed prefix. -/
+theorem copyLoop_preserves (state : State) (source target : Address) (index count : Nat)
+    (initial : invariant state) : invariant (copyLoop state source target index count).2 := by
+  induction count generalizing state index with
+  | zero => exact initial
+  | succ count ih =>
+    rw [copyLoop]
+    cases copied : copyByte state source target index with
+    | error fault => exact initial
+    | ok after => exact ih after (index + 1) (transport initial copied)
+
+theorem copyBackward_preserves (state : State) (source target : Address) (count : Nat)
+    (initial : invariant state) : invariant (copyBackward state source target count).2 := by
+  induction count generalizing state with
+  | zero => exact initial
+  | succ count ih =>
+    rw [copyBackward]
+    cases copied : copyByte state source target count with
+    | error fault => exact initial
+    | ok after => exact ih after (transport initial copied)
+
+theorem copy_preserves (state : State) (target input : Value) (initial : invariant state) :
+    invariant (copy state target input).2 := by
+  unfold copy
+  split
+  · exact initial
+  · split
+    · exact initial
+    · split
+      · exact initial
+      · exact copyLoop_preserves invariant transport _ _ _ _ _ initial
+
+theorem move_preserves (state : State) (target input : Value) (initial : invariant state) :
+    invariant (move state target input).2 := by
+  unfold move
+  split
+  · exact initial
+  · split
+    · exact initial
+    · split
+      · exact copyBackward_preserves invariant transport _ _ _ _ initial
+      · exact copyLoop_preserves invariant transport _ _ _ _ _ initial
+
+end
+
 end Compiler.ZigAir.Memory.ByteRange
