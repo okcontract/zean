@@ -22,7 +22,7 @@ pub fn normalized(ctx: *c.Context, record: c.Value) !c.Value {
 pub fn decode(ctx: *c.Context, record: c.Value, sources: c.Value) !Decoded {
     try links.identity(ctx, try links.recordIdentity(ctx, record), sources);
     const signature = try links.signature(ctx, record);
-    const mapping = try links.mapping(ctx, record, sources);
+    const mapping = try links.mapping(ctx, record, sources, null);
     const raw_signature = try ctx.field(record, "signature");
     const specialization = try ctx.field(record, "specialization");
     try ctx.require(c.flag(raw_signature, "genericInstance", true) and c.equal(try ctx.field(raw_signature, "callingConvention"), try ctx.parse("{\"auto\":{}}")) and signature.alias_bits == 3, "unsupported u32 word-swap calling convention or parameter contract");

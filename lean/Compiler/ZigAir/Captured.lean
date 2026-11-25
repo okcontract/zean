@@ -530,8 +530,8 @@ inductive SpecializationPolicy where
   deriving BEq
 
 /-- Preserve source parameter indices after specialization. Direct calls can
-also bind concrete runtime anytype parameters. Earlier captures use "runtime"
-for both parameter shapes; native admission checks the original declaration. -/
+also bind concrete runtime anytype parameters and named comptime callbacks.
+Native admission checks the original declaration. -/
 def parameterMapping (raw signature : Raw) (runtimeCount : Nat)
     (policy : SpecializationPolicy := .standalone) : Option (List Nat) := do
   if !(← signature.boolAt "genericInstance") then
@@ -558,6 +558,12 @@ def parameterMapping (raw signature : Raw) (runtimeCount : Nat)
       | "type" =>
         require (bits.testBit index)
         let _ ← typeOf 17 (← arg.get "value")
+        pure (count, indices)
+      | "value" =>
+        require (policy == .directCall && bits.testBit index)
+        let callback ← arg.get "value"
+        require ((← callback.textAt "kind") == "function")
+        let _ ← identityName callback
         pure (count, indices)
       | _ => none) (0, [])
     require (count == runtimeCount)

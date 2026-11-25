@@ -85,8 +85,8 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
     const entries = try ctx.field(report, "functions");
     var closure = @import("call_closure.zig").Closure.init(ctx, io, options.capture, report);
     defer closure.deinit();
-    closure.root_source = options.declaration_source;
-    closure.root_bytes = declaration_bytes;
+    closure.sources.root_source = options.declaration_source;
+    closure.sources.root_bytes = declaration_bytes;
     closure.allow_recursion = options.profile.capabilities().recursive_calls;
     var callees: std.ArrayList(air.Callee) = .empty;
     var machine_names: std.ArrayList([]const u8) = .empty;
@@ -232,7 +232,7 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
     try guard_sources.revalidate(ctx, io);
     if (specialized_bytes) |bytes| try ctx.require(std.mem.eql(u8, bytes, try ctx.read(io, options.specialized_source.?, 64 * 1024 * 1024)), "specialization source changed during translation");
     if (options.profile.hasCalls()) {
-        try closure.revalidateSources();
+        try closure.sources.revalidate();
     } else if (declaration_bytes) |bytes| try ctx.require(std.mem.eql(u8, bytes, try ctx.read(io, options.declaration_source.?, 64 * 1024 * 1024)), "declaration source changed during translation");
     try files.publish(ctx, io, options.output, &.{ .{ .name = "Generated.lean", .bytes = lean }, .{ .name = "manifest.json", .bytes = try ctx.fmt("{s}\n", .{try ctx.json(manifest)}) } });
     return manifest;

@@ -20,6 +20,12 @@ check the captured bodies and require unique declarations with matching
 source identities, arities, and return types. Translation checks runtime
 argument types as well. [Profile limits](architecture.md#supported-routes)
 
+A direct call to a generic specialization can supply a named `comptime`
+function. Zean checks the callback's source identity and the owner's
+function-typed parameter while building the runtime parameter map. The
+certificate interprets the concrete AIR after specialization, with each
+reached call checked against its own captured declaration.
+
 `MemoryCallMachine.run functions fuel root args state` returns a finished
 result or a suspended configuration. The default `.history` policy keeps
 address accounting. Pass `.reuse` to reclaim storage at invocation boundaries.

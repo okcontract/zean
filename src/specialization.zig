@@ -6,6 +6,7 @@ const c = @import("common.zig");
 const types = @import("types.zig");
 const air = @import("air.zig");
 const capture = @import("capture.zig");
+const declaration_source = @import("declaration_source.zig");
 const eq = std.mem.eql;
 const Signature = struct { parameters: []*const types.Ty, result: *const types.Ty, alias_bits: u64 };
 pub const Mapping = struct { indices: []const usize, sha: ?[]const u8 };
@@ -32,7 +33,7 @@ pub fn signature(ctx: *c.Context, record: c.Value) c.Error!Signature {
     for (parameters, parsed) |parameter, *out| out.* = try types.parse(ctx, parameter, .word_bytes, 0);
     return .{ .parameters = parsed, .result = try types.parse(ctx, try ctx.field(value, "returnType"), .word_bytes, 0), .alias_bits = alias_bits };
 }
-pub fn mapping(ctx: *c.Context, record: c.Value, sources: c.Value) c.Error!Mapping {
+pub fn mapping(ctx: *c.Context, record: c.Value, sources: c.Value, retained: ?*declaration_source.Retained) c.Error!Mapping {
     const sig = try signature(ctx, record);
     const signature_record = try ctx.field(record, "signature");
     if (c.flag(signature_record, "genericInstance", false)) {
@@ -65,7 +66,26 @@ pub fn mapping(ctx: *c.Context, record: c.Value, sources: c.Value) c.Error!Mappi
         } else {
             try ctx.fields(arg, "kind value");
             try ctx.require(comptime_bits & bit != 0 and alias_bits & bit == 0, "implicit comptime or comptime alias_bits is outside the metadata profile");
-            if (c.tag(arg, "kind", "type") or c.tag(arg, "kind", "anytypeType")) _ = try types.parse(ctx, try ctx.field(arg, "value"), .word_bytes, 0) else if (c.tag(arg, "kind", "value")) _ = try air.constant(ctx, try ctx.field(arg, "value"), .memory) else return ctx.fail("unsupported compile-time argument", .{});
+            const value = try ctx.field(arg, "value");
+            if (c.tag(arg, "kind", "type") or c.tag(arg, "kind", "anytypeType")) {
+                _ = try types.parse(ctx, value, .word_bytes, 0);
+            } else if (c.tag(arg, "kind", "value")) {
+                if (c.tag(value, "kind", "function")) {
+                    try ctx.fields(value, "kind identity");
+                    const callback = try ctx.field(value, "identity");
+                    try identity(ctx, callback, sources);
+                    const declarations = retained orelse return ctx.fail("comptime callback requires retained source", .{});
+                    const path = try ctx.str(try ctx.field(callback, "sourceFile"));
+                    const file = declarations.get(path) catch |err| switch (err) {
+                        error.InvalidInput, error.OutOfMemory => |e| return e,
+                        else => return ctx.fail("cannot read callback source {s}: {s}", .{ path, @errorName(err) }),
+                    };
+                    const name = try ctx.str(try ctx.field(callback, "name"));
+                    try ctx.require(c.tag(callback, "sourceSha256", &file.sha) and std.mem.startsWith(u8, name, file.prefix), "callback source identity mismatch");
+                    var buffer: [1]std.zig.Ast.Node.Index = undefined;
+                    _ = try declaration_source.functionProto(ctx, callback, &file.declarations, name[file.prefix.len..], &buffer);
+                } else _ = try air.constant(ctx, value, .memory);
+            } else return ctx.fail("unsupported compile-time argument", .{});
         }
     }
     try ctx.require(indices.items.len == sig.parameters.len and remapped == sig.alias_bits, "specialization lost runtime parameters or alias_bits bits");
@@ -87,7 +107,7 @@ pub fn link(ctx: *c.Context, records: c.Value, roots: []const []const u8, source
         try ctx.require(c.tag(record, "name", name) and c.tag(record, "schema", "oksolc.fresh-air.v3") and c.tag(record, "capturePoint", "after-sema-before-legalize") and c.equal(try ctx.field(record, "configuration"), configuration), "linked function identity, phase or configuration mismatch");
         try identity(ctx, try recordIdentity(ctx, record), sources);
         const sig = try signature(ctx, record);
-        const spec = try mapping(ctx, record, sources);
+        const spec = try mapping(ctx, record, sources, null);
         const instructions = try ctx.array(try ctx.field(record, "instructions"));
         const body = try ctx.array(try ctx.field(record, "body"));
         try ctx.require(instructions.len > 0 and instructions.len <= 512, "invalid linked instruction inventory");
