@@ -101,7 +101,95 @@ const nested_caller = f.derive(&caller, &.{
     f.set("/instructions/0/callee/identity/sourceFile", f.s("nested/fixture.zig")),
 });
 
+const word = f.obj(&.{ .{ "kind", f.s("int") }, .{ "signedness", f.s("unsigned") }, .{ "bits", f.n("64") } });
+const zero_layout = f.obj(&.{ .{ "kind", f.s("abi") }, .{ "bytes", f.n("0") }, .{ "alignment", f.n("1") } });
+const tag_type = f.obj(&.{
+    .{ "kind", f.s("enum") },
+    .{ "identity", f.derive(&identity, &.{f.set("/name", f.s("fixture.Tag"))}) },
+    .{ "layout", zero_layout },
+    .{ "backingType", f.derive(&word, &.{f.set("/bits", f.n("0"))}) },
+    .{ "nonexhaustive", f.b(false) },
+    .{ "fields", f.arr(&.{f.obj(&.{ .{ "index", f.n("0") }, .{ "name", f.s("only") }, .{ "value", f.n("0") } })}) },
+});
+const singleton_type = f.obj(&.{
+    .{ "kind", f.s("struct") },
+    .{ "identity", f.derive(&identity, &.{f.set("/name", f.s("fixture.Token"))}) },
+    .{ "layout", zero_layout },
+    .{ "containerLayout", f.s("auto") },
+    .{ "fields", f.arr(&.{f.obj(&.{
+        .{ "index", f.n("0") },          .{ "name", f.s("tag") }, .{ "offset", f.n("0") },
+        .{ "explicitAlignment", .null }, .{ "type", tag_type },
+    })}) },
+});
+const token = f.obj(&.{
+    .{ "kind", f.s("aggregate") },
+    .{ "type", singleton_type },
+    .{ "fields", f.arr(&.{f.obj(&.{ .{ "kind", f.s("enumTag") }, .{ "value", f.n("0") }, .{ "type", tag_type } })}) },
+});
+
+fn wordConstant(number: []const u8) f.Value {
+    return f.obj(&.{ .{ "kind", f.s("constant") }, .{ "type", word }, .{ "value", f.n(number) } });
+}
+
+fn runtimeArgument(index: []const u8, source_index: []const u8) f.Value {
+    return f.obj(&.{
+        .{ "index", f.n(index) }, .{ "tag", f.s("arg") },                      .{ "payloadVisited", f.b(true) },
+        .{ "type", word },        .{ "zirParameterIndex", f.n(source_index) },
+    });
+}
+
+const singleton_leaf = f.derive(&leaf, &.{
+    f.set("/signature/parameters", f.arr(&.{ word, singleton_type, word })),
+    f.set("/signature/returnType", word),
+    f.set("/body", f.arr(&.{ f.n("0"), f.n("1"), f.n("2") })),
+    f.add("/instructions/0", runtimeArgument("0", "0")),
+    f.add("/instructions/1", runtimeArgument("1", "2")),
+    f.set("/instructions/2/index", f.n("2")),
+    f.set("/instructions/2/operand", f.obj(&.{ .{ "kind", f.s("instruction") }, .{ "index", f.n("1") } })),
+});
+const singleton_caller = f.derive(&caller, &.{
+    f.set("/signature/returnType", word),
+    f.set("/instructions/0/type", word),
+    f.set("/instructions/0/arguments", f.arr(&.{ wordConstant("11"), token, wordConstant("29") })),
+});
+const wrong_token = f.derive(&singleton_caller, &.{f.set("/instructions/0/arguments/1/type/identity/name", f.s("fixture.Other"))});
+const wrong_tag = f.derive(&singleton_caller, &.{f.set("/instructions/0/arguments/1/fields/0/value", f.n("1"))});
+
+fn singletonControls(ctx: *z.common.Context) !void {
+    const child = try f.load(ctx.allocator, singleton_leaf);
+    const children = [_]z.air.Callee{.{ .record = child, .declaration = "child", .machine_index = 0 }};
+    const caller_raw = try f.load(ctx.allocator, singleton_caller);
+    var decoder = try z.air.Decoder.initWith(ctx, caller_raw, .calls, .{ .call_machine = true, .callees = &children });
+    const program = try decoder.program();
+    try std.testing.expect(std.mem.indexOf(u8, program, "(.call 0 [(.constant (.scalar (.int false 64 (11)))), (.constant (.scalar (.int false 64 (29))))])") != null);
+    const child_code = try z.air.decode(ctx, child, .calls);
+    try std.testing.expect(std.mem.indexOf(u8, child_code, "(.argument 1)") != null);
+    try std.testing.expectError(error.InvalidInput, z.air.decode(ctx, child, .memory));
+    for ([_]f.Value{
+        wrong_token,
+        wrong_tag,
+        f.derive(&singleton_caller, &.{f.remove("/instructions/0/arguments/1")}),
+        f.derive(&singleton_caller, &.{f.set("/instructions/0/arguments/1/kind", f.s("undefined"))}),
+    }) |input| {
+        var rejected = try z.air.Decoder.initWith(ctx, try f.load(ctx.allocator, input), .calls, .{
+            .call_machine = true,
+            .callees = &children,
+        });
+        try std.testing.expectError(error.InvalidInput, rejected.program());
+    }
+    const wrong_prefix = f.derive(&singleton_leaf, &.{f.set("/instructions/1/zirParameterIndex", f.n("1"))});
+    try std.testing.expectError(error.InvalidInput, z.air.decode(ctx, try f.load(ctx.allocator, wrong_prefix), .calls));
+    const multiple_tags = f.derive(&singleton_leaf, &.{f.set("/signature/parameters/1/fields/0/type/nonexhaustive", f.b(true))});
+    try std.testing.expectError(error.InvalidInput, z.air.decode(ctx, try f.load(ctx.allocator, multiple_tags), .calls));
+}
+
 pub fn controls() !void {
+    {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var ctx: z.common.Context = .{ .allocator = arena.allocator() };
+        try singletonControls(&ctx);
+    }
     const definition = "pub fn child() void {} pub fn parent() void { child(); }";
     const cases = [_]struct { input: f.Value = caller, callee: f.Value = leaf, source: []const u8 = definition, filename: []const u8 = "fixture.zig", child_declaration: []const u8 = "fn_child", linked: bool = false, profile: z.air.Profile = .calls, imported: bool = false, include: bool = true, extra_root: bool = false, child_root: bool = false, accepted: bool = false }{
         .{ .accepted = true },
@@ -279,6 +367,37 @@ pub fn controls() !void {
             try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "machine", .{}));
         }
     }
+}
+
+pub fn singletonEmitted(ctx: *z.common.Context) ![]const u8 {
+    const child = try f.load(ctx.allocator, singleton_leaf);
+    const parent = try f.load(ctx.allocator, singleton_caller);
+    var callee = try z.air.Decoder.initWith(ctx, child, .calls, .{ .call_machine = true });
+    var machine = try z.air.Decoder.initWith(ctx, parent, .calls, .{
+        .call_machine = true,
+        .callees = &.{.{ .record = child, .declaration = "child", .machine_index = 0 }},
+    });
+    return ctx.fmt(
+        \\import Compiler.ZigAir.CapturedCallMachine
+        \\open Compiler.ZigAir Compiler.ZigAir.MemoryCallMachine
+        \\def child : Function :=
+        \\{s}
+        \\def parent : Function :=
+        \\{s}
+        \\def rawChild : Captured.Raw := {s}
+        \\def rawParent : Captured.Raw := {s}
+        \\def wrongToken : Captured.Raw := {s}
+        \\def wrongTag : Captured.Raw := {s}
+        \\example : CapturedCallMachine.decode [rawChild, rawParent] = some [child, parent] := rfl
+        \\example : CapturedCallMachine.decode [rawChild, wrongToken] = none := rfl
+        \\example : CapturedCallMachine.decode [rawChild, wrongTag] = none := rfl
+        \\example : run [child, parent] 8 1 [] {{}} = .finished (.ok (.scalar (.int false 64 29))) {{}} := rfl
+        \\
+    , .{
+        try callee.program(),                                                   try machine.program(),
+        try z.certificate.lift(ctx, child, 0),                                  try z.certificate.lift(ctx, parent, 0),
+        try z.certificate.lift(ctx, try f.load(ctx.allocator, wrong_token), 0), try z.certificate.lift(ctx, try f.load(ctx.allocator, wrong_tag), 0),
+    });
 }
 
 pub fn emitted(ctx: *z.common.Context) ![]const u8 {

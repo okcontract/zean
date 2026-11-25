@@ -57,7 +57,7 @@ profiles reject volatile and atomic accesses. [Call machine](call-machine.md) ·
 | Array to slice | Static extent, pointer, and permissions. Conversion itself performs no storage access. |
 | Record fields | Complete owner layout and declared field. Validated zero-storage fields retain their declaration indices and contribute no heap storage. Projections into them and accesses to padding reject. |
 | Opaque enum storage | Identity, exhaustive tag table, backing width and layout. Runtime enum values and operations reject. |
-| Direct calls | Exact callee identity and execution of its captured body, including faults and effects |
+| Direct calls | Exact callee identity and execution of its captured body, including faults and effects. A by-value singleton is omitted only after checking its exact zero-storage declaration and sole defined value. The other arguments keep their source order. |
 | Branches, blocks, and loops | Branch selection, labels, block results, continuations, and back edges |
 | Integer switches | Typed, disjoint constant items and inclusive ranges. All bodies and the explicit default must pass admission. |
 | Return | Result type and reference, followed by release of private stack storage |

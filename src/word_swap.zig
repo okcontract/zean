@@ -27,7 +27,11 @@ pub fn decode(ctx: *c.Context, record: c.Value, sources: c.Value) !Decoded {
     const specialization = try ctx.field(record, "specialization");
     try ctx.require(c.flag(raw_signature, "genericInstance", true) and c.equal(try ctx.field(raw_signature, "callingConvention"), try ctx.parse("{\"auto\":{}}")) and signature.alias_bits == 3, "unsupported u32 word-swap calling convention or parameter contract");
     try ctx.require(signature.parameters.len == 2 and signature.result.* == .unit and mapping.indices.len == 2 and mapping.indices[0] == 1 and mapping.indices[1] == 2, "unsupported u32 word-swap runtime/source mapping");
-    for (signature.parameters) |ty| try ctx.require(ty.* == .pointer and ty.pointer.mutable and !ty.pointer.many and ty.pointer.child.isInt(false, 32), "word-swap parameters must be writable single u32 pointers");
+    for (signature.parameters) |parameter| {
+        try ctx.require(parameter == .stored, "word-swap parameter must have runtime storage");
+        const ty = parameter.stored;
+        try ctx.require(ty.* == .pointer and ty.pointer.mutable and !ty.pointer.many and ty.pointer.child.isInt(false, 32), "word-swap parameters must be writable single u32 pointers");
+    }
     const owner = try ctx.field(specialization, "owner");
     try ctx.require(c.tag(owner, "name", "mem.swap") and c.tag(owner, "sourceFile", "mem.zig") and try ctx.nat(try ctx.field(specialization, "sourceParameterCount"), 3) == 3 and try ctx.nat(try ctx.field(specialization, "sourceComptimeBits"), 1) == 1 and try ctx.nat(try ctx.field(specialization, "sourceNoaliasBits"), 6) == 6, "unsupported u32 word-swap specialization contract");
     const arguments = try ctx.array(try ctx.field(specialization, "arguments"));

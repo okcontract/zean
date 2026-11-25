@@ -8,7 +8,8 @@ const air = @import("air.zig");
 const capture = @import("capture.zig");
 const declaration_source = @import("declaration_source.zig");
 const eq = std.mem.eql;
-const Signature = struct { parameters: []*const types.Ty, result: *const types.Ty, alias_bits: u64 };
+const Parameter = union(enum) { stored: *const types.Ty, singleton: c.Value };
+const Signature = struct { parameters: []Parameter, result: *const types.Ty, alias_bits: u64 };
 pub const Mapping = struct { indices: []const usize, sha: ?[]const u8 };
 pub fn identity(ctx: *c.Context, value: c.Value, sources: c.Value) c.Error!void {
     try ctx.fields(value, "name sourceFile sourceSha256");
@@ -29,8 +30,13 @@ pub fn signature(ctx: *c.Context, record: c.Value) c.Error!Signature {
     const parameters = try ctx.array(try ctx.field(value, "parameters"));
     try ctx.require(parameters.len <= 32, "unsupported signature parameter count");
     const alias_bits = try ctx.nat(try ctx.field(value, "noaliasBits"), (@as(u64, 1) << @intCast(parameters.len)) - 1);
-    const parsed = try ctx.allocator.alloc(*const types.Ty, parameters.len);
-    for (parameters, parsed) |parameter, *out| out.* = try types.parse(ctx, parameter, .word_bytes, 0);
+    const parsed = try ctx.allocator.alloc(Parameter, parameters.len);
+    for (parameters, parsed, 0..) |parameter, *out, index| {
+        if (try types.isSingletonParameter(ctx, parameter)) {
+            try ctx.require(alias_bits & (@as(u64, 1) << @intCast(index)) == 0, "singleton argument cannot have a noalias contract");
+            out.* = .{ .singleton = parameter };
+        } else out.* = .{ .stored = try types.parse(ctx, parameter, .word_bytes, 0) };
+    }
     return .{ .parameters = parsed, .result = try types.parse(ctx, try ctx.field(value, "returnType"), .word_bytes, 0), .alias_bits = alias_bits };
 }
 pub fn mapping(ctx: *c.Context, record: c.Value, sources: c.Value, retained: ?*declaration_source.Retained) c.Error!Mapping {
@@ -118,10 +124,13 @@ pub fn link(ctx: *c.Context, records: c.Value, roots: []const []const u8, source
             _ = try ctx.str(try ctx.field(inst, "tag"));
             if (!c.flag(inst, "payloadVisited", true)) unvisited += 1 else if (c.flag(inst, "unsupportedPayload", true)) try unsupported.array.append(try ctx.parse(try ctx.json(.{ .index = index, .tag = try ctx.field(inst, "tag") })));
         }
-        for (spec.indices, 0..) |source_index, runtime_index| {
-            try ctx.require(runtime_index < body.len, "missing linked argument prefix");
-            const instruction = instructions[try ctx.nat(body[runtime_index], instructions.len - 1)];
-            try ctx.require(c.tag(instruction, "tag", "arg") and c.flag(instruction, "payloadVisited", true) and try ctx.nat(try ctx.field(instruction, "zirParameterIndex"), 31) == source_index and types.Ty.same(try types.parse(ctx, try ctx.field(instruction, "type"), .word_bytes, 0), sig.parameters[runtime_index]), "linked AIR arguments disagree with runtime/source mapping");
+        var position: usize = 0;
+        for (spec.indices, sig.parameters) |source_index, parameter| {
+            if (parameter == .singleton) continue;
+            try ctx.require(position < body.len, "missing linked argument prefix");
+            const instruction = instructions[try ctx.nat(body[position], instructions.len - 1)];
+            try ctx.require(c.tag(instruction, "tag", "arg") and c.flag(instruction, "payloadVisited", true) and try ctx.nat(try ctx.field(instruction, "zirParameterIndex"), 31) == source_index and types.Ty.same(try types.parse(ctx, try ctx.field(instruction, "type"), .word_bytes, 0), parameter.stored), "linked AIR arguments disagree with runtime/source mapping");
+            position += 1;
         }
         try functions.object.put(ctx.allocator, name, try ctx.parse(try ctx.json(.{ .recordSha256 = try c.fingerprint(ctx, record), .specializationSha256 = spec.sha, .runtimeParameterIndices = spec.indices, .noaliasBits = sig.alias_bits, .unsupportedBodyInstructions = unsupported, .unvisitedInstructions = unvisited })));
         for (instructions) |inst| {
@@ -139,13 +148,17 @@ pub fn link(ctx: *c.Context, records: c.Value, roots: []const []const u8, source
             const args = try ctx.array(try ctx.field(inst, "arguments"));
             try ctx.require(args.len == expected.parameters.len, "call runtime argument count disagrees with callee");
             for (args, expected.parameters) |arg, wanted| {
+                if (wanted == .singleton) {
+                    try types.checkSingletonValue(ctx, arg, wanted.singleton);
+                    continue;
+                }
                 const actual = if (c.tag(arg, "kind", "instruction")) blk: {
                     try ctx.fields(arg, "kind index");
                     const instruction = instructions[try ctx.nat(try ctx.field(arg, "index"), instructions.len - 1)];
                     try ctx.require(c.flag(instruction, "payloadVisited", true), "call uses an unvisited argument");
                     break :blk try types.parse(ctx, try ctx.field(instruction, "type"), .word_bytes, 0);
                 } else (try air.constant(ctx, arg, .memory)).ty;
-                try ctx.require(types.Ty.same(actual, wanted), "call runtime argument type disagrees with callee");
+                try ctx.require(types.Ty.same(actual, wanted.stored), "call runtime argument type disagrees with callee");
             }
             try ctx.require(types.Ty.same(try types.parse(ctx, try ctx.field(inst, "type"), .word_bytes, 0), expected.result), "call return type disagrees with callee");
             try edges.append(ctx.allocator, try ctx.parse(try ctx.json(.{ .caller = name, .instruction = try ctx.field(inst, "index"), .tag = try ctx.field(inst, "tag"), .callee = target_name, .arguments = args })));

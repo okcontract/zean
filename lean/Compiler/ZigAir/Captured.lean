@@ -39,6 +39,21 @@ def Raw.natAt (raw : Raw) (key : String) : Option Nat := raw.get key >>= Raw.nat
 def Raw.boolAt (raw : Raw) (key : String) : Option Bool := raw.get key >>= Raw.flag
 def Raw.listAt (raw : Raw) (key : String) : Option (List Raw) := raw.get key >>= Raw.list
 
+/-- The certificate producer lifts objects in sorted key order. Comparing that
+representation is reducible in the kernel, including nested declarations. -/
+def Raw.equal : Nat → Raw → Raw → Bool
+  | 0, _, _ => false
+  | _ + 1, .null, .null => true
+  | _ + 1, .boolean a, .boolean b => a == b
+  | _ + 1, .number a, .number b => a == b
+  | _ + 1, .string a, .string b => a == b
+  | fuel + 1, .array a, .array b =>
+    a.length == b.length && (a.zip b).all (fun (left, right) => left.equal fuel right)
+  | fuel + 1, .object a, .object b =>
+    a.length == b.length && (a.zip b).all (fun ((leftKey, leftValue), (rightKey, rightValue)) =>
+      leftKey == rightKey && leftValue.equal fuel rightValue)
+  | _, _, _ => false
+
 def require (condition : Bool) : Option Unit := if condition then some () else none
 
 private def layoutMatches (raw : Raw) (ty : Ty) : Option Unit := do
@@ -191,6 +206,35 @@ def reference (raw : Raw) : Option Ref := do
     require value.valid
     pure (.constant (.scalar value))
   | _ => none
+
+private def singletonValue : Nat → Raw → Raw → Option Unit
+  | 0, _, _ => none
+  | fuel + 1, declared, value => do
+    let .object properties := value | none
+    require (properties.length == 3 && Raw.equal 128 (← value.get "type") declared)
+    match ← declared.textAt "kind" with
+    | "enum" =>
+      require ((← value.textAt "kind") == "enumTag" && (← value.natAt "value") == 0)
+    | "struct" =>
+      require ((← value.textAt "kind") == "aggregate")
+      let fields ← declared.listAt "fields"
+      let members ← value.listAt "fields"
+      require (members.length == fields.length)
+      for (field, member) in fields.zip members do
+        singletonValue fuel (← field.get "type") member
+    | _ => none
+
+/-- A removed argument must still be a defined inhabitant of the exact
+singleton declaration. Remaining references keep their original order. -/
+def callArguments (inst : Raw) (parameters : List Raw) : Option (List Ref) := do
+  let raw ← inst.listAt "arguments"
+  require (raw.length == parameters.length)
+  let decoded ← (parameters.zip raw).mapM fun (parameter, value) => do
+    if (zeroStorage 17 parameter).isSome then
+      singletonValue 17 parameter value
+      pure none
+    else pure (some (← reference value))
+  pure (decoded.filterMap id)
 
 private def scalarRef (raw : Raw) : Option Scalar.Ref := do
   match ← reference raw with
@@ -591,6 +635,7 @@ def parameterMapping (raw signature : Raw) (runtimeCount : Nat)
 coverage is deliberately still incomplete; the encoded guards are executed. -/
 structure Input where
   parameters : List Ty
+  parameterTypes : List Raw
   returnType : Ty
   mapping : List Nat
   guards : List Raw
@@ -621,8 +666,12 @@ def prepare (raw : Raw) (policy : SpecializationPolicy := .standalone) : Option 
   let signature ← raw.get "signature"
   require (!(← signature.boolAt "varArgs") &&
     (← signature.natAt "noaliasBits") == 0)
-  let parameters ← (← signature.listAt "parameters").mapM (typeOf 17)
-  let mapping ← parameterMapping raw signature parameters.length policy
+  let parameterTypes ← signature.listAt "parameters"
+  let sourceParameters ← parameterMapping raw signature parameterTypes.length policy
+  let stored := (parameterTypes.zip sourceParameters).filter fun (parameter, _) =>
+    policy != .directCall || (zeroStorage 17 parameter).isNone
+  let parameters ← stored.mapM (fun (parameter, _) => typeOf 17 parameter)
+  let mapping := stored.map Prod.snd
   let returnType ← typeOf 17 (← signature.get "returnType")
   let validity ← raw.get "sourceValidity"
   require ((← validity.textAt "schema") == "oksolc.source-validity.v1" &&
@@ -631,7 +680,7 @@ def prepare (raw : Raw) (policy : SpecializationPolicy := .standalone) : Option 
   let table ← raw.listAt "instructions"
   require (table.length > 0 && table.length ≤ 512)
   checkCopyCoverage raw validity table
-  pure ⟨parameters, returnType, mapping, guards, table, ← raw.listAt "body"⟩
+  pure ⟨parameters, parameterTypes, returnType, mapping, guards, table, ← raw.listAt "body"⟩
 
 def decode (loops : Bool) (raw : Raw) : Option (Program loops) := do
   let input ← prepare raw

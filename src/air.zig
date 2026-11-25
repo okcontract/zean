@@ -33,6 +33,7 @@ const Prefix = struct { kind: []const u8 = "bind", id: usize, ty: []const u8, ch
 const Env = []?*const Ty;
 const Labels = []?Label;
 const Cell = struct { offset: u64, text: []const u8 };
+const Parameter = struct { ty: *const Ty, source_index: usize };
 
 pub fn constant(ctx: *Context, value: Value, profile: Profile) Error!Reference {
     if (profile == .aggregate and (c.tag(value, "kind", "aggregate") or c.tag(value, "kind", "undefined"))) {
@@ -103,7 +104,7 @@ pub const Decoder = struct {
     ctx: *Context,
     profile: Profile,
     record: Value,
-    parameters: []*const Ty,
+    parameters: []const Parameter,
     result: *const Ty,
     instructions: []const Value,
     visited: []bool,
@@ -140,18 +141,28 @@ pub const Decoder = struct {
         try ctx.require(c.flag(signature, "genericInstance", options.explicit_type_specialization) and (!options.explicit_type_specialization or options.source_parameters != null) and c.flag(signature, "varArgs", false) and try ctx.nat(try ctx.field(signature, "noaliasBits"), std.math.maxInt(u64)) == 0, "unsupported function specialization or parameter contract");
         const params = try ctx.array(try ctx.field(signature, "parameters"));
         try ctx.require(params.len <= 512, "malformed or oversized parameter list");
-        const parameters = try ctx.allocator.alloc(*const Ty, params.len);
+        const parameter_buffer = try ctx.allocator.alloc(Parameter, params.len);
         if (options.source_parameters) |mapping| try ctx.require(mapping.len == params.len, "runtime/source parameter mapping has the wrong length");
-        for (params, parameters) |value, *target| target.* = try types.parse(ctx, value, profile, 0);
+        var stored: usize = 0;
+        for (params, 0..) |value, index| {
+            if (profile.hasCalls() and try types.isSingletonParameter(ctx, value)) continue;
+            parameter_buffer[stored] = .{
+                .ty = try types.parse(ctx, value, profile, 0),
+                .source_index = if (options.source_parameters) |mapping| mapping[index] else index,
+            };
+            stored += 1;
+        }
+        const parameters = parameter_buffer[0..stored];
         const result = try types.parse(ctx, try ctx.field(signature, "returnType"), profile, 0);
-        for (parameters) |ty| _ = try ty.lean(ctx, profile);
+        for (parameters) |parameter| _ = try parameter.ty.lean(ctx, profile);
         _ = try result.lean(ctx, profile);
         if (profile != .scalar) {
-            for (parameters) |ty| try ctx.require(ty.* != .array, "array values are not implemented in memory AIR");
+            for (parameters) |parameter| try ctx.require(parameter.ty.* != .array, "array values are not implemented in memory AIR");
             try ctx.require(result.* != .array, "array values are not implemented in memory AIR");
         }
         if (profile.hasBytes()) {
-            for (parameters) |ty| {
+            for (parameters) |parameter| {
+                const ty = parameter.ty;
                 try ctx.require(!ty.hasAlignment(), "aligned signature needs an external memory contract");
                 try ctx.require(ty.* == .int or ty.* == .boolean or ty.* == .unit or (ty.* == .pointer and ty.pointer.child.isInt(false, 32)), "byte profile parameters require scalar or u32-pointer types");
             }
@@ -423,6 +434,10 @@ pub const Decoder = struct {
             try ctx.require(arguments.len == parameters.len and Ty.same(ty, try types.parse(ctx, try ctx.field(signature, "returnType"), .memory, 0)), "call signature mismatch");
             var texts: std.ArrayList([]const u8) = .empty;
             for (arguments, parameters) |argument, parameter| {
+                if (try types.isSingletonParameter(ctx, parameter)) {
+                    try types.checkSingletonValue(ctx, argument, parameter);
+                    continue;
+                }
                 const ref = try self.reference(argument, env, false);
                 try ctx.require(Ty.same(ref.ty, try types.parse(ctx, parameter, .memory, 0)), "call argument type mismatch");
                 try texts.append(ctx.allocator, ref.text);
@@ -859,8 +874,8 @@ pub const Decoder = struct {
             if (primitive != null) {} else if (eq(u8, tag, "arg")) {
                 try ctx.fields(inst, base ++ "zirParameterIndex");
                 try ctx.require(depth == 0 and position == self.arguments and self.arguments < self.parameters.len, "invalid AIR argument prefix");
-                const source_index = if (self.options.source_parameters) |mapping| mapping[self.arguments] else self.arguments;
-                try ctx.require(try ctx.nat(try ctx.field(inst, "zirParameterIndex"), 511) == source_index and Ty.same(ty, self.parameters[self.arguments]), "AIR argument disagrees with signature");
+                const parameter = self.parameters[self.arguments];
+                try ctx.require(try ctx.nat(try ctx.field(inst, "zirParameterIndex"), 511) == parameter.source_index and Ty.same(ty, parameter.ty), "AIR argument disagrees with signature");
                 primitive = try ctx.fmt("(.argument {d})", .{self.arguments});
                 if (self.options.extension == .hash_update) primitive = try ctx.fmt("(.primitive {s})", .{primitive.?});
                 self.arguments += 1;
@@ -1006,7 +1021,7 @@ pub const Decoder = struct {
         for (self.guards, self.guard_seen) |guard, seen| try ctx.require(guard == null or seen, "source guard was not executed by the decoded body");
         if (self.options.extension == .slice_view) try ctx.require(self.empty_constants == 1, "sliceAsBytes must retain its empty return");
         var parameters: std.ArrayList([]const u8) = .empty;
-        for (self.parameters) |ty| try parameters.append(ctx.allocator, try ty.lean(ctx, self.profile));
+        for (self.parameters) |parameter| try parameters.append(ctx.allocator, try parameter.ty.lean(ctx, self.profile));
         if (self.options.call_machine) return ctx.fmt("  {{ parameters := [{s}],\n    returnType := {s},\n    body :=\n{s}\n  }}", .{ try std.mem.join(ctx.allocator, ", ", parameters.items), try self.result.lean(ctx, self.profile), try indent(ctx, code, 6) });
         return ctx.fmt("{{ parameters := [{s}], returnType := {s}, body :=\n  {s} }}", .{ try std.mem.join(ctx.allocator, ", ", parameters.items), try self.result.lean(ctx, self.profile), code });
     }

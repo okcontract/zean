@@ -235,6 +235,34 @@ fn checkZeroStorage(ctx: *Context, raw: Value, depth: usize) Error!void {
     }
 }
 
+/// Only direct-call admission can erase a by-value singleton parameter.
+/// The full declaration is retained for checking the original argument.
+pub fn isSingletonParameter(ctx: *Context, raw: Value) Error!bool {
+    if (!c.tag(raw, "kind", "enum") and !c.tag(raw, "kind", "struct")) return false;
+    const layout = c.get(raw, "layout") orelse return false;
+    const bytes = c.get(layout, "bytes") orelse return false;
+    if (try ctx.nat(bytes, std.math.maxInt(u64)) != 0) return false;
+    try checkZeroStorage(ctx, raw, 0);
+    return true;
+}
+
+/// The argument must be a defined value of exactly the admitted declaration.
+/// A singleton can contain other singleton fields, in declaration order.
+pub fn checkSingletonValue(ctx: *Context, value: Value, declaration: Value) Error!void {
+    try ctx.require(c.equal(try ctx.field(value, "type"), declaration), "singleton argument declaration mismatch");
+    if (c.tag(declaration, "kind", "enum")) {
+        try ctx.fields(value, "kind value type");
+        try ctx.require(c.tag(value, "kind", "enumTag") and try ctx.nat(try ctx.field(value, "value"), 0) == 0, "singleton enum value is not its sole tag");
+        return;
+    }
+    try ctx.fields(value, "kind type fields");
+    try ctx.require(c.tag(value, "kind", "aggregate"), "singleton struct must be a defined aggregate");
+    const members = try ctx.array(try ctx.field(value, "fields"));
+    const fields = try ctx.array(try ctx.field(declaration, "fields"));
+    try ctx.require(members.len == fields.len, "singleton aggregate value has the wrong field count");
+    for (members, fields) |member, field| try checkSingletonValue(ctx, member, try ctx.field(field, "type"));
+}
+
 pub fn parse(ctx: *Context, value: Value, profile: Profile, depth: usize) Error!*const Ty {
     if (depth > 16 or value != .object) return ctx.fail("type depth or shape", .{});
     if (c.tag(value, "kind", "int")) {

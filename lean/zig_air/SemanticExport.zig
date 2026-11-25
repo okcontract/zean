@@ -263,6 +263,20 @@ fn writeValue(w: *Writer, value: Value, zcu: *Zcu, depth: u8, remaining: *usize)
         return w.writeByte('}');
     }
     if (ty.zigTypeTag(zcu) == .void) return json(w, .{ .kind = "unit" });
+    if (ty.zigTypeTag(zcu) == .@"enum") {
+        const loaded = resolvedEnum(ty, zcu) orelse
+            return json(w, .{ .kind = "unsupported", .reason = "constant-type" });
+        const backing: Type = .fromInterned(loaded.int_tag_type);
+        if (loaded.nonexhaustive or loaded.field_names.len != 1 or backing.zigTypeTag(zcu) != .int)
+            return json(w, .{ .kind = "unsupported", .reason = "constant-type" });
+        const info = backing.intInfo(zcu);
+        if (info.bits != 0 or info.signedness != .unsigned or
+            zcu.intern_pool.indexToKey(value.toIntern()) != .enum_tag or value.backingInt(zcu).getUnsignedInt(zcu) != 0)
+            return json(w, .{ .kind = "unsupported", .reason = "constant-type" });
+        try w.writeAll("{\"kind\":\"enumTag\",\"value\":0,\"type\":");
+        try writeType(w, ty, zcu);
+        return w.writeByte('}');
+    }
     if (ty.zigTypeTag(zcu) == .@"struct") {
         const loaded = resolvedStruct(ty, zcu) orelse
             return json(w, .{ .kind = "unsupported", .reason = "aggregate-type" });
