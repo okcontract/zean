@@ -55,6 +55,29 @@ const generic_leaf = f.derive(&leaf, &.{
     })),
 });
 const generic_caller = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/name", f.s("fixture.child__func_1"))});
+
+fn genericIdentity(comptime ty: f.Value) f.Value {
+    return f.derive(&generic_leaf, &.{
+        f.set("/signature/parameters", f.arr(&.{ty})),
+        f.set("/signature/returnType", ty),
+        f.set("/specialization/arguments/0/value", ty),
+        f.set("/specialization/sourceParameterCount", f.n("2")),
+        f.add("/specialization/arguments/1", f.obj(&.{ .{ "kind", f.s("runtime") }, .{ "runtimeIndex", f.n("0") } })),
+        f.set("/body", f.arr(&.{ f.n("0"), f.n("1") })),
+        f.set("/instructions", f.arr(&.{
+            f.obj(&.{ .{ "index", f.n("0") }, .{ "tag", f.s("arg") }, .{ "payloadVisited", f.b(true) }, .{ "type", ty }, .{ "zirParameterIndex", f.n("1") } }),
+            f.obj(&.{ .{ "index", f.n("1") }, .{ "tag", f.s("ret") }, .{ "payloadVisited", f.b(true) }, .{ "type", never }, .{ "operand", f.obj(&.{ .{ "kind", f.s("instruction") }, .{ "index", f.n("0") } }) } }),
+        })),
+    });
+}
+
+fn identityCaller(comptime ty: f.Value, comptime argument: f.Value) f.Value {
+    return f.derive(&generic_caller, &.{
+        f.set("/signature/returnType", ty),
+        f.set("/instructions/0/type", ty),
+        f.set("/instructions/0/arguments", f.arr(&.{argument})),
+    });
+}
 const method_name = "fixture.Factory(u8).child__func_0";
 const method_caller = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/name", f.s(method_name))});
 const method_leaf = f.derive(&generic_leaf, &.{
@@ -191,7 +214,26 @@ pub fn controls() !void {
         try singletonControls(&ctx);
     }
     const definition = "pub fn child() void {} pub fn parent() void { child(); }";
-    const cases = [_]struct { input: f.Value = caller, callee: f.Value = leaf, source: []const u8 = definition, filename: []const u8 = "fixture.zig", child_declaration: []const u8 = "fn_child", linked: bool = false, profile: z.air.Profile = .calls, imported: bool = false, include: bool = true, extra_root: bool = false, child_root: bool = false, accepted: bool = false }{
+    const identity_source = "pub fn child(comptime T: type, x: T) T { return x; } ";
+    const optional = @import("optional_bytes.zig");
+    const errors = @import("scalar_error.zig");
+    const cases = [_]struct { input: f.Value = caller, callee: f.Value = leaf, source: []const u8 = definition, filename: []const u8 = "fixture.zig", child_declaration: []const u8 = "fn_child", argument: []const u8 = "", linked: bool = false, profile: z.air.Profile = .calls, imported: bool = false, include: bool = true, extra_root: bool = false, child_root: bool = false, accepted: bool = false }{
+        .{
+            .input = comptime identityCaller(optional.optional, optional.none),
+            .callee = comptime genericIdentity(optional.optional),
+            .source = identity_source ++ "pub fn parent() ?u8 { return child(?u8, null); }",
+            .child_declaration = "fn_child__func_1",
+            .argument = "(.constant (.optionalScalar (.int false 8) none))",
+            .accepted = true,
+        },
+        .{
+            .input = comptime identityCaller(errors.result, errors.missing),
+            .callee = comptime genericIdentity(errors.result),
+            .source = identity_source ++ "pub fn parent() error{InvalidDigit}!u8 { return child(error{InvalidDigit}!u8, error.InvalidDigit); }",
+            .child_declaration = "fn_child__func_1",
+            .argument = "(.constant (.errorScalar (.int false 8) [\"InvalidDigit\"] (.inl \"InvalidDigit\")))",
+            .accepted = true,
+        },
         .{ .accepted = true },
         .{
             .input = f.derive(&caller, &.{f.set("/instructions/0/callee/identity/name", f.s("fixture.Helper.parent"))}),
@@ -333,7 +375,7 @@ pub fn controls() !void {
                 return err;
             };
             const generated = try ctx.read(std.testing.io, try ctx.fmt("{s}/Generated.lean", .{options.output}), 16384);
-            try std.testing.expect(std.mem.indexOf(u8, generated, try ctx.fmt("(.call FunctionId.{s} [])", .{case.child_declaration})) != null);
+            try std.testing.expect(std.mem.indexOf(u8, generated, try ctx.fmt("(.call FunctionId.{s} [{s}])", .{ case.child_declaration, case.argument })) != null);
             if (std.mem.indexOfScalar(u8, child_name, '(') != null) {
                 try std.testing.expect(std.mem.indexOf(u8, generated, "-- Zig declaration: fixture.Factory(") == null);
                 try std.testing.expect(std.mem.indexOf(u8, generated, "-- Zig declaration: fixture.parent\n") != null);
@@ -351,7 +393,7 @@ pub fn controls() !void {
             const summary = try z.translate.run(&ctx, std.testing.io, machine_options);
             try std.testing.expect(z.common.tag(summary, "executionModel", "call-machine"));
             const generated = try ctx.read(std.testing.io, try ctx.fmt("{s}/Generated.lean", .{machine_options.output}), 16384);
-            try std.testing.expect(std.mem.indexOf(u8, generated, try ctx.fmt("(.call FunctionId.{s} [])", .{case.child_declaration})) != null);
+            try std.testing.expect(std.mem.indexOf(u8, generated, try ctx.fmt("(.call FunctionId.{s} [{s}])", .{ case.child_declaration, case.argument })) != null);
             try std.testing.expect(std.mem.indexOf(u8, generated, try ctx.fmt("def FunctionId.{s} : Nat := 0", .{case.child_declaration})) != null);
             try std.testing.expect(std.mem.indexOf(u8, generated, " <|\n      (.ret (.local 0))") != null);
             if (case.profile == .recursive_calls) {

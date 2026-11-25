@@ -114,6 +114,10 @@ test "void-payload error unions keep checked try branches and named errors" {
     try @import("error_status.zig").controls();
 }
 
+test "integer-payload error unions preserve typed try continuations and named errors" {
+    try @import("scalar_error.zig").controls();
+}
+
 test "enum comparisons and switches check declared tags and identities" {
     try @import("enum_tags.zig").controls();
 }

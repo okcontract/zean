@@ -10,6 +10,7 @@ const Context = c.Context;
 const Value = c.Value;
 const Error = c.Error;
 const eq = std.mem.eql;
+const unit_type: Ty = .unit;
 const maximum_instructions = 1024;
 const maximum_switch_ranges = 256;
 pub const Extension = enum { none, assertion, hash_update, scalar_view, slice_view };
@@ -50,10 +51,30 @@ pub fn constant(ctx: *Context, value: Value, profile: Profile) Error!Reference {
         };
         return .{ .ty = ty, .text = try ctx.fmt("(.constant (.optionalScalar (.int false 8) {s}))", .{payload}) };
     }
+    if (c.tag(value, "kind", "errorScalar")) {
+        try ctx.fields(value, "kind type name payload");
+        const ty = try types.parse(ctx, try ctx.field(value, "type"), profile, 0);
+        try ctx.require(ty.* == .error_value and ty.error_value.result and ty.error_value.payload != null, "scalar error constant has the wrong union type");
+        const child = ty.error_value.payload.?;
+        const name = try ctx.field(value, "name");
+        const payload = try ctx.field(value, "payload");
+        const result = if (name == .null) blk: {
+            const contents = try scalarConstant(ctx, payload);
+            try ctx.require(Ty.same(contents.ty, child), "error constant changes its payload type");
+            break :blk try ctx.fmt("(.inr {s})", .{scalarConstantValue(contents)});
+        } else blk: {
+            const named = try ctx.str(name);
+            try ctx.require(payload == .null and ty.error_value.contains(named), "malformed scalar error constant");
+            break :blk try ctx.fmt("(.inl {s})", .{try ctx.json(named)});
+        };
+        return .{ .ty = ty, .text = try ctx.fmt("(.constant (.errorScalar {s} {s} {s}))", .{
+            try child.lean(ctx, .scalar), try ctx.json(ty.error_value.names), result,
+        }) };
+    }
     if (c.tag(value, "kind", "errorValue") or c.tag(value, "kind", "errorStatus")) {
         try ctx.fields(value, "kind type name");
         const ty = try types.parse(ctx, try ctx.field(value, "type"), profile, 0);
-        try ctx.require(ty.* == .error_value and ty.error_value.result == c.tag(value, "kind", "errorStatus"), "error constant disagrees with its declared kind");
+        try ctx.require(ty.* == .error_value and ty.error_value.payload == null and ty.error_value.result == c.tag(value, "kind", "errorStatus"), "error constant disagrees with its declared kind");
         const raw_name = try ctx.field(value, "name");
         const name = if (raw_name == .null) blk: {
             try ctx.require(ty.error_value.result, "an error tag requires a name");
@@ -516,12 +537,16 @@ pub const Decoder = struct {
         try ctx.fields(inst, "index tag payloadVisited type operand");
         const operand = try self.memoryReference(try ctx.field(inst, "operand"), env);
         if (c.oneOf(tag, &.{ "wrap_errunion_payload", "wrap_errunion_err" })) {
-            try ctx.require(ty.* == .error_value and ty.error_value.result, "error wrapping requires a void error union");
+            try ctx.require(ty.* == .error_value and ty.error_value.result, "error wrapping requires an admitted error union");
             const valid = if (eq(u8, tag, "wrap_errunion_payload"))
-                operand.ty.* == .unit
+                Ty.same(operand.ty, ty.error_value.payload orelse &unit_type)
             else
                 operand.ty.* == .error_value and !operand.ty.error_value.result and ty.error_value.includes(operand.ty.error_value);
             try ctx.require(valid, "error wrapping changes the declared set or payload");
+            if (ty.error_value.payload) |child|
+                return try ctx.fmt("(.wrapScalarError {s} {s} {s})", .{
+                    try child.lean(ctx, .scalar), try ctx.json(ty.error_value.names), operand.text,
+                });
             return try ctx.fmt("(.wrapError {s} {s})", .{ try ctx.json(ty.error_value.names), operand.text });
         }
         try ctx.require(operand.ty.* == .error_value and operand.ty.error_value.result, "expected an error union operand");
@@ -531,7 +556,7 @@ pub const Decoder = struct {
         }
         const payload = eq(u8, tag, "unwrap_errunion_payload");
         const expected: Ty = .{ .error_value = .{ .result = false, .names = operand.ty.error_value.names } };
-        try ctx.require(if (payload) ty.* == .unit else Ty.same(ty, &expected), "error extraction changes the declared set or payload");
+        try ctx.require(Ty.same(ty, if (payload) operand.ty.error_value.payload orelse &unit_type else &expected), "error extraction changes the declared set or payload");
         return try ctx.fmt("(.unwrapError {s} {s})", .{ c.boolText(payload), operand.text });
     }
 
@@ -1118,9 +1143,10 @@ pub const Decoder = struct {
             } else if (c.oneOf(tag, &.{ "try", "try_cold" })) {
                 try ctx.fields(inst, base ++ "operand errorBody");
                 try ctx.require((self.profile == .memory or self.profile == .loops or self.profile.hasCalls()) and
-                    self.options.extension == .none and ty.* == .unit, "try requires a void payload and memory or call semantics");
+                    self.options.extension == .none, "try requires memory or call semantics");
                 const operand = try self.memoryReference(try ctx.field(inst, "operand"), env);
                 try ctx.require(operand.ty.* == .error_value and operand.ty.error_value.result, "try requires an admitted error union");
+                try ctx.require(Ty.same(ty, operand.ty.error_value.payload orelse &unit_type), "try changes the declared payload type");
                 // The error arm has its own labels. It can return or fault,
                 // but it cannot jump into the enclosing success continuation.
                 const handler_labels = try ctx.allocator.alloc(?Label, labels.len);
@@ -1138,7 +1164,7 @@ pub const Decoder = struct {
                 });
                 const success = try self.prepend(.{
                     .id = index,
-                    .ty = "(.scalar .unit)",
+                    .ty = try ty.lean(ctx, self.profile),
                     .child = if (self.profile.hasCalls()) try ctx.fmt("(.memory {s})", .{unwrap}) else unwrap,
                 }, continuation);
                 terminal = try self.branchText(try ctx.fmt("(.local {d})", .{condition_id}), handler, success);

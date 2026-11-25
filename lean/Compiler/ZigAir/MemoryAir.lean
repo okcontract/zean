@@ -65,6 +65,7 @@ inductive Prim where
   | testError (nonError : Bool) (value : Ref)
   | unwrapError (payload : Bool) (value : Ref)
   | wrapError (allowed : List String) (value : Ref)
+  | wrapScalarError (child : Scalar.Ty) (allowed : List String) (value : Ref)
   | unreachable
   | pointerCast (target : Ty) (pointer : Ref)
   | sliceCast (target : Ty) (slice : Ref)
@@ -135,6 +136,7 @@ def Prim.transition (prim : Prim) (args : List Value) (env : Env) (state : State
       | .testError nonError reference => do Memory.testError nonError (← reference.eval env)
       | .unwrapError payload reference => do Memory.unwrapError payload (← reference.eval env)
       | .wrapError allowed reference => do Memory.wrapError allowed (← reference.eval env)
+      | .wrapScalarError child allowed reference => do Memory.wrapScalarError child allowed (← reference.eval env)
       | .unreachable => .error (.scalar .illegalBehavior)
       | .pointerCast target pointer => do Memory.pointerCast state target (← pointer.eval env)
       | .sliceCast target reference => do MemoryAir.sliceCast target (← reference.eval env)

@@ -119,6 +119,7 @@ def Ty.fieldAt (layout : Layout) (fields : List (Nat × Field)) (offset : Nat) :
 def Value.type : Value → Ty
   | .scalar value => .scalar value.type
   | .errorValue kind allowed _ => .errorValue kind allowed
+  | .errorScalar child allowed _ => .errorScalar child allowed
   | .optionalScalar child _ => .optionalScalar child
   | .pointer ty _ | .slice ty _ _ => ty
   | .optionalObject child layout _ => .optionalObject child layout
@@ -129,6 +130,9 @@ def Value.valid : Value → Bool
   | .errorValue kind allowed name => match name with
     | none => kind == .result
     | some name => allowed.contains name
+  | .errorScalar child allowed result => match result with
+    | .inl name => allowed.contains name
+    | .inr value => value.hasType child
   | .optionalScalar child payload => match payload with
     | none => true
     | some value => decide (value.type = child) && value.valid

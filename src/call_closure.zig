@@ -46,16 +46,16 @@ pub const Closure = struct {
     active: std.StringHashMap(Active),
     names: std.StringHashMap(void),
     sources: declaration_source.Retained,
-    allow_recursion: bool = false,
+    profile: air.Profile,
 
-    pub fn init(ctx: *c.Context, io: std.Io, capture: []const u8, report: c.Value) Closure {
-        return .{ .ctx = ctx, .io = io, .capture = capture, .report = report, .active = .init(ctx.allocator), .names = .init(ctx.allocator), .sources = .{ .ctx = ctx, .io = io, .directory = std.fs.path.dirname(capture) orelse "." } };
+    pub fn init(ctx: *c.Context, io: std.Io, capture: []const u8, report: c.Value, profile: air.Profile) Closure {
+        return .{ .ctx = ctx, .io = io, .capture = capture, .report = report, .profile = profile, .active = .init(ctx.allocator), .names = .init(ctx.allocator), .sources = .{ .ctx = ctx, .io = io, .directory = std.fs.path.dirname(capture) orelse "." } };
     }
 
     pub fn visit(self: *Closure, root: []const u8, identity: ?c.Value, depth: usize) !void {
         const ctx = self.ctx;
         if (self.active.getPtr(root)) |unit| {
-            try ctx.require(self.allow_recursion and identity != null, "recursive call graph is unsupported");
+            try ctx.require(self.profile.capabilities().recursive_calls and identity != null, "recursive call graph is unsupported");
             try self.bindIdentity(unit.record, identity.?);
             unit.called = true;
             return;
@@ -123,7 +123,7 @@ pub const Closure = struct {
     fn bindDeclaration(self: *Closure, record: c.Value, sources: c.Value, file: *const declaration_source.File) !?[]const usize {
         const ctx = self.ctx;
         if (c.flag(try ctx.field(record, "signature"), "genericInstance", true)) {
-            const mapped = try @import("specialized_source.zig").selectForCall(ctx, record, file, sources, &self.sources);
+            const mapped = try @import("specialized_source.zig").selectForCall(ctx, record, self.profile, file, sources, &self.sources);
             return mapped.indices;
         }
         try declaration_source.selectParsed(ctx, record, sources, file);

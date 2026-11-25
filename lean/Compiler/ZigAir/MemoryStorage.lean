@@ -18,7 +18,7 @@ def acceptsView (owner : Ty) (offset : Nat) (wanted : Ty) : Bool :=
 use two entries. Region access also requires a checked layout for the type. -/
 def leafType (owner : Ty) (offset : Nat) : Option Ty :=
   Ty.project (fun type => match type with
-    | .scalar _ | .errorValue .. | .optionalScalar _ | .optionalObject .. | .pointer .. => true
+    | .scalar _ | .errorValue .. | .errorScalar .. | .optionalScalar _ | .optionalObject .. | .pointer .. => true
     | _ => false) owner offset
 
 @[simp] theorem acceptsView_array (length : Nat) (child wanted : Ty) (offset : Nat) :

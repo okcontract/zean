@@ -23,7 +23,7 @@ theorem Value.word_value (value : Value) (typed : value.hasType WordArray.word =
       refine ⟨BitVec.ofNat 32 number.toNat, ?_⟩
       have small : number.toNat < 2 ^ 32 := by omega
       simp [WordArray.number, BitVec.toNat_ofNat, Nat.mod_eq_of_lt small, Int.toNat_of_nonneg bounds.1]
-  | errorValue | optionalScalar | optionalObject => simp [Value.hasType, Value.type, WordArray.word] at typed
+  | errorValue | errorScalar | optionalScalar | optionalObject => simp [Value.hasType, Value.type, WordArray.word] at typed
   | pointer type address =>
     change type = WordArray.word at same
     subst type

@@ -34,7 +34,7 @@ private theorem valid_iff (state : State) : state.valid = true ↔
 theorem layout_alignment_positive (type : Ty) (layout : Layout)
     (shaped : type.layout = some layout) : 0 < layout.alignment := by
   cases type with
-  | errorValue => cases shaped
+  | errorValue | errorScalar => cases shaped
   | scalar type =>
     cases type with
     | int signed width =>

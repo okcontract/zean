@@ -99,6 +99,11 @@ fn run(ctx: *z.common.Context, init: std.process.Init) !void {
             std.debug.print("Compiled emitted control: {s}.\n", .{label});
             return;
         }
+        if (std.mem.eql(u8, label, "scalar-error")) {
+            try checker.check(label, try @import("scalar_error.zig").emitted(ctx));
+            std.debug.print("Compiled emitted control: {s}.\n", .{label});
+            return;
+        }
         if (std.mem.eql(u8, label, "enum-tags")) {
             try checker.check(label, try @import("enum_tags.zig").emitted(ctx));
             std.debug.print("Compiled emitted control: {s}.\n", .{label});
@@ -154,6 +159,7 @@ fn run(ctx: *z.common.Context, init: std.process.Init) !void {
     try checker.check("calls", try @import("call_admission.zig").emitted(ctx));
     try checker.check("singleton-arguments", try @import("call_admission.zig").singletonEmitted(ctx));
     try checker.check("error-status", try @import("error_status.zig").emitted(ctx));
+    try checker.check("scalar-error", try @import("scalar_error.zig").emitted(ctx));
     try checker.check("enum-tags", try @import("enum_tags.zig").emitted(ctx));
     try checker.check("optional-bytes", try @import("optional_bytes.zig").emitted(ctx));
     covered.insert(.calls);

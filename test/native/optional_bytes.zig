@@ -8,11 +8,11 @@ const shared = @import("cases/shared.zig");
 const byte = f.obj(&.{ .{ "kind", f.s("int") }, .{ "bits", f.n("8") }, .{ "signedness", f.s("unsigned") } });
 const boolean = f.obj(&.{.{ "kind", f.s("bool") }});
 const never = f.obj(&.{.{ "kind", f.s("noreturn") }});
-const optional = f.obj(&.{
+pub const optional = f.obj(&.{
     .{ "kind", f.s("optionalScalar") },                                                                      .{ "child", byte },
     .{ "layout", f.obj(&.{ .{ "kind", f.s("abi") }, .{ "bytes", f.n("2") }, .{ "alignment", f.n("1") } }) },
 });
-const none = f.obj(&.{ .{ "kind", f.s("optionalValue") }, .{ "type", optional }, .{ "payload", .null } });
+pub const none = f.obj(&.{ .{ "kind", f.s("optionalValue") }, .{ "type", optional }, .{ "payload", .null } });
 const zero = f.obj(&.{
     .{ "kind", f.s("optionalValue") },                                                                    .{ "type", optional },
     .{ "payload", f.obj(&.{ .{ "kind", f.s("constant") }, .{ "type", byte }, .{ "value", f.n("0") } }) },

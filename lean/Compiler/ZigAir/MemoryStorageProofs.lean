@@ -135,7 +135,7 @@ theorem Cells.read_after_write (cells : Cells) (owner : Ty) (offset : Nat) (valu
     after.read owner offset value.type = .ok value := by
   rcases cells.write_success owner offset value after success with ⟨valid, view, fits, rfl⟩
   cases value with
-  | scalar value | errorValue _ _ value | optionalScalar _ value | optionalObject _ _ value =>
+  | scalar value | errorValue _ _ value | errorScalar _ _ value | optionalScalar _ value | optionalObject _ _ value =>
     simp only [Value.leaves, List.all_cons, List.all_nil, Bool.and_true, leafFits,
       Bool.and_eq_true, decide_eq_true_eq] at fits
     simp only [Value.type] at fits view

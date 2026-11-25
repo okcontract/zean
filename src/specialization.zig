@@ -23,7 +23,7 @@ pub fn recordIdentity(ctx: *c.Context, record: c.Value) c.Error!c.Value {
     for ([_][]const u8{ "name", "sourceFile", "sourceSha256" }) |key| try value.object.put(ctx.allocator, key, try ctx.field(record, key));
     return value;
 }
-pub fn signature(ctx: *c.Context, record: c.Value) c.Error!Signature {
+pub fn signature(ctx: *c.Context, record: c.Value, profile: types.Profile) c.Error!Signature {
     const value = try ctx.field(record, "signature");
     try ctx.fields(value, "callingConvention genericInstance varArgs noaliasBits parameters returnType");
     try ctx.require(c.get(value, "genericInstance").? == .bool and c.flag(value, "varArgs", false), "unsupported specialization or variadic signature");
@@ -35,12 +35,12 @@ pub fn signature(ctx: *c.Context, record: c.Value) c.Error!Signature {
         if (try types.isSingletonParameter(ctx, parameter)) {
             try ctx.require(alias_bits & (@as(u64, 1) << @intCast(index)) == 0, "singleton argument cannot have a noalias contract");
             out.* = .{ .singleton = parameter };
-        } else out.* = .{ .stored = try types.parse(ctx, parameter, .word_bytes, 0) };
+        } else out.* = .{ .stored = try types.parse(ctx, parameter, profile, 0) };
     }
-    return .{ .parameters = parsed, .result = try types.parse(ctx, try ctx.field(value, "returnType"), .word_bytes, 0), .alias_bits = alias_bits };
+    return .{ .parameters = parsed, .result = try types.parse(ctx, try ctx.field(value, "returnType"), profile, 0), .alias_bits = alias_bits };
 }
-pub fn mapping(ctx: *c.Context, record: c.Value, sources: c.Value, retained: ?*declaration_source.Retained) c.Error!Mapping {
-    const sig = try signature(ctx, record);
+pub fn mapping(ctx: *c.Context, record: c.Value, profile: types.Profile, sources: c.Value, retained: ?*declaration_source.Retained) c.Error!Mapping {
+    const sig = try signature(ctx, record, profile);
     const signature_record = try ctx.field(record, "signature");
     if (c.flag(signature_record, "genericInstance", false)) {
         try ctx.require(c.get(record, "specialization") == null, "nongeneric function has specialization metadata");
@@ -74,7 +74,7 @@ pub fn mapping(ctx: *c.Context, record: c.Value, sources: c.Value, retained: ?*d
             try ctx.require(comptime_bits & bit != 0 and alias_bits & bit == 0, "implicit comptime or comptime alias_bits is outside the metadata profile");
             const value = try ctx.field(arg, "value");
             if (c.tag(arg, "kind", "type") or c.tag(arg, "kind", "anytypeType")) {
-                _ = try types.parse(ctx, value, .word_bytes, 0);
+                _ = try types.parse(ctx, value, profile, 0);
             } else if (c.tag(arg, "kind", "value")) {
                 if (c.tag(value, "kind", "function")) {
                     try ctx.fields(value, "kind identity");
@@ -90,7 +90,7 @@ pub fn mapping(ctx: *c.Context, record: c.Value, sources: c.Value, retained: ?*d
                     try ctx.require(c.tag(callback, "sourceSha256", &file.sha) and std.mem.startsWith(u8, name, file.prefix), "callback source identity mismatch");
                     var buffer: [1]std.zig.Ast.Node.Index = undefined;
                     _ = try declaration_source.functionProto(ctx, callback, &file.declarations, name[file.prefix.len..], &buffer);
-                } else _ = try air.constant(ctx, value, .memory);
+                } else _ = try air.constant(ctx, value, profile);
             } else return ctx.fail("unsupported compile-time argument", .{});
         }
     }
@@ -112,8 +112,8 @@ pub fn link(ctx: *c.Context, records: c.Value, roots: []const []const u8, source
         const record = try ctx.field(records, name);
         try ctx.require(c.tag(record, "name", name) and c.tag(record, "schema", "oksolc.fresh-air.v3") and c.tag(record, "capturePoint", "after-sema-before-legalize") and c.equal(try ctx.field(record, "configuration"), configuration), "linked function identity, phase or configuration mismatch");
         try identity(ctx, try recordIdentity(ctx, record), sources);
-        const sig = try signature(ctx, record);
-        const spec = try mapping(ctx, record, sources, null);
+        const sig = try signature(ctx, record, .word_bytes);
+        const spec = try mapping(ctx, record, .word_bytes, sources, null);
         const instructions = try ctx.array(try ctx.field(record, "instructions"));
         const body = try ctx.array(try ctx.field(record, "body"));
         try ctx.require(instructions.len > 0 and instructions.len <= 512, "invalid linked instruction inventory");
@@ -144,7 +144,7 @@ pub fn link(ctx: *c.Context, records: c.Value, roots: []const []const u8, source
             const target_name = try ctx.str(try ctx.field(target, "name"));
             const target_record = try ctx.field(records, target_name);
             try ctx.require(c.equal(target, try recordIdentity(ctx, target_record)), "call reference and captured callee disagree");
-            const expected = try signature(ctx, target_record);
+            const expected = try signature(ctx, target_record, .word_bytes);
             const args = try ctx.array(try ctx.field(inst, "arguments"));
             try ctx.require(args.len == expected.parameters.len, "call runtime argument count disagrees with callee");
             for (args, expected.parameters) |arg, wanted| {

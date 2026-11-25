@@ -40,6 +40,8 @@ inductive Ty where
   /-- By-value concrete error sets and error unions with void payload.
   No ABI storage or numeric discriminant is supplied by this type. -/
   | errorValue (kind : ErrorValueKind) (allowed : List String)
+  /-- By-value named errors with a scalar success payload and no ABI layout. -/
+  | errorScalar (child : Scalar.Ty) (allowed : List String)
   /-- Atomic typed optional scalar. Its captured extent gives no rule for
   projecting payload/discriminator bytes; only admitted children have layouts. -/
   | optionalScalar (child : Scalar.Ty)

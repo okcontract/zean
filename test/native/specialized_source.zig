@@ -75,7 +75,7 @@ fn callParameters(ctx: *z.common.Context, raw: z.common.Value, bytes: []const u8
     var sources: z.common.Value = .{ .object = .empty };
     try sources.object.put(ctx.allocator, file.filename, .{ .string = &file.sha });
     try sources.object.put(ctx.allocator, "handlers.zig", .{ .string = &z.common.digest(handler_source) });
-    return z.specialized_source.selectForCall(ctx, raw, file, sources, &retained);
+    return z.specialized_source.selectForCall(ctx, raw, .calls, file, sources, &retained);
 }
 
 fn comptimeAnytype(ctx: *z.common.Context) !z.common.Value {
@@ -110,16 +110,16 @@ pub fn controls() !void {
     defer arena.deinit();
     var ctx: z.common.Context = .{ .allocator = arena.allocator() };
     const raw = try record(&ctx, source);
-    const selected = try z.specialized_source.select(&ctx, raw, "fixture.zig", source);
+    const selected = try z.specialized_source.select(&ctx, raw, .memory, "fixture.zig", source);
     try std.testing.expectEqualSlices(usize, &.{ 1, 2 }, selected.indices);
     var decoder = try z.air.Decoder.initWith(&ctx, raw, .memory, .{ .source_parameters = selected.indices, .explicit_type_specialization = true });
     try std.testing.expectEqualStrings((try f.load(ctx.allocator, golden.air_memory_program_2_output_30)).string, try decoder.program());
     try std.testing.expectError(error.InvalidInput, z.air.Decoder.init(&ctx, raw, .memory));
-    try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, raw, "other.zig", source));
+    try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, raw, .memory, "other.zig", source));
     for ([_]bool{ true, false }) |explicit_type| {
         const bytes = if (explicit_type) mixed_source else implicit_source;
         const instance = try runtimeRecord(&ctx, explicit_type);
-        try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, instance, "fixture.zig", bytes));
+        try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, instance, .memory, "fixture.zig", bytes));
         const parameters = try callParameters(&ctx, instance, bytes);
         const indices: []const usize = if (explicit_type) &.{ 1, 2 } else &.{ 0, 1 };
         try std.testing.expectEqualSlices(usize, indices, parameters.indices);
@@ -129,7 +129,7 @@ pub fn controls() !void {
     try std.testing.expectEqualSlices(usize, &.{ 1, 2 }, callback_parameters.indices);
     const imported = try callbackRecord(&ctx, callback_source, "handlers.zig", "handlers.Handlers.run");
     _ = try callParameters(&ctx, imported, callback_source);
-    try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, callback, "fixture.zig", callback_source));
+    try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, callback, .memory, "fixture.zig", callback_source));
     try std.testing.expectError(error.InvalidInput, callParameters(&ctx, try callbackRecord(&ctx, callback_source, "outside.zig", "fixture.handle"), callback_source));
     try std.testing.expectError(error.InvalidInput, callParameters(&ctx, try callbackRecord(&ctx, noncallback_source, "fixture.zig", "fixture.handle"), noncallback_source));
     for ([_][]const u8{ "fixture.missing", "decoy.handle", "fixture.Nested.handle" }) |name| {
@@ -138,10 +138,10 @@ pub fn controls() !void {
     }
     const old_implicit = try historicalImplicit(&ctx);
     _ = try callParameters(&ctx, old_implicit, implicit_source);
-    try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, old_implicit, "fixture.zig", implicit_source));
+    try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, old_implicit, .memory, "fixture.zig", implicit_source));
     const historical = try record(&ctx, mixed_source);
     _ = try callParameters(&ctx, historical, mixed_source);
-    try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, historical, "fixture.zig", mixed_source));
+    try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, historical, .memory, "fixture.zig", mixed_source));
     const bad_sources = [_][]const u8{
         "pub fn choose(T: type, data: [*]const T, len: usize) usize { return 0; } const Decoy = struct { " ++ source ++ " };",
         "const Decoy = struct { " ++ source ++ " };",
@@ -149,20 +149,20 @@ pub fn controls() !void {
         "pub fn choose(comptime T: type, noalias data: [*]const T, len: usize) usize { return 0; }",
         "pub fn choose(comptime T: type, data: [*]const T) usize { return 0; }",
     };
-    for (bad_sources) |bytes| try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, try record(&ctx, bytes), "fixture.zig", bytes));
+    for (bad_sources) |bytes| try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, try record(&ctx, bytes), .memory, "fixture.zig", bytes));
     const bad_metadata = [_][]const u8{ "sourceParameterCount", "sourceComptimeBits", "sourceNoaliasBits" };
     for (bad_metadata) |field| {
         var modified = try record(&ctx, source);
         var spec = try ctx.field(modified, "specialization");
         try spec.object.put(ctx.allocator, field, .{ .integer = 2 });
         try modified.object.put(ctx.allocator, "specialization", spec);
-        try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, modified, "fixture.zig", source));
+        try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, modified, .memory, "fixture.zig", source));
     }
 }
 
 pub fn emitted(ctx: *z.common.Context) ![]const u8 {
     const raw = try record(ctx, source);
-    const selected = try z.specialized_source.select(ctx, raw, "fixture.zig", source);
+    const selected = try z.specialized_source.select(ctx, raw, .memory, "fixture.zig", source);
     var decoder = try z.air.Decoder.initWith(ctx, raw, .memory, .{ .source_parameters = selected.indices, .explicit_type_specialization = true });
     return ctx.fmt(
         \\import Compiler.ZigAir.CapturedCallMachine

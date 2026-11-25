@@ -33,14 +33,15 @@ theorem access_subregion (state : State) (address : Address) (parent child : Lay
 theorem Value.leaves_shift (value : Value) (offset : Nat) :
     value.leaves offset = (value.leaves 0).map (fun entry => (offset + entry.1, entry.2)) := by
   cases value with
-  | scalar value | errorValue _ _ value | optionalScalar _ value | optionalObject _ _ value => simp [Value.leaves]
+  | scalar value | errorValue _ _ value | errorScalar _ _ value | optionalScalar _ value | optionalObject _ _ value =>
+    simp [Value.leaves]
   | pointer type address => simp [Value.leaves]
   | slice type address length => cases type <;> simp [Value.leaves]
 
 theorem Value.leaves_atomic (value : Value) (valid : value.valid = true)
     (atomic : leafType value.type 0 = some value.type) : value.leaves 0 = [(0, value)] := by
   cases value with
-  | scalar | errorValue | optionalScalar | optionalObject | pointer => rfl
+  | scalar | errorValue | errorScalar | optionalScalar | optionalObject | pointer => rfl
   | slice type address length =>
     cases type <;> simp_all [Value.valid, Value.type, leafType, sliceFieldType]
 

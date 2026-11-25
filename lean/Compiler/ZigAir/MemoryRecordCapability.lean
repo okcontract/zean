@@ -82,7 +82,7 @@ theorem ScalarField.store_total (geometry : ScalarField owner offset child)
       inside, aligned, divided, view, declared⟩ := geometry
     exact cap.scalar_field_store state owner objectId offset child value parent region valid typed
       parentShape parentPositive childShape childPositive inside aligned divided view declared
-  | errorValue | optionalScalar | optionalObject => simp [Value.type] at same
+  | errorValue | errorScalar | optionalScalar | optionalObject => simp [Value.type] at same
   | pointer type address =>
     change type = .scalar child at same
     subst type

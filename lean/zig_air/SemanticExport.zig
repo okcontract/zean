@@ -57,6 +57,12 @@ fn optionalByte(ty: Type, zcu: *Zcu) bool {
     return ty.optionalChild(zcu).toIntern() == .u8_type;
 }
 
+fn admittedErrorPayload(payload: Type, zcu: *Zcu) bool {
+    if (payload.zigTypeTag(zcu) != .int) return false;
+    const bits = payload.intInfo(zcu).bits;
+    return bits > 0 and bits <= 64;
+}
+
 fn layoutKnown(ty: Type, zcu: *Zcu, depth: u8, remaining: *usize) bool {
     if (depth >= 16 or remaining.* == 0) return false;
     remaining.* -= 1;
@@ -124,10 +130,18 @@ fn writeTypeDepth(w: *Writer, ty: Type, zcu: *Zcu, depth: u8, remaining: *usize)
         },
         .error_union => {
             const payload = ty.errorUnionPayload(zcu);
-            if (payload.zigTypeTag(zcu) != .void)
+            const scalar = admittedErrorPayload(payload, zcu);
+            if (payload.zigTypeTag(zcu) != .void and !scalar)
                 return json(w, .{ .kind = "unsupported", .reason = "nonvoid-error-union" });
-            try w.writeAll("{\"kind\":\"errorStatus\",\"errors\":");
+            try w.writeAll(if (scalar)
+                "{\"kind\":\"errorScalar\",\"errors\":"
+            else
+                "{\"kind\":\"errorStatus\",\"errors\":");
             try writeTypeDepth(w, ty.errorUnionSet(zcu), zcu, depth + 1, remaining);
+            if (scalar) {
+                try w.writeAll(",\"child\":");
+                try writeTypeDepth(w, payload, zcu, depth + 1, remaining);
+            }
             try w.writeByte('}');
         },
         .@"enum" => {
@@ -319,6 +333,26 @@ fn writeValue(w: *Writer, value: Value, zcu: *Zcu, depth: u8, remaining: *usize)
             try writeValue(w, payload, zcu, depth + 1, remaining)
         else
             try w.writeAll("null");
+        return w.writeByte('}');
+    }
+    if (ty.zigTypeTag(zcu) == .error_union and admittedErrorPayload(ty.errorUnionPayload(zcu), zcu)) {
+        const result = switch (zcu.intern_pool.indexToKey(value.toIntern())) {
+            .error_union => |result| result.val,
+            else => return json(w, .{ .kind = "unsupported", .reason = "error-constant-storage" }),
+        };
+        try w.writeAll("{\"kind\":\"errorScalar\",\"type\":");
+        try writeType(w, ty, zcu);
+        switch (result) {
+            .err_name => |name| {
+                try w.writeAll(",\"name\":");
+                try json(w, name.toSlice(&zcu.intern_pool));
+                try w.writeAll(",\"payload\":null");
+            },
+            .payload => |payload| {
+                try w.writeAll(",\"name\":null,\"payload\":");
+                try writeValue(w, .fromInterned(payload), zcu, depth + 1, remaining);
+            },
+        }
         return w.writeByte('}');
     }
     if (ty.zigTypeTag(zcu) == .error_set or ty.zigTypeTag(zcu) == .error_union) {

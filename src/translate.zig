@@ -83,18 +83,18 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
     var functions: c.Value = .{ .object = .empty };
     var identities: std.ArrayList(struct { path: []const u8, sha: []const u8 }) = .empty;
     const entries = try ctx.field(report, "functions");
-    var closure = @import("call_closure.zig").Closure.init(ctx, io, options.capture, report);
+    var closure = @import("call_closure.zig").Closure.init(ctx, io, options.capture, report, options.profile);
     defer closure.deinit();
     closure.sources.root_source = options.declaration_source;
     closure.sources.root_bytes = declaration_bytes;
-    closure.allow_recursion = options.profile.capabilities().recursive_calls;
+    const recursive_calls = options.profile.capabilities().recursive_calls;
     var callees: std.ArrayList(air.Callee) = .empty;
     var machine_names: std.ArrayList([]const u8) = .empty;
     var machine_records: std.ArrayList([]const u8) = .empty;
     var machine_captures: std.ArrayList([]const u8) = .empty;
     if (options.profile.hasCalls()) {
         for (options.roots) |root| try closure.visit(root, null, 0);
-        if (closure.allow_recursion) {
+        if (recursive_calls) {
             // All indices are in scope before any body references them.
             for (closure.units.items, 0..) |unit, machine_index| {
                 const label = try ctx.fmt("FunctionId.{s}", .{unit.name});
@@ -104,7 +104,7 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
             try lines.append(ctx.allocator, "\n");
         }
         for (closure.units.items, 0..) |unit, machine_index| {
-            const profile: air.Profile = if (closure.allow_recursion or !unit.called) options.profile else if (options.profile == .nested_calls) try @import("call_closure.zig").interpreter(ctx, unit.record, callees.items) else .calls;
+            const profile: air.Profile = if (recursive_calls or !unit.called) options.profile else if (options.profile == .nested_calls) try @import("call_closure.zig").interpreter(ctx, unit.record, callees.items) else .calls;
             var decoder = try air.Decoder.initWith(ctx, unit.record, profile, .{
                 .guard_sources = try guard_sources.forRecord(ctx, io, unit.record),
                 .source_parameters = unit.source_parameters,
@@ -117,8 +117,8 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
             // The manifest retains the full name for every declaration.
             if (c.identifier(unit.root, true))
                 try lines.append(ctx.allocator, try ctx.fmt("-- Zig declaration: {s}\n", .{unit.root}));
-            const machine_label = if (closure.allow_recursion) callees.items[machine_index].machine_label.? else try ctx.fmt("FunctionId.{s}", .{unit.name});
-            if (!closure.allow_recursion) try lines.append(ctx.allocator, try ctx.fmt("def {s} : Nat := {d}\n\n", .{ machine_label, machine_index }));
+            const machine_label = if (recursive_calls) callees.items[machine_index].machine_label.? else try ctx.fmt("FunctionId.{s}", .{unit.name});
+            if (!recursive_calls) try lines.append(ctx.allocator, try ctx.fmt("def {s} : Nat := {d}\n\n", .{ machine_label, machine_index }));
             try lines.append(ctx.allocator, try ctx.fmt("-- AIR SHA-256: {s}\ndef {s} : Function :=\n{s}\n\n", .{ unit.sha, unit.name, program }));
             {
                 try machine_names.append(ctx.allocator, unit.name);
@@ -131,7 +131,7 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
             const summary = try ctx.parse(try ctx.json(.{ .declaration = try ctx.fmt("{s}.{s}", .{ options.namespace, unit.name }), .airSha256 = unit.sha, .sourceSha256 = try ctx.field(unit.record, "sourceSha256"), .callee = unit.called, .interpreter = "call-machine", .machineIndex = machine_index, .configuration = try ctx.field(unit.record, "configuration") }));
             try functions.object.put(ctx.allocator, unit.root, summary);
             try identities.append(ctx.allocator, .{ .path = unit.path, .sha = unit.sha });
-            if (!closure.allow_recursion and unit.called) try callees.append(ctx.allocator, .{ .record = unit.record, .declaration = unit.name, .profile = profile, .machine_index = machine_index, .machine_label = machine_label });
+            if (!recursive_calls and unit.called) try callees.append(ctx.allocator, .{ .record = unit.record, .declaration = unit.name, .profile = profile, .machine_index = machine_index, .machine_label = machine_label });
         }
         {
             try lines.append(ctx.allocator, try ctx.fmt("def functions : Program := [{s}]\n\n", .{try std.mem.join(ctx.allocator, ", ", machine_names.items)}));
@@ -140,7 +140,7 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
                 try lines.appendSlice(ctx.allocator, machine_captures.items);
             }
             if (emit_certificate) {
-                const decoder = if (closure.allow_recursion) "decodeRecursive" else "decode";
+                const decoder = if (recursive_calls) "decodeRecursive" else "decode";
                 try lines.append(ctx.allocator, try ctx.fmt("set_option maxRecDepth 8192 in\nset_option maxHeartbeats 2000000 in\ntheorem functions_correspondence :\n  Compiler.ZigAir.CapturedCallMachine.{s} [{s}] = some functions := by rfl'\n\n", .{ decoder, try std.mem.join(ctx.allocator, ", ", machine_records.items) }));
             }
         }
@@ -168,7 +168,7 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
                 return ctx.fail("{s}: AIR source identity differs from the capture inventory", .{root});
         }
         if (declaration_bytes) |bytes| try @import("declaration_source.zig").select(ctx, record, try ctx.field(report, "sourceFiles"), std.fs.path.basename(options.declaration_source.?), bytes);
-        const mapping = if (specialized_bytes) |bytes| try @import("specialized_source.zig").select(ctx, record, std.fs.path.basename(options.specialized_source.?), bytes) else null;
+        const mapping = if (specialized_bytes) |bytes| try @import("specialized_source.zig").select(ctx, record, options.profile, std.fs.path.basename(options.specialized_source.?), bytes) else null;
         var decoder = try air.Decoder.initWith(ctx, record, options.profile, .{
             .guard_sources = try guard_sources.forRecord(ctx, io, record),
             .source_parameters = if (mapping) |mapped| mapped.indices else null,

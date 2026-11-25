@@ -7,27 +7,29 @@ const c = @import("common.zig");
 const source = @import("source.zig");
 const specialization = @import("specialization.zig");
 const declaration_source = @import("declaration_source.zig");
+const Profile = @import("types.zig").Profile;
 
 const Selection = enum { standalone, direct_call };
 
-pub fn select(ctx: *c.Context, record: c.Value, filename: []const u8, bytes: []const u8) !specialization.Mapping {
+pub fn select(ctx: *c.Context, record: c.Value, profile: Profile, filename: []const u8, bytes: []const u8) !specialization.Mapping {
     var file = try declaration_source.File.init(ctx, filename, bytes);
     defer file.declarations.deinit();
     var sources: c.Value = .{ .object = .empty };
     try sources.object.put(ctx.allocator, filename, .{ .string = &file.sha });
-    return bind(ctx, record, &file, sources, null, .standalone);
+    return bind(ctx, record, profile, &file, sources, null);
 }
 
-pub fn selectForCall(ctx: *c.Context, record: c.Value, file: *const declaration_source.File, sources: c.Value, retained: *declaration_source.Retained) !specialization.Mapping {
-    return bind(ctx, record, file, sources, retained, .direct_call);
+pub fn selectForCall(ctx: *c.Context, record: c.Value, profile: Profile, file: *const declaration_source.File, sources: c.Value, retained: *declaration_source.Retained) !specialization.Mapping {
+    return bind(ctx, record, profile, file, sources, retained);
 }
 
-fn bind(ctx: *c.Context, record: c.Value, file: *const declaration_source.File, sources: c.Value, retained: ?*declaration_source.Retained, selection: Selection) !specialization.Mapping {
+fn bind(ctx: *c.Context, record: c.Value, profile: Profile, file: *const declaration_source.File, sources: c.Value, retained: ?*declaration_source.Retained) !specialization.Mapping {
+    const selection: Selection = if (retained != null) .direct_call else .standalone;
     const prefix = file.prefix;
     try ctx.require(c.tag(record, "sourceFile", file.filename) and c.tag(record, "sourceSha256", &file.sha), "specialization source identity mismatch");
     const signature = try ctx.field(record, "signature");
     try ctx.require(c.flag(signature, "genericInstance", true) and try ctx.nat(try ctx.field(signature, "noaliasBits"), 0) == 0, "specialization must be concrete and omit noalias parameters");
-    const mapping = try specialization.mapping(ctx, record, sources, retained);
+    const mapping = try specialization.mapping(ctx, record, profile, sources, retained);
     const spec = try ctx.field(record, "specialization");
     const owner = try ctx.str(try ctx.field(try ctx.field(spec, "owner"), "name"));
     try ctx.require(std.mem.startsWith(u8, owner, prefix), "specialization has a different source owner");

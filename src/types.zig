@@ -130,6 +130,7 @@ pub const Ty = union(enum) {
     pub const ErrorValue = struct {
         result: bool,
         names: []const []const u8,
+        payload: ?*const Ty = null,
 
         pub fn contains(self: ErrorValue, name: []const u8) bool {
             return c.oneOf(name, self.names);
@@ -146,6 +147,9 @@ pub const Ty = union(enum) {
 
         fn same(self: ErrorValue, other: ErrorValue) bool {
             if (self.result != other.result or self.names.len != other.names.len) return false;
+            if (self.payload) |child| {
+                if (!Ty.same(child, other.payload orelse return false)) return false;
+            } else if (other.payload != null) return false;
             for (self.names, other.names) |left, right| if (!std.mem.eql(u8, left, right)) return false;
             return true;
         }
@@ -232,7 +236,10 @@ pub const Ty = union(enum) {
             .boolean => if (profile == .scalar) ".bool" else "(.scalar .bool)",
             .unit => if (profile == .scalar) ".unit" else "(.scalar .unit)",
             .noreturn => ctx.fail("noreturn cannot be a runtime value type", .{}),
-            .error_value => |v| ctx.fmt("(.errorValue .{s} {s})", .{ v.leanKind(), try ctx.json(v.names) }),
+            .error_value => |v| if (v.payload) |child|
+                ctx.fmt("(.errorScalar {s} {s})", .{ try child.lean(ctx, .scalar), try ctx.json(v.names) })
+            else
+                ctx.fmt("(.errorValue .{s} {s})", .{ v.leanKind(), try ctx.json(v.names) }),
             .optional_byte => "(.optionalScalar (.int false 8))",
             .pointer => |v| ctx.fmt("(.pointer {s} {s} {s})", .{ c.boolText(v.mutable), c.boolText(v.many), try v.child.lean(ctx, .memory) }),
             .slice => |v| ctx.fmt("(.slice {s} {s})", .{ c.boolText(v.mutable), try v.child.lean(ctx, .memory) }),
@@ -449,6 +456,16 @@ pub fn parse(ctx: *Context, value: Value, profile: Profile, depth: usize) Error!
         if (c.tag(value, "kind", "errorStatus")) {
             try ctx.fields(value, "kind errors");
             return ctx.make(Ty, .{ .error_value = .{ .result = true, .names = try errorNames(ctx, try ctx.field(value, "errors")) } });
+        }
+        if (c.tag(value, "kind", "errorScalar")) {
+            try ctx.fields(value, "kind errors child");
+            const child = try parse(ctx, try ctx.field(value, "child"), .scalar, depth + 1);
+            try ctx.require(child.* == .int and child.int.bits > 0 and child.int.bits <= 64, "unsupported error union payload");
+            return ctx.make(Ty, .{ .error_value = .{
+                .result = true,
+                .names = try errorNames(ctx, try ctx.field(value, "errors")),
+                .payload = child,
+            } });
         }
     }
     if (profile != .scalar and c.tag(value, "kind", "pointer")) {

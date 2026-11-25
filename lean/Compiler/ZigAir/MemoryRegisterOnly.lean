@@ -14,7 +14,7 @@ open Memory
 remaining primitives require their own memory reasoning. -/
 def Prim.registerOnly : Prim → Bool
   | .argument .. | .scalar .. | .booleanNot .. | .testOptional .. | .optionalPayload ..
-  | .wrapOptional .. | .testError .. | .unwrapError .. | .wrapError .. | .unreachable => true
+  | .wrapOptional .. | .testError .. | .unwrapError .. | .wrapError .. | .wrapScalarError .. | .unreachable => true
   | _ => false
 
 def Code.registerOnly (code : Code) : Bool :=
@@ -44,6 +44,10 @@ private theorem Prim.eval_registerOnly (prim : Prim) (checked : prim.registerOnl
     cases ref.eval env with
     | error => rfl
     | ok value => dsimp only; cases Memory.wrapError allowed value <;> rfl
+  case wrapScalarError child allowed ref =>
+    cases ref.eval env with
+    | error => rfl
+    | ok value => dsimp only; cases Memory.wrapScalarError child allowed value <;> rfl
   all_goals
     rename_i ref
     cases ref.eval env with

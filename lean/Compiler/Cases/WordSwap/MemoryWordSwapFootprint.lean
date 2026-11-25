@@ -28,7 +28,7 @@ def Footprint (view : View) (left right : Nat) (slot : Address) (event : Observa
   | .wordByteLoad _ pointer | .wordByteStore _ pointer _ => ByteBorrow view left right event.env pointer
   | .argument .. | .scalar .. | .pointerField .. | .fieldPointer .. | .checkZeroField .. | .booleanNot .. |
     .testOptional .. | .optionalPayload .. | .wrapOptional .. |
-    .testError .. | .unwrapError .. | .wrapError .. |
+    .testError .. | .unwrapError .. | .wrapError .. | .wrapScalarError .. |
     .unreachable | .pointerCast .. | .sliceCast .. | .arrayToSlice .. | .offsetPointer .. |
     .elementPointer .. | .wordByteCast .. | .sliceElementPointer .. | .slice .. | .sliceLen .. |
     .slicePtr .. | .checkBounds .. | .checkCopyLengths .. => True

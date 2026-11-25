@@ -88,7 +88,7 @@ theorem Cells.transferScalar_eq (source target : Cells) (sourceOwner targetOwner
     have same := parts.1
     have single : value.leaves targetOffset = [(targetOffset, value)] := by
       cases value with
-      | scalar | errorValue | optionalScalar | optionalObject | pointer => rfl
+      | scalar | errorValue | errorScalar | optionalScalar | optionalObject | pointer => rfl
       | slice ty address length =>
         change ty = .scalar type at same
         subst ty
