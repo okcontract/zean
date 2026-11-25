@@ -71,8 +71,8 @@ pub fn imports(ctx: *c.Context, names: []const []const u8, libraries: []const []
             break;
         };
         if (resolved == null and c.oneOf(name, libraries)) resolved = name;
-        try ctx.require(resolved != null, "client import is absent or its proof dependency is not checked yet");
-        try parts.append(ctx.allocator, try ctx.fmt("import {s}\n", .{resolved.?}));
+        const module = resolved orelse return ctx.fail("proof import {s} is undeclared or has not been checked yet", .{name});
+        try parts.append(ctx.allocator, try ctx.fmt("import {s}\n", .{module}));
     }
     return std.mem.concat(ctx.allocator, u8, parts.items);
 }

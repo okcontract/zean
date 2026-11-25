@@ -70,8 +70,26 @@ fn parseConfig(ctx: *c.Context, bytes: []const u8) !Config {
     return config;
 }
 
+const ReplayVisit = enum { visiting, done };
+
+fn collectReplayPlans(ctx: *c.Context, io: std.Io, repo: Dir, config: *Config, path: []const u8, ordered: *std.ArrayList(client.Plan), seen: *std.StringHashMap(ReplayVisit)) anyerror!void {
+    if (seen.get(path)) |mark| {
+        if (mark == .visiting) return ctx.fail("cyclic client dependency at {s}", .{path});
+        return;
+    }
+    try seen.put(path, .visiting);
+    const plan = try client.load(ctx, io, repo, path, &config.source_map);
+    for (plan.manifest.dependencies) |dependency| {
+        if (!c.oneOf(dependency, config.clients)) return ctx.fail("dependency {s} of {s} is not declared in zean.json", .{ dependency, path });
+        try collectReplayPlans(ctx, io, repo, config, dependency, ordered, seen);
+    }
+    try seen.put(path, .done);
+    try ordered.append(ctx.allocator, plan);
+}
+
 /// Replay a declared client with the same source mapping and capture target
-/// used for project generation. All replay artifacts go to the evidence path.
+/// used for project generation. Dependencies are captured in dependency order.
+/// All replay artifacts go to the evidence path.
 pub fn replayClient(ctx: *c.Context, io: std.Io, directory: []const u8, options: client.Options, environment: *const std.process.Environ.Map) !c.Value {
     const repo = Dir.cwd().openDir(io, directory, .{}) catch |err|
         return ctx.fail("cannot open project directory {s} ({s})", .{ directory, @errorName(err) });
@@ -81,12 +99,15 @@ pub fn replayClient(ctx: *c.Context, io: std.Io, directory: []const u8, options:
     defer config.source_map.deinit(ctx.allocator);
     try client.relative(ctx, options.manifest);
     try ctx.require(c.oneOf(options.manifest, config.clients), "client is not declared in zean.json");
-    const plan = try client.load(ctx, io, repo, options.manifest, &config.source_map);
-    const result = try client.execute(ctx, io, repo, plan, .{
+    var ordered: std.ArrayList(client.Plan) = .empty;
+    var seen: std.StringHashMap(ReplayVisit) = .init(ctx.allocator);
+    try collectReplayPlans(ctx, io, repo, &config, options.manifest, &ordered, &seen);
+    const result = try client.execute(ctx, io, repo, ordered.items[ordered.items.len - 1], .{
         .toolchain = options.toolchain,
         .output = options.output,
         .capture_target = config.capture_target,
         .verify = true,
+        .prerequisites = ordered.items[0 .. ordered.items.len - 1],
         .lake = options.lake,
         .project_config = bytes,
     }, environment);
