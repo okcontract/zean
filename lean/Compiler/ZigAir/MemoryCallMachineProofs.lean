@@ -57,6 +57,26 @@ theorem safe_iff_fuel (program : Program) (first : Execution) :
     obtain ⟨fuel, h⟩ := (steps_iff_fuel program _ _).mp reached
     exact safe fuel fault after h
 
+/-- Fuel budgets can observe the same terminal execution at different times.
+Determinism and terminal stability make their result and state identical. -/
+theorem finished_unique (program : Program) (first : Execution)
+    (left : advance program leftFuel first = .finished leftResult leftState)
+    (right : advance program rightFuel first = .finished rightResult rightState) :
+    Execution.finished leftResult leftState = .finished rightResult rightState := by
+  calc
+    _ = advance program (leftFuel + rightFuel) first :=
+      (finished_stable program leftFuel rightFuel first _ _ left).symm
+    _ = advance program (rightFuel + leftFuel) first := by rw [Nat.add_comm]
+    _ = _ := finished_stable program rightFuel leftFuel first _ _ right
+
+/-- A reached successful result rules out every terminating fault from the
+same initial execution, including prefixes outside the success fuel budget. -/
+theorem safe_of_success (program : Program) (first : Execution)
+    (success : advance program fuel first = .finished (.ok value) after) : Safe program first := by
+  apply (safe_iff_fuel program first).2
+  intro _ _ _ failed
+  cases finished_unique program first success failed
+
 theorem Steps.preserves (program : Program) (invariant : Execution → Prop)
     (closed : ∀ config, invariant (.suspended config) → invariant (MemoryCallMachine.step program config))
     {first last : Execution} (reached : Steps program first last) (initial : invariant first) :
