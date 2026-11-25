@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 -/
 import Compiler.Cases.Memory.MemorySliceInvocation
+import Compiler.ZigAir.MemoryRecordCapability
+import Compiler.ZigAir.MemorySliceSlotReads
 
 namespace Compiler.ZigAir.MemorySliceInvocation.Tests
 open Memory MemoryAir Memory.WordArray GeneratedMemory
@@ -62,5 +64,22 @@ theorem total_invocation_witness : ∃ result after,
       (result = .ok ((view 1 2).pointer 1) ∨ result = .error .outOfMemory) := by
   exact run_preserves caller (view 1 2) 1 valid_caller
     ⟨8, cell, rfl, rfl, rfl, by decide⟩ (by decide)
+
+private def nestedSlice : Ty := .slice true word
+
+private def container : Ty := .aggregate "Container" ⟨32, 8⟩
+  [(0, .scalar (.int false 64)),
+    (8, .object (.aggregate "Header" ⟨24, 8⟩ [(0, .object nestedSlice), (16, .scalar (.int false 64))]))]
+
+example (state : State) (id : Nat) (data : Address) (length : Nat)
+    (valid : state.valid = true) (root : RootWritable state container id)
+    (loaded : load state (.pointer (.pointer true false nestedSlice) ⟨id, 8⟩) =
+      .ok (.slice nestedSlice data length)) :
+    load state (.pointer (.pointer true false usize) ⟨id, 16⟩) = .ok (size length) := by
+  have geometry : SubobjectGeometry container nestedSlice 8 ⟨32, 8⟩ ⟨16, 8⟩ :=
+    ⟨rfl, by decide, rfl, by decide, by decide, by decide, by decide, rfl⟩
+  obtain ⟨cell, typed, accessed⟩ := geometry.access valid root false
+  exact load_slice_length_of_access state ⟨id, 8⟩ data cell true false true true word length accessed
+    (typed ▸ rfl) loaded
 
 end Compiler.ZigAir.MemorySliceInvocation.Tests

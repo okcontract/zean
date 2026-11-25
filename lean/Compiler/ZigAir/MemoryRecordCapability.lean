@@ -7,6 +7,30 @@ import Compiler.ZigAir.MemoryRootCapability
 
 namespace Compiler.ZigAir.Memory
 
+/-- Geometry of a declared subobject at an offset in a complete allocation.
+The type walk may pass through several fields before reaching the view. -/
+structure SubobjectGeometry (owner child : Ty) (offset : Nat) (parent region : Layout) : Prop where
+  parentShape : owner.layout = some parent
+  parentPositive : 0 < parent.bytes
+  childShape : child.layout = some region
+  childPositive : 0 < region.bytes
+  inside : offset + region.bytes ≤ parent.bytes
+  aligned : offset % region.alignment = 0
+  divided : parent.alignment % region.alignment = 0
+  declared : acceptsView owner offset child = true
+
+/-- A writable owner supplies checked access to its declared subobject,
+without any assumptions about the stored contents. -/
+theorem SubobjectGeometry.access (geometry : SubobjectGeometry owner child offset parent region)
+    (valid : state.valid = true) (cap : RootWritable state owner objectId) (write : Bool) :
+    ∃ cell, cell.type = owner ∧ access state ⟨objectId, offset⟩ region write = .ok cell := by
+  obtain ⟨cell, found, typed, permission⟩ := cap
+  have root := root_access state objectId cell parent write valid found (typed ▸ geometry.parentShape)
+    geometry.parentPositive (fun _ => permission)
+  exact ⟨cell, typed, by
+    simpa only [Nat.zero_add] using access_subregion state ⟨objectId, 0⟩ parent region offset write cell root
+      geometry.childPositive geometry.inside geometry.aligned geometry.divided⟩
+
 /-- Static, checked geometry for a scalar field. The record instance and its
 permission are supplied separately by `RootWritable`. -/
 def ScalarField (owner : Ty) (offset : Nat) (child : Scalar.Ty) : Prop :=
@@ -33,15 +57,13 @@ theorem RootWritable.scalar_field_store (state : State) (owner : Ty) (id offset 
       (.scalar value) = .ok after := by
   have same : (Value.scalar value).type = .scalar child :=
     of_decide_eq_true (Bool.and_eq_true_iff.mp typed).1
-  obtain ⟨cell, found, ownerType, writable⟩ := cap
-  have accessed := root_access state id cell parent true valid found (ownerType ▸ parentShape)
-    parentPositive (fun _ => writable)
-  have field := access_subregion state ⟨id, 0⟩ parent region offset true cell accessed
-    childPositive inside aligned divided
+  have geometry : SubobjectGeometry owner (.scalar child) offset parent region :=
+    ⟨parentShape, parentPositive, childShape, childPositive, inside, aligned, divided, view⟩
+  obtain ⟨cell, ownerType, field⟩ := geometry.access valid cap true
   simpa only [same, Nat.zero_add] using
     store_subobject_total state ⟨id, offset⟩ region cell (.scalar value)
       (MemoryAir.value_valid_of_hasType _ _ typed) (same ▸ childShape)
-      (by simpa only [Nat.zero_add] using field)
+      field
       (by simpa only [ownerType, same] using view)
       (by
         intro entry present
