@@ -95,6 +95,7 @@ const unused_zero_projection = f.derive(&used_zero_projection, &.{
 const invalid_zero_storage = [_]f.Value{
     zero_projection,
     used_zero_projection,
+    f.derive(&unused_zero_projection, &.{f.set("/instructions/2/operand", selected)}),
     f.derive(&unused_zero_projection, &.{f.set("/instructions/1/type/flags/isConst", f.b(false))}),
     f.derive(&unused_zero_projection, &.{f.set("/instructions/1/type/child/identity/name", f.s("fixture.OtherLock"))}),
     f.derive(&unused_zero_projection, &.{f.set("/instructions/1/type/flags/allowZero", f.b(true))}),

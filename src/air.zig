@@ -959,9 +959,7 @@ pub const Decoder = struct {
                 const nested = try ctx.allocator.dupe(?Label, labels);
                 nested[index] = .{ .block = ty };
                 try prefixes.append(ctx.allocator, .{ .kind = "block", .id = index, .ty = try ty.lean(ctx, self.profile), .child = try self.body(try ctx.field(inst, "body"), env, nested, depth + 1) });
-                // A checked zero-storage projection cannot supply any later
-                // operand. Reached address validation remains in the program.
-                if (zero_field == null) env[index] = ty;
+                env[index] = ty;
             } else if (eq(u8, tag, "loop") and (self.profile.hasLoops() or self.options.extension == .hash_update)) {
                 try ctx.fields(inst, base ++ "body");
                 try ctx.require(ty.* == .noreturn, "AIR loop must be non-returning");
@@ -1014,7 +1012,9 @@ pub const Decoder = struct {
             } else return ctx.fail("unsupported AIR operation: {s}", .{tag});
             if (primitive) |text| {
                 try prefixes.append(ctx.allocator, .{ .id = index, .ty = try ty.lean(ctx, self.profile), .child = if (self.profile.hasCalls() and !direct_call) try ctx.fmt("(.memory {s})", .{text}) else text });
-                env[index] = ty;
+                // Preserve the address check while keeping its discarded
+                // pointer out of the source register environment.
+                if (zero_field == null) env[index] = ty;
             }
         }
         var result = terminal orelse return ctx.fail("AIR body has no terminator", .{});
