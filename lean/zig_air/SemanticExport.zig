@@ -207,6 +207,13 @@ fn writeRef(w: *Writer, ref: Air.Inst.Ref, zcu: *Zcu) Writer.Error!void {
     return writeValue(w, .fromInterned(ref.toInterned().?), zcu, 0, &remaining);
 }
 
+fn writeCopyLength(w: *Writer, length: Air.Inst.Ref, operand: Air.Inst.Ref, zcu: *Zcu) Writer.Error!void {
+    if (length != .none) return writeRef(w, length, zcu);
+    try w.writeAll("{\"kind\":\"manyPointer\",\"operand\":");
+    try writeRef(w, operand, zcu);
+    try w.writeByte('}');
+}
+
 // Preserve the actual anonymous zero-sized object behind an empty slice.
 // A zero length alone does not admit null, undefined or arbitrary pointers.
 fn emptySliceOrigin(value: Value, zcu: *Zcu) ?InternPool.Key.Ptr.BaseAddr.Uav {
@@ -506,7 +513,6 @@ fn writeInstruction(w: *Writer, air: *const Air, index: Air.Inst.Index, visited:
         .cmp_gte,
         .store,
         .store_safe,
-        .memcpy,
         .slice_elem_val,
         .ptr_elem_val,
         => {
@@ -514,6 +520,21 @@ fn writeInstruction(w: *Writer, air: *const Air, index: Air.Inst.Index, visited:
             try writeRef(w, inst.data.bin_op.lhs, zcu);
             try w.writeAll(",\"rhs\":");
             try writeRef(w, inst.data.bin_op.rhs, zcu);
+        },
+        .memcpy => {
+            try w.writeAll(",\"lhs\":");
+            try writeRef(w, inst.data.bin_op.lhs, zcu);
+            try w.writeAll(",\"rhs\":");
+            try writeRef(w, inst.data.bin_op.rhs, zcu);
+            for (air.semantic_export_copies.items) |item| {
+                if (item.instruction != index) continue;
+                try w.writeAll(",\"copyLengths\":{\"destination\":");
+                try writeCopyLength(w, item.destination_length, item.destination, zcu);
+                try w.writeAll(",\"source\":");
+                try writeCopyLength(w, item.source_length, item.source, zcu);
+                try w.writeByte('}');
+                break;
+            }
         },
         .ret, .ret_safe, .ret_load => {
             try w.writeAll(",\"operand\":");
@@ -665,7 +686,24 @@ pub fn captureFunction(pt: Zcu.PerThread, func_index: InternPool.Index, air: *co
         if (i != 0) try w.writeByte(',');
         try writeSliceValidity(w, item, visited, zcu);
     }
-    try w.writeAll("]},\"body\":");
+    try w.writeByte(']');
+    if (air.semantic_export_zir.contains(.memcpy) or air.semantic_export_zir.contains(.memmove) or
+        air.semantic_export_copies.items.len != 0)
+    {
+        var anchored = true;
+        for (air.semantic_export_copies.items) |item| {
+            const index = item.instruction orelse {
+                anchored = false;
+                break;
+            };
+            if (!visited.isSet(@backingInt(index))) {
+                anchored = false;
+                break;
+            }
+        }
+        try w.print(",\"copyLengthsAnchored\":{}", .{anchored});
+    }
+    try w.writeAll("},\"body\":");
     try writeIndices(w, air.getMainBody());
     try w.writeAll(",\"bodyTraversal\":\"supported-structured-containers-only\",\"instructions\":[");
     for (0..air.instructions.len) |i| {

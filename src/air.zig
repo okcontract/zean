@@ -107,6 +107,8 @@ pub const Decoder = struct {
     guards: []?Value,
     guard_positions: []usize,
     guard_seen: []bool,
+    slice_guard_count: usize = 0,
+    copy_lengths_recorded: bool = false,
     byte_values: []?usize,
     byte_slots: []?usize,
     byte_alignments: []u64,
@@ -171,16 +173,25 @@ pub const Decoder = struct {
     fn readValidity(self: *Decoder) Error!void {
         const ctx = self.ctx;
         const validity = try ctx.field(self.record, "sourceValidity");
-        try ctx.fields(validity, "schema coverage complete slices");
+        const fields = "schema coverage complete slices";
+        if (c.get(validity, "copyLengthsAnchored")) |anchored| {
+            try ctx.fields(validity, fields ++ " copyLengthsAnchored");
+            try ctx.require(anchored == .bool and anchored.bool, "copy length obligation has no supported AIR anchor");
+            self.copy_lengths_recorded = true;
+        } else try ctx.fields(validity, fields);
         const slices = try ctx.array(try ctx.field(validity, "slices"));
         try ctx.require(c.tag(validity, "schema", "oksolc.source-validity.v1") and c.tag(validity, "coverage", "runtime-slice-results") and c.flag(validity, "complete", false), "unsupported source-validity obligations");
         const tags = try ctx.array(try ctx.field(self.record, "sourceOperationTags"));
+        for (tags) |value| if (c.stringIs(value, "memcpy") or c.stringIs(value, "memmove")) {
+            try ctx.require(self.copy_lengths_recorded, "source copy operations require length-aware capture");
+        };
         var length_slices = false;
         if (self.profile != .scalar and self.options.extension != .hash_update) for (tags) |value| {
             length_slices = length_slices or c.stringIs(value, "slice_length");
         };
         if (self.profile == .scalar or (self.profile == .aggregate and self.options.extension != .hash_update and self.options.extension != .slice_view)) return ctx.require(slices.len == 0 and !length_slices, "unsupported source-validity obligations in scalar AIR");
         try ctx.require(slices.len <= 512, "unsupported memory source-validity inventory");
+        self.slice_guard_count = slices.len;
         if (length_slices) try ctx.require(slices.len > 0, "length-based slice lost its source guard");
         for (slices, 0..) |item, position| {
             try ctx.fields(item, "source anchor start end upperBound unsupportedReason");
@@ -287,10 +298,84 @@ pub const Decoder = struct {
             return ctx.fail("unsupported source guard bound", .{});
         };
         self.guard_seen[index] = true;
-        var primitive = try ctx.fmt("(.checkBounds {s} {s} {s})", .{ start.text, end.text, upper });
+        const primitive = try ctx.fmt("(.checkBounds {s} {s} {s})", .{ start.text, end.text, upper });
+        try self.addMemoryGuard(prefixes, self.instructions.len + self.guard_positions[index], primitive);
+    }
+
+    fn addMemoryGuard(self: *Decoder, prefixes: *std.ArrayList(Prefix), id: usize, guard: []const u8) Error!void {
+        const ctx = self.ctx;
+        var primitive = guard;
         if (self.profile.hasCalls()) primitive = try ctx.fmt("(.memory {s})", .{primitive});
         if (self.options.extension == .hash_update) primitive = try ctx.fmt("(.primitive (.memory {s}))", .{primitive}) else if (self.options.extension == .slice_view) primitive = try ctx.fmt("(.memory {s})", .{primitive});
-        try prefixes.append(ctx.allocator, .{ .id = self.instructions.len + self.guard_positions[index], .ty = "(.scalar .unit)", .child = primitive });
+        try prefixes.append(ctx.allocator, .{ .id = id, .ty = "(.scalar .unit)", .child = primitive });
+    }
+
+    fn directCopyPointer(self: *Decoder, operand: Value) Error!bool {
+        const id = (try self.refId(operand)) orelse return false;
+        return c.oneOf(try self.ctx.str(try self.ctx.field(self.instructions[id], "tag")), &.{ "arg", "load" });
+    }
+
+    fn copyLength(self: *Decoder, value: Value, operand: Value, env: Env) Error!?Reference {
+        const ctx = self.ctx;
+        const operand_ty = (try self.memoryReference(operand, env)).ty;
+        var view = operand;
+        if (operand_ty.* == .pointer and operand_ty.pointer.child.* == .array) {
+            const inst = self.instructions[(try self.refId(view)) orelse return ctx.fail("copy array has no instruction", .{})];
+            if (c.tag(inst, "tag", "ptr_cast")) view = try ctx.field(inst, "operand");
+        }
+        if (c.tag(value, "kind", "manyPointer")) {
+            try ctx.fields(value, "kind operand");
+            const original = try ctx.field(value, "operand");
+            const original_ty = (try self.memoryReference(original, env)).ty;
+            try ctx.require(original_ty.* == .pointer and original_ty.pointer.many and original_ty.pointer.child.isInt(false, 8), "only a many pointer can omit a byte copy length");
+            // A destination that borrowed the source length is lowered to a slice.
+            if (operand_ty.* == .slice) {
+                const id = (try self.refId(operand)) orelse return ctx.fail("copy destination has no instruction", .{});
+                try ctx.require(original_ty.pointer.mutable and c.tag(self.instructions[id], "tag", "slice"), "copy destination lost its synthesized slice");
+            } else try ctx.require(c.equal(original, view), "copy pointer identity changed");
+            return null;
+        }
+        const length = try self.memoryReference(value, env);
+        try ctx.require(length.ty.isInt(false, 64), "byte copy length is not usize");
+        if (try self.refId(view)) |id| {
+            const inst = self.instructions[id];
+            if (c.tag(inst, "tag", "slice_ptr")) view = try ctx.field(inst, "operand");
+        }
+        if (try self.refId(value)) |id| {
+            const projection = self.instructions[id];
+            try ctx.require(c.tag(projection, "tag", "slice_len") and
+                c.equal(try ctx.field(projection, "operand"), view), "copy length does not belong to its operand");
+        } else {
+            if (operand_ty.* == .pointer and operand_ty.pointer.child.* == .array) {
+                const count = try ctx.nat(try ctx.field(value, "value"), std.math.maxInt(u64));
+                try ctx.require(count == operand_ty.pointer.child.array.len, "copy length changes its array extent");
+            } else try ctx.require((try self.memoryReference(view, env)).ty.* != .slice, "runtime copy slice lost its length projection");
+        }
+        return length;
+    }
+
+    fn copyLengthGuard(self: *Decoder, inst: Value, index: usize, env: Env, prefixes: *std.ArrayList(Prefix)) Error!void {
+        const ctx = self.ctx;
+        if (c.get(inst, "copyLengths")) |lengths| {
+            try ctx.fields(lengths, "destination source");
+            const destination = try self.copyLength(try ctx.field(lengths, "destination"), try ctx.field(inst, "lhs"), env);
+            const source = try self.copyLength(try ctx.field(lengths, "source"), try ctx.field(inst, "rhs"), env);
+            try ctx.require(destination != null or source != null, "byte copy lacks a source length");
+            if (destination != null and source != null) {
+                // Disjoint from captured registers, slice guards and element-pointer temporaries.
+                const id = 2 * self.instructions.len + self.slice_guard_count + index;
+                const primitive = try ctx.fmt("(.checkCopyLengths {s} {s})", .{ destination.?.text, source.?.text });
+                try self.addMemoryGuard(prefixes, id, primitive);
+            }
+            return;
+        }
+        // Earlier records can only establish the source lengths when the
+        // pointer operands have not been produced by view decay or an upgrade.
+        try ctx.require(!self.copy_lengths_recorded, "byte copy lacks captured source lengths");
+        const destination = try ctx.field(inst, "lhs");
+        const target = try self.memoryReference(destination, env);
+        try ctx.require(try self.directCopyPointer(try ctx.field(inst, "rhs")) and
+            (target.ty.* == .slice or try self.directCopyPointer(destination)), "byte copy lacks source-length evidence");
     }
 
     fn callPrimitive(self: *Decoder, inst: Value, ty: *const Ty, env: Env) Error![]const u8 {
@@ -348,7 +433,7 @@ pub const Decoder = struct {
             return try ctx.fmt("(.booleanNot {s})", .{operand.text});
         }
         if (eq(u8, tag, "memcpy")) {
-            try ctx.fields(inst, base ++ "lhs rhs");
+            try ctx.fields(inst, if (c.get(inst, "copyLengths") != null) base ++ "lhs rhs copyLengths" else base ++ "lhs rhs");
             const target = try self.memoryReference(try ctx.field(inst, "lhs"), env);
             const input = try self.memoryReference(try ctx.field(inst, "rhs"), env);
             const dest = (target.ty.* == .slice and target.ty.slice.mutable and target.ty.slice.child.isInt(false, 8)) or (target.ty.* == .pointer and target.ty.pointer.mutable and !target.ty.pointer.many and target.ty.pointer.child.* == .array and target.ty.pointer.child.array.child.isInt(false, 8));
@@ -590,7 +675,7 @@ pub const Decoder = struct {
         }
         if (self.options.extension != .hash_update) return null;
         if (eq(u8, tag, "memcpy")) {
-            try ctx.fields(inst, base ++ "lhs rhs");
+            try ctx.fields(inst, if (c.get(inst, "copyLengths") != null) base ++ "lhs rhs copyLengths" else base ++ "lhs rhs");
             const target = try self.reference(try ctx.field(inst, "lhs"), env, false);
             const source = try self.reference(try ctx.field(inst, "rhs"), env, false);
             const dest = (target.ty.* == .slice and target.ty.slice.mutable and target.ty.slice.child.isInt(false, 8)) or (target.ty.* == .pointer and target.ty.pointer.mutable and !target.ty.pointer.many and target.ty.pointer.child.* == .array and target.ty.pointer.child.array.child.isInt(false, 8));
@@ -653,6 +738,7 @@ pub const Decoder = struct {
             const ty = try types.parse(ctx, try ctx.field(inst, "type"), self.profile, 0);
             const base = "index tag payloadVisited type ";
             try self.before(index, env, &prefixes);
+            if (eq(u8, tag, "memcpy") and self.profile != .scalar) try self.copyLengthGuard(inst, index, env, &prefixes);
             const direct_call = self.profile.hasCalls() and c.oneOf(tag, &.{ "call", "call_never_inline", "call_never_tail" });
             var primitive: ?[]const u8 = if (direct_call) try self.callPrimitive(inst, ty, env) else try self.extraPrimitive(inst, ty, env);
             if (primitive == null and c.oneOf(tag, &.{ "slice_elem_val", "ptr_elem_val" })) {
@@ -665,7 +751,7 @@ pub const Decoder = struct {
                 try ctx.require(if (slice) owner.ty.* == .slice and owner.ty.slice.child.isInt(false, 8) else owner.ty.* == .pointer and owner.ty.pointer.many and owner.ty.pointer.child.isInt(false, 8), "byte-element read lost its owner");
                 const mutable = if (slice) owner.ty.slice.mutable else owner.ty.pointer.mutable;
                 // Temporary IDs are disjoint from captured registers and source guards.
-                const temporary = self.instructions.len + (try ctx.array(try ctx.field(try ctx.field(self.record, "sourceValidity"), "slices"))).len + index;
+                const temporary = self.instructions.len + self.slice_guard_count + index;
                 const select = try ctx.fmt("(.{s} {s} {s})", .{ if (slice) "sliceElementPointer" else "elementPointer", owner.text, element.text });
                 try prefixes.append(ctx.allocator, .{ .id = temporary, .ty = try ctx.fmt("(.pointer {s} false (.scalar (.int false 8)))", .{c.boolText(mutable)}), .child = if (self.profile.hasCalls()) try ctx.fmt("(.memory {s})", .{select}) else select });
                 primitive = try ctx.fmt("(.load (.local {d}))", .{temporary});

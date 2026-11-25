@@ -271,6 +271,68 @@ private def prefixGuards (lift : Prim → P) (count id : Nat) (guards : List Raw
   | [(item, ordinal)] => pure (.bind (count + ordinal) (.scalar .unit) (lift (← guardPrimitive item)) code)
   | _ => none
 
+private def instruction (table : List Raw) (operand : Raw) : Option Raw := do
+  require ((← operand.textAt "kind") == "instruction")
+  table[← operand.natAt "index"]?
+
+private def copyView (table : List Raw) (tag : String) (operand : Raw) : Raw :=
+  ((do
+    let inst ← instruction table operand
+    require ((← inst.textAt "tag") == tag)
+    inst.get "operand") : Option Raw).getD operand
+
+private def copyLength (table : List Raw) (length operand : Raw) : Option (Option Ref) := do
+  let lowered ← instruction table operand
+  let operandType ← typeOf 17 (← lowered.get "type")
+  let origin := match operandType with
+    | .pointer _ false (.array ..) => copyView table "ptr_cast" operand
+    | _ => operand
+  if length.textAt "kind" == some "manyPointer" then
+    let .object fields := length | none
+    require (fields.length == 2)
+    let original ← length.get "operand"
+    let .pointer writable true (.scalar (.int false 8)) ←
+      typeOf 17 (← (← instruction table original).get "type") | none
+    match operandType with
+    | .slice .. => require (writable && lowered.textAt "tag" == some "slice")
+    | _ => require ((← reference original) == (← reference origin))
+    return none
+  let view := copyView table "slice_ptr" origin
+  let ty ← if (← length.textAt "kind") == "instruction" then do
+    let projection ← instruction table length
+    require ((← projection.textAt "tag") == "slice_len" &&
+      (← reference (← projection.get "operand")) == (← reference view))
+    projection.get "type"
+    else do
+      match operandType with
+      | .pointer _ false (.array count _) => require ((← length.natAt "value") == count)
+      | _ =>
+        let viewType ← typeOf 17 (← (← instruction table view).get "type")
+        match viewType with | .slice .. => none | _ => pure ()
+      length.get "type"
+  require ((← typeOf 17 ty) == .scalar (.int false 64))
+  pure (some (← reference length))
+
+private def directCopyPointer (value : Raw) : Bool :=
+  value.textAt "tag" == some "arg" || value.textAt "tag" == some "load"
+
+private def copyLengthCheck (table : List Raw) (inst : Raw) : Option (Option Prim) := do
+  if let some lengths := inst.get "copyLengths" then
+    let .object fields := lengths | none
+    require (fields.length == 2)
+    match ← copyLength table (← lengths.get "destination") (← inst.get "lhs"),
+          ← copyLength table (← lengths.get "source") (← inst.get "rhs") with
+    | none, none => none
+    | some destination, some source => pure (some (.checkCopyLengths destination source))
+    | _, _ => pure none
+  else
+    let target ← instruction table (← inst.get "lhs")
+    let source ← instruction table (← inst.get "rhs")
+    let view ← typeOf 17 (← target.get "type")
+    let hasSliceLength := match view with | .slice .. => true | _ => false
+    require (directCopyPointer source && (hasSliceLength || directCopyPointer target))
+    pure none
+
 /-- Fuel bounds parsing, not program execution. Each recursive call consumes a
 unit, including sequential operations and nested control. No instruction is
 removed based on the liveness of its result. -/
@@ -330,6 +392,13 @@ def bodyWith (lift : Prim → P) (operation : Raw → Option P) (loops : Bool)
         pure (.bind temporary (.pointer writable false byte) (lift (← binary inst pointer))
           (.bind id byte (lift (.load (.local temporary)))
             (← bodyWith lift operation loops table guards fuel tail)))
+      | "memcpy" => do
+        let guard ← copyLengthCheck table inst
+        let code := .bind id (← typeOf 17 (← inst.get "type")) (← operation inst)
+          (← bodyWith lift operation loops table guards fuel tail)
+        match guard with
+        | none => pure code
+        | some check => pure (.bind (2 * table.length + guards.length + id) (.scalar .unit) (lift check) code)
       | _ => pure (.bind id (← typeOf 17 (← inst.get "type")) (← operation inst)
           (← bodyWith lift operation loops table guards fuel tail))
     prefixGuards lift table.length id guards code
@@ -386,6 +455,16 @@ structure Input where
   table : List Raw
   root : List Raw
 
+def checkCopyCoverage (raw validity : Raw) (table : List Raw) : Option Unit := do
+  let sourceCopy := (← raw.listAt "sourceOperationTags").any fun tag =>
+    tag.text == some "memcpy" || tag.text == some "memmove"
+  match validity.get "copyLengthsAnchored" with
+  | none => require (!sourceCopy)
+  | some flag =>
+    require (flag.flag == some true && table.all fun inst =>
+      inst.textAt "tag" != some "memcpy" || inst.boolAt "payloadVisited" != some true ||
+        (inst.get "copyLengths").isSome)
+
 def prepare (raw : Raw) (policy : SpecializationPolicy := .standalone) : Option Input := do
   require ((← raw.textAt "schema") == "oksolc.fresh-air.v3" &&
     (← raw.textAt "capturePoint") == "after-sema-before-legalize" &&
@@ -408,6 +487,7 @@ def prepare (raw : Raw) (policy : SpecializationPolicy := .standalone) : Option 
   let guards ← validity.listAt "slices"
   let table ← raw.listAt "instructions"
   require (table.length > 0 && table.length ≤ 512)
+  checkCopyCoverage raw validity table
   pure ⟨parameters, returnType, mapping, guards, table, ← raw.listAt "body"⟩
 
 def decode (loops : Bool) (raw : Raw) : Option (Program loops) := do

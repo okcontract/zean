@@ -64,6 +64,11 @@ fn run(ctx: *z.common.Context, init: std.process.Init) !void {
     var checker: Checker = .{ .ctx = ctx, .io = init.io, .output = output, .command = args[if (selected) 3 else 1..], .environment = &environment };
     if (selected) {
         const label = args[2];
+        if (std.mem.eql(u8, label, "copy-lengths")) {
+            try checker.check(label, try @import("bulk_copy.zig").lengthsEmitted(ctx));
+            std.debug.print("Compiled emitted control: {s}.\n", .{label});
+            return;
+        }
         if (std.mem.eql(u8, label, "scalar-certificate")) {
             try checker.check(label, try @import("certificate.zig").scalarEmitted(ctx, null));
             for (0..@import("certificate.zig").scalar_mutations.len) |index| try checker.reject("scalar-certificate-mutation", try @import("certificate.zig").scalarEmitted(ctx, index));
@@ -80,6 +85,7 @@ fn run(ctx: *z.common.Context, init: std.process.Init) !void {
     for (0..@import("certificate.zig").scalar_mutations.len) |index| try checker.reject("scalar-certificate-mutation", try @import("certificate.zig").scalarEmitted(ctx, index));
     try checker.check("specialization-certificate", try @import("specialized_source.zig").emitted(ctx));
     try checker.check("integer-extrema", try @import("bulk_copy.zig").emitted(ctx));
+    try checker.check("copy-lengths", try @import("bulk_copy.zig").lengthsEmitted(ctx));
     try checker.check("byte-element-reads", try @import("byte_reads.zig").emitted(ctx));
     try checker.check("record-fields", try @import("record_fields.zig").emitted(ctx));
     try checker.check("bounded-length-slices", try @import("bounded_slices.zig").emitted(ctx));

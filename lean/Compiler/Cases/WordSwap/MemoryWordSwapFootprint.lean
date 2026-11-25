@@ -29,7 +29,7 @@ def Footprint (view : View) (left right : Nat) (slot : Address) (event : Observa
   | .argument .. | .scalar .. | .pointerField .. | .fieldPointer .. | .booleanNot .. |
     .unreachable | .pointerCast .. | .sliceCast .. | .arrayToSlice .. | .offsetPointer .. |
     .elementPointer .. | .wordByteCast .. | .sliceElementPointer .. | .slice .. | .sliceLen .. |
-    .slicePtr .. | .checkBounds .. => True
+    .slicePtr .. | .checkBounds .. | .checkCopyLengths .. => True
 
 theorem Footprint.byte_access (view : View) (left right : Nat) (slot : Address)
     (event : Observation Ty Prim Value State) (order : WordBytes.Order) (pointer : Ref)

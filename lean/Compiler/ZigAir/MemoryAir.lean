@@ -68,6 +68,7 @@ inductive Prim where
   | sliceLen (slice : Ref)
   | slicePtr (slice : Ref)
   | checkBounds (start finish : Ref) (upper : Bound)
+  | checkCopyLengths (destination source : Ref)
   deriving DecidableEq, Repr
 
 def scalarEnv (env : Env) : Scalar.Env := fun id =>
@@ -127,6 +128,9 @@ def Prim.transition (prim : Prim) (args : List Value) (env : Env) (state : State
       | .checkBounds start finish upper => do
         checkSliceBounds (← start.natural env) (← finish.natural env) (← upper.eval env)
         .ok (.scalar .unit)
+      | .checkCopyLengths destination source =>
+        if (← destination.natural env) = (← source.natural env) then .ok (.scalar .unit)
+        else .error .sourceBounds
       | .alloc _ | .store .. | .wordByteStore .. | .copyBytes .. => .error .malformed
     .ok (value, state)
 

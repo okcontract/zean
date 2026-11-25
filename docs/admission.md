@@ -7,7 +7,7 @@ retained guards. An operation still counts when its result is unused.
 `zig build admission` prints the `zean.admission.v1` vocabulary, its Lean
 interpretations, and rejection controls. Every reached tag must be listed
 and pass its profile, payload, type, and identity checks. The report records
-selected source slice requirements and marks coverage as incomplete.
+selected source slice and copy-length requirements. Coverage is incomplete.
 [Supported profiles](architecture.md#supported-routes)
 
 ## Source owners and calls
@@ -51,7 +51,7 @@ profiles reject volatile and atomic accesses. [Call machine](call-machine.md) ·
 | Loads and stores | Access order, liveness, type, initialization for reads, and permissions for writes |
 | Pointer arithmetic and casts | Child type, permissions, scaling, bounds, and overflow |
 | Slices and projections | Pointer and logical extent. Source slice guards execute at their recorded anchors. |
-| Byte `memcpy` | Live extents, write permission, non-overlap, and per-byte initialization. A fault preserves writes already reached. Unsupported element types and `memmove` reject. |
+| Byte `memcpy` | Equality of lengths supplied by both source operands, live extents, write permission, non-overlap, and per-byte initialization. A fault preserves writes already reached. Unsupported element types and `memmove` reject. |
 | Array to slice | Static extent, pointer, and permissions. Conversion itself performs no storage access. |
 | Record fields | Complete owner layout and declared field. Padding accesses reject. |
 | Opaque enum storage | Identity, exhaustive tag table, backing width and layout. Runtime enum values and operations reject. |
@@ -60,6 +60,12 @@ profiles reject volatile and atomic accesses. [Call machine](call-machine.md) ·
 | Return | Result type and reference, followed by release of private stack storage |
 | Debug metadata | Erasure only for the four admitted tags with the explicit debug flag and unit type |
 | Unknown reached tags | Rejection, including operations with unused results |
+
+Sema records copy lengths before slice decay and array-pointer upgrades.
+When both operands supplied a length, the model checks equality at the copy
+instruction before its first write. A runtime equality without a supported
+AIR anchor rejects. Records with source copy operations require a capture
+that records those obligations.
 
 ## Correspondence checks
 

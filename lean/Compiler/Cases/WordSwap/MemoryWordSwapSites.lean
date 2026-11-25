@@ -28,7 +28,7 @@ def dataSite (site : Nat × Ty × Prim) : Prop :=
   | .argument .. | .scalar .. | .pointerField .. | .fieldPointer .. | .booleanNot .. |
     .unreachable | .pointerCast .. | .sliceCast .. | .arrayToSlice .. | .offsetPointer .. |
     .elementPointer .. | .wordByteCast .. | .sliceElementPointer .. | .slice .. | .sliceLen .. |
-    .slicePtr .. | .checkBounds .. => True
+    .slicePtr .. | .checkBounds .. | .checkCopyLengths .. => True
 
 theorem data_sites_checked : fn_swap_u32.program.body.Covered dataSite := by
   simp [Control.Code.Covered, Control.Code.bindings, fn_swap_u32, dataSite, usize, ByteAccess.byte]
