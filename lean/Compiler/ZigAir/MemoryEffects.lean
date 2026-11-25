@@ -179,6 +179,18 @@ theorem load_eq_of_lookup (before after : State) (writable many : Bool) (child :
       load before (.pointer (.pointer writable many child) address) := by
   simp only [load, access, same]
 
+/-- A successful load identifies a live caller allocation. A frame that
+retains this allocation is sufficient to preserve its exact result. -/
+theorem load_of_retained_lookup {address : Address} {child : Ty}
+    (retained : ∀ cell, before.heap.lookup address.allocation = some cell →
+      after.heap.lookup address.allocation = some cell)
+    (loaded : load before (.pointer (.pointer writable many child) address) = .ok value) :
+    load after (.pointer (.pointer writable many child) address) = .ok value := by
+  cases found : before.heap.lookup address.allocation with
+  | none => cases shaped : child.layout <;> simp [load, shaped, access, found, bind, Except.bind] at loaded
+  | some cell =>
+    exact (load_eq_of_lookup before after writable many child address ((retained cell found).trans found.symm)).trans loaded
+
 /-- Different declared allocation types establish separation in the same heap;
 no independent-address assumption is needed. -/
 theorem Heap.lookup_ne_of_type_ne (heap : Heap) (left right : Nat) (first second : Allocation)
@@ -235,6 +247,21 @@ theorem load_disjoint_after_store (state : State) (writable many : Bool) (child 
         (((access_success_region state _ _ false readCell checked).1).symm.trans found)
       subst readCell
       exact framed
+
+/-- A scalar store has one written leaf. Every load that omits that leaf
+retains its observation, including multi-leaf slice values. -/
+theorem load_disjoint_after_scalar_store {address : Address} {value : Scalar.Value} {child : Ty}
+    (stored : store before (.pointer (.pointer true many (.scalar value.type)) address) (.scalar value) = .ok after)
+    (apart : address.offset ∉ child.readOffsets offset) :
+    load after (.pointer (.pointer readWritable readMany child) ⟨address.allocation, offset⟩) =
+      load before (.pointer (.pointer readWritable readMany child) ⟨address.allocation, offset⟩) := by
+  apply load_disjoint_after_store before true many (.scalar value.type) address (.scalar value) after
+    readWritable readMany child offset stored
+  intro position read entry written same
+  simp only [Value.leaves, List.mem_singleton] at written
+  subst entry
+  change position = address.offset at same
+  exact apart (same ▸ read)
 
 /-- Two scalar writes in one allocation observe either the overwritten value or
 the framed first value. Both writes are checked; no non-aliasing assumption is
