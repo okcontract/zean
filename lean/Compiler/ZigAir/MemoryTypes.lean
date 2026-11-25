@@ -27,6 +27,8 @@ It is not a rule for computing ABI layouts on arbitrary targets. -/
   | .scalar (.int _ 32) => some ⟨4, 4⟩
   | .scalar (.int _ 64) => some ⟨8, 8⟩
   | .scalar (.int false 256) => some ⟨32, 16⟩
+  | .scalar (.enumeration decl) =>
+    if 2 ≤ decl.width ∧ decl.width ≤ 8 then some ⟨1, 1⟩ else none
   -- Captured ?Instruction, ?usize, ?i64 and ?u256; no general optional ABI rule.
   | .optionalScalar (.int false 8) => some ⟨2, 1⟩
   | .optionalScalar (.int false 64) => some ⟨16, 8⟩

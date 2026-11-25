@@ -46,6 +46,13 @@ fn resolvedEnum(ty: Type, zcu: *Zcu) ?InternPool.LoadedEnumType {
     return loaded;
 }
 
+fn runtimeEnum(loaded: InternPool.LoadedEnumType, backing: Type, zcu: *Zcu) bool {
+    if (loaded.nonexhaustive or loaded.field_names.len == 0 or loaded.field_names.len > 64 or backing.zigTypeTag(zcu) != .int)
+        return false;
+    const info = backing.intInfo(zcu);
+    return info.signedness == .unsigned and info.bits >= 2 and info.bits <= 8;
+}
+
 fn layoutKnown(ty: Type, zcu: *Zcu, depth: u8, remaining: *usize) bool {
     if (depth >= 16 or remaining.* == 0) return false;
     remaining.* -= 1;
@@ -129,7 +136,10 @@ fn writeTypeDepth(w: *Writer, ty: Type, zcu: *Zcu, depth: u8, remaining: *usize)
             var hash: [32]u8 = undefined;
             std.crypto.hash.sha2.Sha256.hash(source, &hash, .{});
             const hex = std.fmt.bytesToHex(hash, .lower);
-            try w.writeAll("{\"kind\":\"enum\",\"identity\":");
+            try w.writeAll(if (runtimeEnum(loaded, tag_type, zcu))
+                "{\"kind\":\"finiteEnum\",\"identity\":"
+            else
+                "{\"kind\":\"enum\",\"identity\":");
             try json(w, .{ .name = loaded.fqn.toSlice(ip), .sourceFile = file.sub_file_path, .sourceSha256 = @as([]const u8, &hex) });
             try w.writeAll(",\"backingType\":");
             try writeTypeDepth(w, tag_type, zcu, depth + 1, remaining);
@@ -306,13 +316,16 @@ fn writeValue(w: *Writer, value: Value, zcu: *Zcu, depth: u8, remaining: *usize)
         const loaded = resolvedEnum(ty, zcu) orelse
             return json(w, .{ .kind = "unsupported", .reason = "constant-type" });
         const backing: Type = .fromInterned(loaded.int_tag_type);
-        if (loaded.nonexhaustive or loaded.field_names.len != 1 or backing.zigTypeTag(zcu) != .int)
+        if (loaded.nonexhaustive or backing.zigTypeTag(zcu) != .int or
+            zcu.intern_pool.indexToKey(value.toIntern()) != .enum_tag)
             return json(w, .{ .kind = "unsupported", .reason = "constant-type" });
         const info = backing.intInfo(zcu);
-        if (info.bits != 0 or info.signedness != .unsigned or
-            zcu.intern_pool.indexToKey(value.toIntern()) != .enum_tag or value.backingInt(zcu).getUnsignedInt(zcu) != 0)
+        const tag = value.backingInt(zcu).getUnsignedInt(zcu) orelse
+            return json(w, .{ .kind = "unsupported", .reason = "enum-constant-value" });
+        const singleton = info.bits == 0 and info.signedness == .unsigned and loaded.field_names.len == 1 and tag == 0;
+        if (!singleton and !runtimeEnum(loaded, backing, zcu))
             return json(w, .{ .kind = "unsupported", .reason = "constant-type" });
-        try w.writeAll("{\"kind\":\"enumTag\",\"value\":0,\"type\":");
+        try w.print("{{\"kind\":\"enumTag\",\"value\":{d},\"type\":", .{tag});
         try writeType(w, ty, zcu);
         return w.writeByte('}');
     }

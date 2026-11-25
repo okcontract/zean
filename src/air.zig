@@ -81,6 +81,13 @@ fn scalarConstant(ctx: *Context, value: Value) Error!Reference {
         try ctx.fields(value, "kind");
         return .{ .ty = try ctx.make(Ty, .unit), .text = "(.constant .unit)" };
     }
+    if (eq(u8, kind, "enumTag")) {
+        try ctx.fields(value, "kind type value");
+        const ty = try types.parse(ctx, try ctx.field(value, "type"), .scalar, 0);
+        const tag: u8 = @intCast(try ctx.nat(try ctx.field(value, "value"), 255));
+        try ctx.require(ty.isRuntimeEnum() and ty.enumeration.hasTag(tag), "enum tag is outside its declared runtime type");
+        return .{ .ty = ty, .text = try ctx.fmt("(.constant (.enumTag {s} {d}))", .{ try ty.enumeration.leanDeclaration(ctx), tag }) };
+    }
     if (!eq(u8, kind, "constant")) return ctx.fail("unsupported AIR constant kind '{s}'", .{kind});
     try ctx.fields(value, "kind type value");
     const ty = try types.parse(ctx, try ctx.field(value, "type"), .scalar, 0);
@@ -848,9 +855,10 @@ pub const Decoder = struct {
         const ctx = self.ctx;
         try ctx.fields(inst, "index tag payloadVisited type operand cases elseBody");
         const operand = try self.reference(try ctx.field(inst, "operand"), env, self.profile != .scalar);
-        try ctx.require(operand.ty.* == .int and operand.ty.int.bits > 0, "switch requires an integer selector");
+        const enum_selector = operand.ty.isRuntimeEnum();
+        try ctx.require(enum_selector or (operand.ty.* == .int and operand.ty.int.bits > 0), "switch requires an integer or declared enum selector");
         const arms = try ctx.array(try ctx.field(inst, "cases"));
-        try ctx.require(arms.len > 0 and arms.len <= maximum_switch_ranges, "integer switch arm limit");
+        try ctx.require(arms.len > 0 and arms.len <= maximum_switch_ranges, "switch arm limit");
         const Interval = struct { low: i1024, high: i1024 };
         var checked: std.ArrayList(Interval) = .empty;
         var code = try self.body(try ctx.field(inst, "elseBody"), env, labels, depth + 1);
@@ -860,29 +868,37 @@ pub const Decoder = struct {
             const arm = arms[ordinal];
             try ctx.fields(arm, "ranges body");
             const ranges = try ctx.array(try ctx.field(arm, "ranges"));
-            try ctx.require(ranges.len > 0 and ranges.len <= maximum_switch_ranges - checked.items.len, "integer switch range limit");
+            try ctx.require(ranges.len > 0 and ranges.len <= maximum_switch_ranges - checked.items.len, "switch range limit");
             var encoded: std.ArrayList([]const u8) = .empty;
             for (ranges) |pair| {
                 const bounds = try ctx.array(pair);
                 try ctx.require(bounds.len == 2, "switch requires closed ranges");
                 for (bounds) |bound| {
-                    try ctx.require(c.tag(bound, "kind", "constant") and Ty.same((try scalarConstant(ctx, bound)).ty, operand.ty), "switch bound changes integer type");
+                    try ctx.require(c.tag(bound, "kind", if (enum_selector) "enumTag" else "constant") and
+                        Ty.same((try scalarConstant(ctx, bound)).ty, operand.ty), "switch bound changes selector type");
                 }
                 const low = try ctx.integer(try ctx.field(bounds[0], "value"));
                 const high = try ctx.integer(try ctx.field(bounds[1], "value"));
-                try ctx.require(low <= high, "reversed integer switch range");
-                for (checked.items) |other| try ctx.require(high < other.low or other.high < low, "overlapping integer switch ranges");
+                try ctx.require(if (enum_selector) low == high else low <= high, "invalid switch range");
+                for (checked.items) |other| try ctx.require(high < other.low or other.high < low, "overlapping switch ranges");
                 try checked.append(ctx.allocator, .{ .low = low, .high = high });
-                try encoded.append(ctx.allocator, try ctx.fmt("(({d}), ({d}))", .{ low, high }));
+                try encoded.append(ctx.allocator, if (enum_selector) try ctx.fmt("{d}", .{low}) else try ctx.fmt("(({d}), ({d}))", .{ low, high }));
             }
             const selected = try self.body(try ctx.field(arm, "body"), env, labels, depth + 1);
-            var test_primitive = try self.scalarPrimitive(try ctx.fmt("(.inRanges {s} [{s}])", .{ operand.text, try std.mem.join(ctx.allocator, ", ", encoded.items) }));
+            var test_primitive = try self.scalarPrimitive(try ctx.fmt("(.{s} {s} [{s}])", .{
+                if (enum_selector) "enumInTags" else "inRanges", operand.text, try std.mem.join(ctx.allocator, ", ", encoded.items),
+            }));
             if (self.profile.hasCalls()) test_primitive = try ctx.fmt("(.memory {s})", .{test_primitive});
             const register = 3 * self.instructions.len + self.slice_guard_count + index * maximum_switch_ranges + ordinal;
             const bool_ty = if (self.profile == .scalar) ".bool" else "(.scalar .bool)";
-            code = try ctx.fmt("(.bind {d} {s} {s}\n  (.branch (.local {d})\n    {s}\n    {s}))", .{
-                register, bool_ty, test_primitive, register, selected, code,
-            });
+            if (self.options.call_machine) {
+                const branch = try self.branchText(try ctx.fmt("(.local {d})", .{register}), selected, code);
+                code = try self.prepend(.{ .id = register, .ty = bool_ty, .child = test_primitive }, branch);
+            } else {
+                code = try ctx.fmt("(.bind {d} {s} {s}\n  (.branch (.local {d})\n    {s}\n    {s}))", .{
+                    register, bool_ty, test_primitive, register, selected, code,
+                });
+            }
         }
         return code;
     }
@@ -1009,9 +1025,15 @@ pub const Decoder = struct {
                 try ctx.fields(inst, base ++ "lhs rhs");
                 const left = try self.reference(try ctx.field(inst, "lhs"), env, self.profile != .scalar);
                 const right = try self.reference(try ctx.field(inst, "rhs"), env, self.profile != .scalar);
-                try ctx.require(Ty.same(left.ty, right.ty) and left.ty.* == .int and ty.* == .boolean, "ill-typed AIR comparison");
+                try ctx.require(Ty.same(left.ty, right.ty) and ty.* == .boolean, "ill-typed AIR comparison");
                 const op = if (eq(u8, tag, "cmp_eq")) "eq" else if (eq(u8, tag, "cmp_neq")) "ne" else if (eq(u8, tag, "cmp_lt")) "lt" else if (eq(u8, tag, "cmp_lte")) "le" else if (eq(u8, tag, "cmp_gt")) "gt" else "ge";
-                primitive = try self.scalarPrimitive(try ctx.fmt("(.comparison .{s} {s} {s})", .{ op, left.text, right.text }));
+                if (left.ty.isRuntimeEnum()) {
+                    try ctx.require(eq(u8, op, "eq") or eq(u8, op, "ne"), "enum comparison requires equality or inequality");
+                    primitive = try self.scalarPrimitive(try ctx.fmt("(.compareEnum {s} {s} {s})", .{ c.boolText(eq(u8, op, "eq")), left.text, right.text }));
+                } else {
+                    try ctx.require(left.ty.* == .int, "comparison requires integer or declared enum operands");
+                    primitive = try self.scalarPrimitive(try ctx.fmt("(.comparison .{s} {s} {s})", .{ op, left.text, right.text }));
+                }
             } else if (c.oneOf(tag, &.{ "int_cast", "int_cast_safe", "bit_cast", "trunc" })) {
                 try ctx.fields(inst, base ++ "operand");
                 const source = try self.reference(try ctx.field(inst, "operand"), env, self.profile != .scalar);

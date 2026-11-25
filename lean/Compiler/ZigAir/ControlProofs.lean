@@ -58,8 +58,7 @@ theorem eval_eq_embed (code : Code) (args : List Value) (env : Env) :
     | error reason => simp [Control.Code.eval, controlSemantics, reference, h, embed]
     | ok value =>
       cases value with
-      | int s n x => simp [Control.Code.eval, controlSemantics, reference, h, embed]
-      | unit => simp [Control.Code.eval, controlSemantics, reference, h, embed]
+      | int | enumTag | unit => simp [Control.Code.eval, controlSemantics, reference, h, embed]
       | bool flag =>
         cases flag with
         | false => simpa [Control.Code.eval, controlSemantics, reference, h] using ihNo env

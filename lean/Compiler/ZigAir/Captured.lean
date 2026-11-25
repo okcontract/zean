@@ -83,15 +83,13 @@ private def identityName (raw : Raw) : Option String := do
     hash.toList.all (fun ch => ch.isDigit || ('a' ≤ ch && ch ≤ 'f')))
   pure name
 
-/-- Inactive enum storage has its complete captured tag table checked. The
-nominal record supplies extent and alignment to its enclosing owner. -/
-private def opaqueEnum (raw : Raw) : Option Ty := do
+private def enumDeclaration (raw : Raw) : Option Scalar.EnumDecl := do
   let name ← identityName raw
+  let identity ← raw.get "identity"
   let backing ← raw.get "backingType"
   let bits ← backing.natAt "bits"
   require ((← backing.textAt "kind") == "int" && (← backing.textAt "signedness") == "unsigned" &&
     0 < bits && bits ≤ 64 && !(← raw.boolAt "nonexhaustive"))
-  let size := if bits ≤ 8 then 1 else if bits ≤ 16 then 2 else if bits ≤ 32 then 4 else 8
   let fields ← raw.listAt "fields"
   require (!fields.isEmpty && fields.length ≤ 256)
   let tags ← fields.zipIdx |>.mapM fun (field, index) => do
@@ -100,8 +98,33 @@ private def opaqueEnum (raw : Raw) : Option Ty := do
     require ((← field.natAt "index") == index && !name.isEmpty && value < 2 ^ bits)
     pure (name, value)
   require (decide (tags.Pairwise fun left right => left.1 ≠ right.1 ∧ left.2 ≠ right.2))
-  let type := Ty.record ("enum:" ++ name) ⟨size, size⟩
+  pure ⟨name, ← identity.textAt "sourceFile", ← identity.textAt "sourceSha256", bits, tags⟩
+
+/-- Inactive enum storage supplies extent and alignment to its enclosing owner. -/
+private def opaqueEnum (raw : Raw) : Option Ty := do
+  let decl ← enumDeclaration raw
+  let size := if decl.width ≤ 8 then 1 else if decl.width ≤ 16 then 2 else if decl.width ≤ 32 then 4 else 8
+  let type := Ty.record ("enum:" ++ decl.name) ⟨size, size⟩
   layoutMatches (← raw.get "layout") type
+  pure type
+
+private def enumText (value : String) : Bool :=
+  value.utf8ByteSize ≤ 1024 && value.toList.all (fun char => 32 ≤ char.toNat && char.toNat != 127)
+
+private def finiteEnum (raw : Raw) : Option Ty := do
+  let .object properties := raw | none
+  require (properties.length == 6)
+  let .object identity ← raw.get "identity" | none
+  let .object backing ← raw.get "backingType" | none
+  let abi@(.object layout) ← raw.get "layout" | none
+  require (identity.length == 3 && backing.length == 3 && layout.length == 3)
+  let fields ← raw.listAt "fields"
+  require (fields.length ≤ 64 && fields.all (fun field => match field with
+    | .object properties => properties.length == 3 | _ => false))
+  let decl ← enumDeclaration raw
+  require (enumText decl.name && enumText decl.sourceFile && decl.tags.all (enumText ∘ Prod.fst))
+  let type := Ty.scalar (.enumeration decl)
+  layoutMatches abi type
   pure type
 
 /-- Zero-storage declarations have no heap fields. Only validated automatic
@@ -178,6 +201,7 @@ def typeOf : Nat → Raw → Option Ty
       layoutMatches (← raw.get "layout") ty
       pure ty
     | "enum" => opaqueEnum raw
+    | "finiteEnum" => finiteEnum raw
     | "struct" =>
       require (["auto", "extern"].contains (← raw.textAt "containerLayout"))
       let identity ← raw.get "identity"
@@ -220,6 +244,13 @@ def reference (raw : Raw) : Option Ref := do
   match kind with
   | "instruction" => pure (.local (← raw.natAt "index"))
   | "unit" => pure (.constant (.scalar .unit))
+  | "enumTag" => do
+    let .object fields := raw | none
+    require (fields.length == 3)
+    let .enumeration decl ← scalarType (← raw.get "type") | none
+    let tag ← raw.natAt "value"
+    require (decl.hasTag tag)
+    pure (.constant (.scalar (.enumTag decl tag)))
   | "errorValue" | "errorStatus" => do
     let .object fields := raw | none
     let .errorValue status allowed ← typeOf 17 (← raw.get "type") | none
@@ -235,7 +266,7 @@ def reference (raw : Raw) : Option Ref := do
     let value ← match ty with
       | .int signed bits => pure (Scalar.Value.int signed bits n)
       | .bool => do require (n == 0 || n == 1); pure (.bool (n == 1))
-      | .unit => none
+      | .unit | .enumeration _ => none
     require value.valid
     pure (.constant (.scalar value))
   | _ => none
@@ -279,18 +310,39 @@ private def instruction (table : List Raw) (operand : Raw) : Option Raw := do
   require ((← operand.textAt "kind") == "instruction")
   table[← operand.natAt "index"]?
 
-private def referenceType (table : List Raw) (operand : Raw) : Option Ty := do
-  if (← operand.textAt "kind") == "unit" then return .scalar .unit
+private def referenceTypeRaw (table : List Raw) (operand : Raw) : Option Raw := do
   let typed ← if (← operand.textAt "kind") == "instruction" then instruction table operand
     else some operand
-  typeOf 17 (← typed.get "type")
+  typed.get "type"
+
+private def referenceType (table : List Raw) (operand : Raw) : Option Ty := do
+  if (← operand.textAt "kind") == "unit" then return .scalar .unit
+  typeOf 17 (← referenceTypeRaw table operand)
+
+private def enumOperand (table : List Raw) (operand : Raw) : Bool :=
+  (referenceTypeRaw table operand >>= (·.textAt "kind")) == some "finiteEnum"
 
 private def binary (inst : Raw) (operation : Ref → Ref → Prim) : Option Prim := do
   pure (operation (← reference (← inst.get "lhs")) (← reference (← inst.get "rhs")))
 private def unary (inst : Raw) (operation : Ref → Prim) : Option Prim := do
   pure (operation (← reference (← inst.get "operand")))
-private def scalarBinary (inst : Raw) (operation : Scalar.Ref → Scalar.Ref → Scalar.Prim) : Option Prim := do
-  pure (.scalar (operation (← scalarRef (← inst.get "lhs")) (← scalarRef (← inst.get "rhs"))))
+private def scalarBinary (table : List Raw) (inst : Raw)
+    (operation : Scalar.Ref → Scalar.Ref → Scalar.Prim) : Option Prim := do
+  let left ← inst.get "lhs"
+  let right ← inst.get "rhs"
+  require (!enumOperand table left && !enumOperand table right &&
+    (← (← inst.get "type").textAt "kind") != "finiteEnum")
+  pure (.scalar (operation (← scalarRef left) (← scalarRef right)))
+
+private def compare (table : List Raw) (inst : Raw) (op : Scalar.Comparison) : Option Prim := do
+  let left ← inst.get "lhs"
+  let right ← inst.get "rhs"
+  if enumOperand table left || enumOperand table right then
+    let .scalar (.enumeration decl) ← referenceType table left | none
+    require ((op == .eq || op == .ne) && referenceType table right == some (.scalar (.enumeration decl)) &&
+      (← typeOf 17 (← inst.get "type")) == .scalar .bool)
+    pure (.scalar (.compareEnum (op == .eq) (← scalarRef left) (← scalarRef right)))
+  else scalarBinary table inst (.comparison op)
 
 private def byteTransfer (table : List Raw) (inst : Raw) (operation : Ref → Ref → Prim) : Option Prim := do
   let destination ← referenceType table (← inst.get "lhs")
@@ -308,6 +360,7 @@ private def byteTransfer (table : List Raw) (inst : Raw) (operation : Ref → Re
 private def undefinedFill (table : List Raw) (inst : Raw) : Option Prim := do
   let destination ← inst.get "lhs"
   let .slice true (.scalar element) ← referenceType table destination | none
+  match element with | .enumeration _ => none | _ => pure ()
   let element := Ty.scalar element
   let layout ← element.layout
   let fill@(.object fields) ← inst.get "rhs" | none
@@ -415,34 +468,34 @@ def primitive (parameters : List Nat) (inst : Raw) (table : List Raw := []) : Op
     require (fieldType field.owner field.offset == some child &&
       (← typeOf 17 (← inst.get "type")) == .pointer field.writable false child)
     pure (.fieldPointer field.reference field.offset)
-  | "add" => scalarBinary inst (.arithmetic .add .unchecked)
-  | "sub" => scalarBinary inst (.arithmetic .sub .unchecked)
-  | "mul" => scalarBinary inst (.arithmetic .mul .unchecked)
-  | "add_safe" => scalarBinary inst (.arithmetic .add .checked)
-  | "sub_safe" => scalarBinary inst (.arithmetic .sub .checked)
-  | "mul_safe" => scalarBinary inst (.arithmetic .mul .checked)
-  | "add_wrap" => scalarBinary inst (.arithmetic .add .wrapping)
-  | "sub_wrap" => scalarBinary inst (.arithmetic .sub .wrapping)
-  | "mul_wrap" => scalarBinary inst (.arithmetic .mul .wrapping)
+  | "add" => scalarBinary table inst (.arithmetic .add .unchecked)
+  | "sub" => scalarBinary table inst (.arithmetic .sub .unchecked)
+  | "mul" => scalarBinary table inst (.arithmetic .mul .unchecked)
+  | "add_safe" => scalarBinary table inst (.arithmetic .add .checked)
+  | "sub_safe" => scalarBinary table inst (.arithmetic .sub .checked)
+  | "mul_safe" => scalarBinary table inst (.arithmetic .mul .checked)
+  | "add_wrap" => scalarBinary table inst (.arithmetic .add .wrapping)
+  | "sub_wrap" => scalarBinary table inst (.arithmetic .sub .wrapping)
+  | "mul_wrap" => scalarBinary table inst (.arithmetic .mul .wrapping)
   | "div_trunc" =>
     let .scalar (.int false width) ← typeOf 17 (← inst.get "type") | none
     let type := Ty.scalar (.int false width)
     require (width > 0 && referenceType table (← inst.get "lhs") == some type &&
       referenceType table (← inst.get "rhs") == some type)
-    scalarBinary inst .divideUnsigned
-  | "bit_and" => scalarBinary inst .bitAnd
-  | "bit_or" => scalarBinary inst .bitOr
-  | "xor" => scalarBinary inst .bitXor
-  | "shr" => scalarBinary inst .shiftRight
-  | "shl" => scalarBinary inst .shiftLeft
-  | "min" => scalarBinary inst (.extremum false)
-  | "max" => scalarBinary inst (.extremum true)
-  | "cmp_eq" => scalarBinary inst (.comparison .eq)
-  | "cmp_neq" => scalarBinary inst (.comparison .ne)
-  | "cmp_lt" => scalarBinary inst (.comparison .lt)
-  | "cmp_lte" => scalarBinary inst (.comparison .le)
-  | "cmp_gt" => scalarBinary inst (.comparison .gt)
-  | "cmp_gte" => scalarBinary inst (.comparison .ge)
+    scalarBinary table inst .divideUnsigned
+  | "bit_and" => scalarBinary table inst .bitAnd
+  | "bit_or" => scalarBinary table inst .bitOr
+  | "xor" => scalarBinary table inst .bitXor
+  | "shr" => scalarBinary table inst .shiftRight
+  | "shl" => scalarBinary table inst .shiftLeft
+  | "min" => scalarBinary table inst (.extremum false)
+  | "max" => scalarBinary table inst (.extremum true)
+  | "cmp_eq" => compare table inst .eq
+  | "cmp_neq" => compare table inst .ne
+  | "cmp_lt" => compare table inst .lt
+  | "cmp_lte" => compare table inst .le
+  | "cmp_gt" => compare table inst .gt
+  | "cmp_gte" => compare table inst .ge
   | "int_cast" | "int_cast_safe" | "bit_cast" | "trunc" =>
     let kind ← match ← inst.textAt "tag" with
       | "int_cast" => pure Scalar.Cast.unchecked
@@ -452,6 +505,7 @@ def primitive (parameters : List Nat) (inst : Raw) (table : List Raw := []) : Op
       | _ => none
     let destination ← scalarType (← inst.get "type")
     let operand ← inst.get "operand"
+    require (!enumOperand table operand && (match destination with | .enumeration _ => false | _ => true))
     let ref ← scalarRef operand
     if kind == .bitcast && destination == .int false 1 &&
         referenceType table operand == some (.scalar .bool) then
@@ -553,9 +607,12 @@ private def copyLengthCheck (table : List Raw) (inst : Raw) : Option (Option Pri
     pure none
 
 private def switchBound (type : Scalar.Ty) (raw : Raw) : Option Int := do
-  let .constant (.int signed bits value) ← scalarRef raw | none
-  require (type == .int signed bits)
-  pure value
+  let .constant value ← scalarRef raw | none
+  require (type == value.type)
+  match value with
+  | .int _ _ number => pure number
+  | .enumTag _ tag => pure tag
+  | _ => none
 
 private def switchArms (type : Scalar.Ty) (inst : Raw) :
     Option (List (List (Int × Int) × List Raw)) := do
@@ -568,7 +625,7 @@ private def switchArms (type : Scalar.Ty) (inst : Raw) :
       let [lower, upper] ← raw.list | none
       let low ← switchBound type lower
       let high ← switchBound type upper
-      require (low ≤ high)
+      require (match type with | .enumeration _ => low == high | _ => decide (low ≤ high))
       pure (low, high)
     pure (ranges, ← arm.listAt "body")
   let allRanges := decoded.flatMap Prod.fst
@@ -627,18 +684,20 @@ def bodyWith (lift : Prim → P) (operation : Raw → Option P) (loops : Bool)
       | "switch_br" => do
         require (tail.isEmpty && (← (← inst.get "type").textAt "kind") == "noreturn")
         let operand ← inst.get "operand"
-        let .scalar (.int signed bits) ← referenceType table operand | none
-        require (bits > 0)
+        let .scalar type ← referenceType table operand | none
+        require (match type with | .int _ bits => decide (bits > 0) | .enumeration _ => true | _ => false)
         let ref ← scalarRef operand
-        let arms ← switchArms (.int signed bits) inst
+        let arms ← switchArms type inst
         let fallback ← bodyWith lift operation loops table guards fuel (← inst.listAt "elseBody")
         let decoded ← arms.zipIdx.mapM fun ((ranges, body), ordinal) => do
           let register := 3 * table.length + guards.length + id * 256 + ordinal
           let selected ← bodyWith lift operation loops table guards fuel body
           pure (register, ranges, selected)
         pure (decoded.foldr (fun (register, ranges, selected) rest =>
-          .bind register (.scalar .bool) (lift (.scalar (.inRanges ref ranges)))
-            (.branch (.local register) selected rest)) fallback)
+          let condition := match type with
+            | .enumeration _ => Scalar.Prim.enumInTags ref (ranges.map (fun range => range.1.toNat))
+            | _ => Scalar.Prim.inRanges ref ranges
+          .bind register (.scalar .bool) (lift (.scalar condition)) (.branch (.local register) selected rest)) fallback)
       | "try" | "try_cold" => do
         require ((← typeOf 17 (← inst.get "type")) == .scalar .unit)
         let operand ← inst.get "operand"

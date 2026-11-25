@@ -12,8 +12,20 @@ The structured program is finite, so evaluation needs no fuel or partial def.
 Source-to-AIR and native backend preservation are separate obligations. -/
 namespace Compiler.ZigAir.Scalar
 
+structure EnumDecl where
+  name : String
+  sourceFile : String
+  sourceDigest : String
+  width : Nat
+  tags : List (String × Nat)
+  deriving DecidableEq, Repr
+
+def EnumDecl.hasTag (decl : EnumDecl) (tag : Nat) : Bool :=
+  decl.tags.any (fun entry => entry.2 == tag)
+
 inductive Ty where
   | int (signed : Bool) (width : Nat)
+  | enumeration (decl : EnumDecl)
   | bool | unit
   deriving DecidableEq, Repr
 
@@ -30,17 +42,20 @@ def Ty.contains (t : Ty) (x : Int) : Bool := decide (t.lower ≤ x ∧ x < t.upp
 
 inductive Value where
   | int (signed : Bool) (width : Nat) (value : Int)
+  | enumTag (decl : EnumDecl) (tag : Nat)
   | bool (value : Bool)
   | unit
   deriving DecidableEq, Repr
 
 def Value.type : Value → Ty
   | .int s n _ => .int s n
+  | .enumTag decl _ => .enumeration decl
   | .bool _ => .bool
   | .unit => .unit
 
 def Value.valid : Value → Bool
   | .int s n x => (Ty.int s n).contains x
+  | .enumTag decl tag => decl.hasTag tag
   | _ => true
 
 def Value.hasType (value : Value) (t : Ty) : Bool := decide (value.type = t) && value.valid
@@ -113,6 +128,8 @@ inductive Prim where
   | shiftLeft (left right : Ref)
   | boolToInt (operand : Ref)
   | comparison (op : Comparison) (left right : Ref)
+  | compareEnum (equal : Bool) (left right : Ref)
+  | enumInTags (operand : Ref) (tags : List Nat)
   | inRanges (operand : Ref) (ranges : List (Int × Int))
   | cast (op : Cast) (destination : Ty) (operand : Ref)
   deriving DecidableEq, Repr
@@ -137,6 +154,13 @@ def Prim.eval (prim : Prim) (args : List Value) (env : Env) : Result := do
     let .int s n x ← left.eval env | .error .malformed
     let .int t m y ← right.eval env | .error .malformed
     if s = t ∧ n = m then .ok (.bool (op.eval x y)) else .error .malformed
+  | .compareEnum equal left right =>
+    let .enumTag leftDecl leftTag ← left.eval env | .error .malformed
+    let .enumTag rightDecl rightTag ← right.eval env | .error .malformed
+    if leftDecl = rightDecl then .ok (.bool ((leftTag == rightTag) == equal)) else .error .malformed
+  | .enumInTags operand tags =>
+    let .enumTag _ tag ← operand.eval env | .error .malformed
+    .ok (.bool (tags.contains tag))
   | .inRanges operand ranges =>
     let .int _ _ value ← operand.eval env | .error .malformed
     .ok (.bool (ranges.any fun (low, high) => low ≤ value && value ≤ high))

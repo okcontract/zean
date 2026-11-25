@@ -154,7 +154,7 @@ obligation, so an opaque helper's Boolean result contract is sufficient. -/
       cases value with
       | scalar scalar => cases scalar with
         | bool flag => exact False.elim (typed rfl)
-        | int | unit => rfl
+        | int | enumTag | unit => rfl
       | _ => rfl
     rw [choice]
     exact h.2 typed

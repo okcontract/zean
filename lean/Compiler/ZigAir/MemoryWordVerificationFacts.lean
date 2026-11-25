@@ -15,7 +15,7 @@ theorem Value.word_value (value : Value) (typed : value.hasType WordArray.word =
   cases value with
   | scalar value =>
     cases value with
-    | unit | bool => simp [Value.type, Scalar.Value.type, WordArray.word] at same
+    | unit | bool | enumTag => simp [Value.type, Scalar.Value.type, WordArray.word] at same
     | int signed width number =>
       simp only [Value.type, Scalar.Value.type, WordArray.word, Ty.scalar.injEq, Scalar.Ty.int.injEq] at same
       obtain ⟨rfl, rfl⟩ := same

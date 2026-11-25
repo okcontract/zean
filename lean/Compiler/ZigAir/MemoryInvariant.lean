@@ -40,6 +40,9 @@ theorem layout_alignment_positive (type : Ty) (layout : Layout)
     | int signed width =>
       unfold Ty.layout Ty.leafLayout at shaped
       split at shaped <;> simp_all <;> subst layout <;> decide
+    | enumeration decl =>
+      simp only [Ty.layout, Ty.leafLayout] at shaped
+      split at shaped <;> cases shaped <;> decide
     | bool => cases shaped; decide
     | unit => cases shaped; decide
   | optionalScalar child =>
@@ -48,7 +51,7 @@ theorem layout_alignment_positive (type : Ty) (layout : Layout)
       cases signed <;> simp only [Ty.layout, Ty.leafLayout] at shaped
       · split at shaped <;> simp_all <;> subst layout <;> decide
       · split at shaped <;> simp_all <;> subst layout <;> decide
-    | bool | unit => cases shaped
+    | bool | unit | enumeration _ => cases shaped
   | optionalObject child captured =>
     have checked : ∀ payload, optionalLayout payload captured = some layout → 0 < layout.alignment := by
       intro payload accepted

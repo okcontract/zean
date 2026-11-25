@@ -93,10 +93,39 @@ pub const Ty = union(enum) {
     slice: struct { mutable: bool, child: *const Ty },
     array: struct { len: u64, child: *const Ty },
     aligned: struct { alignment: u64, child: *const Ty },
-    // Opaque storage for inactive enum fields. Runtime enum values and their
-    // loads, stores and conversions remain outside this vocabulary.
-    enumeration: struct { declaration: Value, name: []const u8, size: u64, alignment: u64 },
+    enumeration: Enumeration,
     structure: struct { name: []const u8, source: []const u8, sha: []const u8, size: u64, alignment: u64, fields: []const Field },
+
+    pub const Enumeration = struct {
+        declaration: Value,
+        name: []const u8,
+        source: []const u8,
+        sha: []const u8,
+        bits: u16,
+        size: u64,
+        alignment: u64,
+        // Only finite runtime declarations carry evaluated tags. Other enum
+        // fields remain opaque nominal storage.
+        tags: []const Tag,
+
+        const Tag = struct { name: []const u8, value: u8 };
+
+        pub fn hasTag(self: Enumeration, value: u8) bool {
+            for (self.tags) |tag| if (tag.value == value) return true;
+            return false;
+        }
+
+        pub fn leanDeclaration(self: Enumeration, ctx: *Context) Error![]const u8 {
+            const tags = try ctx.allocator.alloc([]const u8, self.tags.len);
+            for (self.tags, tags) |tag, *encoded| {
+                encoded.* = try ctx.fmt("({s}, {d})", .{ try ctx.json(tag.name), tag.value });
+            }
+            return ctx.fmt("⟨{s}, {s}, {s}, {d}, [{s}]⟩", .{
+                try ctx.json(self.name),                     try ctx.json(self.source), try ctx.json(self.sha), self.bits,
+                try std.mem.join(ctx.allocator, ", ", tags),
+            });
+        }
+    };
     pub const ErrorValue = struct {
         result: bool,
         names: []const []const u8,
@@ -155,6 +184,9 @@ pub const Ty = union(enum) {
     pub fn isInt(self: *const Ty, signed: bool, bits: u16) bool {
         return self.* == .int and self.int.signed == signed and self.int.bits == bits;
     }
+    pub fn isRuntimeEnum(self: *const Ty) bool {
+        return self.* == .enumeration and self.enumeration.tags.len != 0;
+    }
     pub fn raw(self: *const Ty) *const Ty {
         return if (self.* == .aligned) self.aligned.child else self;
     }
@@ -203,7 +235,10 @@ pub const Ty = union(enum) {
             .slice => |v| ctx.fmt("(.slice {s} {s})", .{ c.boolText(v.mutable), try v.child.lean(ctx, .memory) }),
             .array => |v| ctx.fmt("(.array {d} {s})", .{ v.len, try v.child.lean(ctx, .memory) }),
             .aligned => |v| v.child.lean(ctx, profile),
-            .enumeration => |v| ctx.fmt("(.record {s} ⟨{d}, {d}⟩)", .{ try ctx.json(try ctx.fmt("enum:{s}", .{v.name})), v.size, v.alignment }),
+            .enumeration => |v| if (self.isRuntimeEnum()) blk: {
+                const scalar = try ctx.fmt("(.enumeration {s})", .{try v.leanDeclaration(ctx)});
+                break :blk if (profile == .scalar) scalar else ctx.fmt("(.scalar {s})", .{scalar});
+            } else ctx.fmt("(.record {s} ⟨{d}, {d}⟩)", .{ try ctx.json(try ctx.fmt("enum:{s}", .{v.name})), v.size, v.alignment }),
             .structure => |v| blk: {
                 const ordered = try ctx.allocator.dupe(Field, v.fields);
                 std.mem.sort(Field, ordered, {}, struct {
@@ -216,7 +251,10 @@ pub const Ty = union(enum) {
                     if (field.ty != .stored) continue;
                     const ty = field.ty.stored;
                     const child = try ty.lean(ctx, .memory);
-                    const term = if (ty.* == .int or ty.* == .unit or ty.* == .boolean) child else try ctx.fmt("(.object {s})", .{child});
+                    const term = if (ty.* == .int or ty.* == .unit or ty.* == .boolean or ty.isRuntimeEnum())
+                        child
+                    else
+                        try ctx.fmt("(.object {s})", .{child});
                     try pieces.append(ctx.allocator, try ctx.fmt("({d}, {s})", .{ field.offset, term }));
                 }
                 break :blk ctx.fmt("(.aggregate {s} ⟨{d}, {d}⟩ [{s}])", .{ try ctx.json(v.name), v.size, v.alignment, try std.mem.join(ctx.allocator, ", ", pieces.items) });
@@ -333,6 +371,59 @@ fn errorNames(ctx: *Context, value: Value) Error![]const []const u8 {
     return names;
 }
 
+fn parseEnum(ctx: *Context, value: Value, runtime: bool, depth: usize) Error!*const Ty {
+    try ctx.fields(value, "kind identity backingType layout nonexhaustive fields");
+    const identity = try ctx.field(value, "identity");
+    try ctx.fields(identity, "name sourceFile sourceSha256");
+    const name = try ctx.str(try ctx.field(identity, "name"));
+    const source = try ctx.str(try ctx.field(identity, "sourceFile"));
+    const sha = try ctx.str(try ctx.field(identity, "sourceSha256"));
+    try ctx.require(name.len > 0 and source.len > 0 and c.isDigest(sha), "unsupported enum identity");
+    if (runtime) {
+        try checkEnumText(ctx, name);
+        try checkEnumText(ctx, source);
+    }
+    const backing = try parse(ctx, try ctx.field(value, "backingType"), .scalar, depth + 1);
+    try ctx.require(backing.* == .int and !backing.int.signed and backing.int.bits > 0 and backing.int.bits <= 64 and
+        c.flag(value, "nonexhaustive", false), "unsupported enum backing type");
+    const bits = backing.int.bits;
+    if (runtime) try ctx.require(bits >= 2 and bits <= 8, "runtime enum requires a byte-sized backing type");
+    const size: u64 = if (bits <= 8) 1 else if (bits <= 16) 2 else if (bits <= 32) 4 else 8;
+    try checkLayout(ctx, try ctx.field(value, "layout"), .{ size, size });
+    const fields = try ctx.array(try ctx.field(value, "fields"));
+    const limit: usize = if (runtime) 64 else 256;
+    try ctx.require(fields.len > 0 and fields.len <= limit, "unsupported enum tag count");
+    const tags = try ctx.allocator.alloc(Ty.Enumeration.Tag, if (runtime) fields.len else 0);
+    for (fields, 0..) |field, index| {
+        try ctx.fields(field, "index name value");
+        const tag_name = try ctx.str(try ctx.field(field, "name"));
+        const tag_value = try ctx.nat(try ctx.field(field, "value"), std.math.maxInt(u64));
+        try ctx.require(try ctx.nat(try ctx.field(field, "index"), 255) == index and tag_name.len > 0 and
+            tag_value < (@as(u128, 1) << @intCast(bits)), "invalid enum tag");
+        for (fields[0..index]) |previous| try ctx.require(!c.equal(try ctx.field(previous, "name"), try ctx.field(field, "name")) and
+            !c.equal(try ctx.field(previous, "value"), try ctx.field(field, "value")), "duplicate enum tag");
+        if (runtime) {
+            try checkEnumText(ctx, tag_name);
+            tags[index] = .{ .name = tag_name, .value = @intCast(tag_value) };
+        }
+    }
+    return ctx.make(Ty, .{ .enumeration = .{
+        .declaration = value,
+        .name = name,
+        .source = source,
+        .sha = sha,
+        .bits = bits,
+        .size = size,
+        .alignment = size,
+        .tags = tags,
+    } });
+}
+
+fn checkEnumText(ctx: *Context, value: []const u8) Error!void {
+    try ctx.require(value.len <= 1024 and std.unicode.utf8ValidateSlice(value), "unsupported enum declaration text");
+    for (value) |byte| try ctx.require(!std.ascii.isControl(byte), "unsupported enum declaration control character");
+}
+
 pub fn parse(ctx: *Context, value: Value, profile: Profile, depth: usize) Error!*const Ty {
     if (depth > 16 or value != .object) return ctx.fail("type depth or shape", .{});
     if (c.tag(value, "kind", "int")) {
@@ -360,28 +451,8 @@ pub fn parse(ctx: *Context, value: Value, profile: Profile, depth: usize) Error!
         try checkLayout(ctx, try ctx.field(value, "layout"), try result.layout(ctx));
         return result;
     }
-    if (profile != .scalar and depth > 0 and c.tag(value, "kind", "enum")) {
-        try ctx.fields(value, "kind identity backingType layout nonexhaustive fields");
-        const identity = try ctx.field(value, "identity");
-        try ctx.fields(identity, "name sourceFile sourceSha256");
-        const name = try ctx.str(try ctx.field(identity, "name"));
-        try ctx.require(name.len > 0 and (try ctx.str(try ctx.field(identity, "sourceFile"))).len > 0 and c.isDigest(try ctx.str(try ctx.field(identity, "sourceSha256"))), "unsupported enum identity");
-        const backing = try parse(ctx, try ctx.field(value, "backingType"), .scalar, depth + 1);
-        try ctx.require(backing.* == .int and !backing.int.signed and backing.int.bits > 0 and backing.int.bits <= 64 and c.flag(value, "nonexhaustive", false), "unsupported opaque enum backing type");
-        const bits = backing.int.bits;
-        const size: u64 = if (bits <= 8) 1 else if (bits <= 16) 2 else if (bits <= 32) 4 else 8;
-        try checkLayout(ctx, try ctx.field(value, "layout"), .{ size, size });
-        const fields = try ctx.array(try ctx.field(value, "fields"));
-        try ctx.require(fields.len > 0 and fields.len <= 256, "unsupported enum tag count");
-        for (fields, 0..) |field, index| {
-            try ctx.fields(field, "index name value");
-            const tag_name = try ctx.str(try ctx.field(field, "name"));
-            const tag_value = try ctx.nat(try ctx.field(field, "value"), std.math.maxInt(u64));
-            try ctx.require(try ctx.nat(try ctx.field(field, "index"), 255) == index and tag_name.len > 0 and tag_value < (@as(u128, 1) << @intCast(bits)), "invalid enum tag");
-            for (fields[0..index]) |previous| try ctx.require(!c.equal(try ctx.field(previous, "name"), try ctx.field(field, "name")) and !c.equal(try ctx.field(previous, "value"), try ctx.field(field, "value")), "duplicate enum tag");
-        }
-        return ctx.make(Ty, .{ .enumeration = .{ .declaration = value, .name = name, .size = size, .alignment = size } });
-    }
+    if (c.tag(value, "kind", "finiteEnum")) return parseEnum(ctx, value, true, depth);
+    if (profile != .scalar and depth > 0 and c.tag(value, "kind", "enum")) return parseEnum(ctx, value, false, depth);
     // Memory registers carry scalar values, pointers and slices. Complete record
     // layouts are also needed behind those pointers, without admitting records
     // as evaluated values outside the aggregate vocabulary.

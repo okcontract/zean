@@ -114,6 +114,10 @@ test "void-payload error unions keep checked try branches and named errors" {
     try @import("error_status.zig").controls();
 }
 
+test "enum comparisons and switches check declared tags and identities" {
+    try @import("enum_tags.zig").controls();
+}
+
 test "counter regeneration compares complete programs and admits only replayed imports" {
     try @import("tutorial_replay.zig").controls();
 }

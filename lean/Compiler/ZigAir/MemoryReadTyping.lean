@@ -12,7 +12,7 @@ theorem Value.boolean_value (value : Value) (typed : value.hasType (.scalar .boo
   cases value with
   | scalar scalar => cases scalar with
     | bool flag => exact ⟨flag, rfl⟩
-    | int | unit => simp [Value.type, Scalar.Value.type] at same
+    | int | enumTag | unit => simp [Value.type, Scalar.Value.type] at same
   | errorValue | optionalScalar | optionalObject => simp [Value.type] at same
   | pointer type address =>
     change type = .scalar .bool at same
@@ -31,7 +31,7 @@ theorem Value.unsigned_value (value : Value) (width : Nat)
   cases value with
   | scalar value =>
     cases value with
-    | unit | bool => simp [Value.type, Scalar.Value.type] at same
+    | unit | bool | enumTag => simp [Value.type, Scalar.Value.type] at same
     | int signed bits number =>
       simp only [Value.type, Scalar.Value.type, Ty.scalar.injEq, Scalar.Ty.int.injEq] at same
       obtain ⟨rfl, rfl⟩ := same
