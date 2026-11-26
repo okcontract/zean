@@ -189,7 +189,8 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
     const original = try ctx.fmt(
         \\import Compiler.ZigAir.Captured
         \\open Compiler.ZigAir Compiler.ZigAir.MemoryAir Compiler.ZigAir.Memory
-        \\def readField : Program := {s}
+        \\def readField : Program :=
+        \\{s}
         \\{s}
         \\def pair : Ty := .aggregate "fixture.Pair" ⟨16, 8⟩ [(0, .scalar (.int false 64)), (8, .scalar (.int false 64))]
         \\def heap : State := ⟨[(0, ⟨8, pair, [(0, .scalar (.int false 64 42))], true, false⟩)], 1, 24⟩
@@ -201,12 +202,12 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
     const with_enum = try f.load(ctx.allocator, enum_owner);
     var parts: std.ArrayList([]const u8) = .empty;
     try parts.append(ctx.allocator, original);
-    try parts.append(ctx.allocator, try ctx.fmt("def readWithEnum : Program := {s}\n{s}\n", .{ try z.air.decode(ctx, with_enum, .memory), try z.certificate.declaration(ctx, with_enum, "readWithEnum", false) }));
+    try parts.append(ctx.allocator, try ctx.fmt("def readWithEnum : Program :=\n{s}\n{s}\n", .{ try z.air.decode(ctx, with_enum, .memory), try z.certificate.declaration(ctx, with_enum, "readWithEnum", false) }));
     for (invalid_enums) |invalid| try parts.append(ctx.allocator, try ctx.fmt("example : Captured.typeOf 17 {s} = none := by decide +kernel\n", .{try z.certificate.lift(ctx, try f.load(ctx.allocator, invalid), 0)}));
     const with_zero = try f.load(ctx.allocator, zero_owner);
-    try parts.append(ctx.allocator, try ctx.fmt("def readWithZero : Program := {s}\n{s}\nexample : readWithZero = readField := rfl\n", .{ try z.air.decode(ctx, with_zero, .memory), try z.certificate.declaration(ctx, with_zero, "readWithZero", false) }));
+    try parts.append(ctx.allocator, try ctx.fmt("def readWithZero : Program :=\n{s}\n{s}\nexample : readWithZero = readField := rfl\n", .{ try z.air.decode(ctx, with_zero, .memory), try z.certificate.declaration(ctx, with_zero, "readWithZero", false) }));
     const checked = try f.load(ctx.allocator, unused_zero_projection);
-    try parts.append(ctx.allocator, try ctx.fmt("def checkZero : Program := {s}\n{s}\n", .{
+    try parts.append(ctx.allocator, try ctx.fmt("def checkZero : Program :=\n{s}\n{s}\n", .{
         try z.air.decode(ctx, checked, .memory), try z.certificate.declaration(ctx, checked, "checkZero", false),
     }));
     try parts.append(ctx.allocator,
@@ -217,7 +218,7 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
     for (invalid_zero_storage) |invalid|
         try parts.append(ctx.allocator, try ctx.fmt("example : Captured.decode false {s} = none := rfl\n", .{try z.certificate.lift(ctx, try f.load(ctx.allocator, invalid), 0)}));
     const conversion = try f.load(ctx.allocator, array_slice);
-    try parts.append(ctx.allocator, try ctx.fmt("def arraySlice : Program := {s}\n{s}\n", .{ try z.air.decode(ctx, conversion, .memory), try z.certificate.declaration(ctx, conversion, "arraySlice", false) }));
+    try parts.append(ctx.allocator, try ctx.fmt("def arraySlice : Program :=\n{s}\n{s}\n", .{ try z.air.decode(ctx, conversion, .memory), try z.certificate.declaration(ctx, conversion, "arraySlice", false) }));
     try parts.append(ctx.allocator,
         \\example : arraySlice.run [.pointer (.pointer false false (.array 3 (.scalar (.int false 8)))) ⟨4, 7⟩] ⟨[], 0, 1⟩ =
         \\    (.ok (.slice (.slice false (.scalar (.int false 8))) ⟨4, 7⟩ 3), ⟨[], 0, 1⟩) := rfl

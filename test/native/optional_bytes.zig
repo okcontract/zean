@@ -90,7 +90,7 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
     );
     for ([_]f.Value{ unwrapped, wrapped, present, absent }, [_][]const u8{ "unwrapped", "wrapped", "present", "absent" }) |fixture, name| {
         const raw = try f.load(ctx.allocator, fixture);
-        try parts.append(ctx.allocator, try ctx.fmt("def {s} : Program := {s}\n{s}\n", .{
+        try parts.append(ctx.allocator, try ctx.fmt("def {s} : Program :=\n{s}\n{s}\n", .{
             name, try z.air.decode(ctx, raw, .memory), try z.certificate.declaration(ctx, raw, name, false),
         }));
     }

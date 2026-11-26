@@ -952,23 +952,15 @@ pub const Decoder = struct {
             if (self.profile.hasCalls()) test_primitive = try ctx.fmt("(.memory {s})", .{test_primitive});
             const register = 3 * self.instructions.len + self.slice_guard_count + index * maximum_switch_ranges + ordinal;
             const bool_ty = if (self.profile == .scalar) ".bool" else "(.scalar .bool)";
-            if (self.options.call_machine) {
-                const branch = try self.branchText(try ctx.fmt("(.local {d})", .{register}), selected, code);
-                code = try self.prepend(.{ .id = register, .ty = bool_ty, .child = test_primitive }, branch);
-            } else {
-                code = try ctx.fmt("(.bind {d} {s} {s}\n  (.branch (.local {d})\n    {s}\n    {s}))", .{
-                    register, bool_ty, test_primitive, register, selected, code,
-                });
-            }
+            const branch = try self.branchText(try ctx.fmt("(.local {d})", .{register}), selected, code);
+            code = try self.prepend(.{ .id = register, .ty = bool_ty, .child = test_primitive }, branch);
         }
         if (defaultless) try ctx.require(checked.items.len == operand.ty.enumeration.tags.len, "defaultless enum switch must cover every declared tag");
         return code;
     }
 
     fn memoryUnreachable(self: *Decoder, index: usize) Error![]const u8 {
-        return self.ctx.fmt("(.bind {d} (.scalar .unit) {s} (.ret (.constant (.scalar .unit))))", .{
-            index, if (self.profile.hasCalls()) "(.memory .unreachable)" else ".unreachable",
-        });
+        return self.prepend(.{ .id = index, .ty = "(.scalar .unit)", .child = if (self.profile.hasCalls()) "(.memory .unreachable)" else ".unreachable" }, "(.ret (.constant (.scalar .unit)))");
     }
 
     fn body(self: *Decoder, indices_value: Value, incoming: Env, labels: Labels, depth: usize) Error![]const u8 {
@@ -977,17 +969,12 @@ pub const Decoder = struct {
 
     fn branchText(self: *Decoder, condition: []const u8, yes: []const u8, no: []const u8) Error![]const u8 {
         const ctx = self.ctx;
-        return if (self.options.call_machine)
-            ctx.fmt(".branch {s}\n  (\n{s}\n  )\n  (\n{s}\n  )", .{ condition, try indent(ctx, yes, 4), try indent(ctx, no, 4) })
-        else
-            ctx.fmt("(.branch {s}\n  {s}\n  {s})", .{ condition, yes, no });
+        return ctx.fmt(".branch {s}\n  (\n{s}\n  )\n  (\n{s}\n  )", .{ condition, try indent(ctx, yes, 4), try indent(ctx, no, 4) });
     }
 
     fn prepend(self: *Decoder, prefix: Prefix, rest: []const u8) Error![]const u8 {
         const ctx = self.ctx;
-        return if (!self.options.call_machine)
-            ctx.fmt("(.{s} {d} {s}\n  {s}\n  {s})", .{ prefix.kind, prefix.id, prefix.ty, prefix.child, rest })
-        else if (eq(u8, prefix.kind, "block"))
+        return if (eq(u8, prefix.kind, "block"))
             ctx.fmt(".block {d} {s} (\n{s}\n) <|\n{s}", .{ prefix.id, prefix.ty, try indent(ctx, prefix.child, 2), rest })
         else
             ctx.fmt(".bind {d} {s} {s} <|\n{s}", .{ prefix.id, prefix.ty, prefix.child, rest });
@@ -1126,7 +1113,7 @@ pub const Decoder = struct {
                 const nested = try ctx.allocator.dupe(?Label, labels);
                 nested[index] = .loop;
                 const child = try self.body(try ctx.field(inst, "body"), env, nested, depth + 1);
-                terminal = if (self.options.call_machine) try ctx.fmt(".loop rfl {d} <|\n{s}", .{ index, child }) else try ctx.fmt("(.loop rfl {d}\n  {s})", .{ index, child });
+                terminal = try ctx.fmt(".loop rfl {d} <|\n{s}", .{ index, child });
             } else if (eq(u8, tag, "repeat") and (self.profile.hasLoops() or self.options.extension == .hash_update)) {
                 try ctx.fields(inst, base ++ "target");
                 const target = try ctx.nat(try ctx.field(inst, "target"), self.instructions.len - 1);
@@ -1181,7 +1168,7 @@ pub const Decoder = struct {
             } else if (eq(u8, tag, "unreach") and self.options.extension == .assertion) {
                 try ctx.fields(inst, "index tag payloadVisited type");
                 try ctx.require(ty.* == .noreturn, "unreachable has a result");
-                terminal = try ctx.fmt("(.bind {d} (.scalar .unit) .unreachable (.ret (.constant (.value (.scalar .unit)))))", .{index});
+                terminal = try self.prepend(.{ .id = index, .ty = "(.scalar .unit)", .child = ".unreachable" }, "(.ret (.constant (.value (.scalar .unit))))");
             } else if (eq(u8, tag, "unreach") and (self.profile == .memory or self.profile == .loops or self.profile.hasCalls())) {
                 try ctx.fields(inst, "index tag payloadVisited type");
                 try ctx.require(ty.* == .noreturn, "unreachable has a result");
@@ -1228,8 +1215,7 @@ pub const Decoder = struct {
         if (self.options.extension == .slice_view) try ctx.require(self.empty_constants == 1, "sliceAsBytes must retain its empty return");
         var parameters: std.ArrayList([]const u8) = .empty;
         for (self.parameters) |parameter| try parameters.append(ctx.allocator, try parameter.ty.lean(ctx, self.profile));
-        if (self.options.call_machine) return ctx.fmt("  {{ parameters := [{s}],\n    returnType := {s},\n    body :=\n{s}\n  }}", .{ try std.mem.join(ctx.allocator, ", ", parameters.items), try self.result.lean(ctx, self.profile), try indent(ctx, code, 6) });
-        return ctx.fmt("{{ parameters := [{s}], returnType := {s}, body :=\n  {s} }}", .{ try std.mem.join(ctx.allocator, ", ", parameters.items), try self.result.lean(ctx, self.profile), code });
+        return ctx.fmt("  {{ parameters := [{s}],\n    returnType := {s},\n    body :=\n{s}\n  }}", .{ try std.mem.join(ctx.allocator, ", ", parameters.items), try self.result.lean(ctx, self.profile), try indent(ctx, code, 6) });
     }
 };
 

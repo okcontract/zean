@@ -84,7 +84,8 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
     return ctx.fmt(
         \\import Compiler.ZigAir.Captured
         \\open Compiler.ZigAir Compiler.ZigAir.Memory Compiler.ZigAir.MemoryAir
-        \\def forward : Program := {s}
+        \\def forward : Program :=
+        \\{s}
         \\{s}
         \\def escapingArm : Captured.Raw := {s}
         \\def wrongName : Captured.Raw := {s}

@@ -215,7 +215,8 @@ pub fn invalidationEmitted(ctx: *z.common.Context) ![]const u8 {
     return ctx.fmt(
         \\import Compiler.ZigAir.Captured
         \\open Compiler.ZigAir Compiler.ZigAir.Memory Compiler.ZigAir.MemoryAir
-        \\def fill : Program := {s}
+        \\def fill : Program :=
+        \\{s}
         \\{s}
         \\def wrongType : Captured.Raw := {s}
         \\def readOnly : Captured.Raw := {s}
@@ -262,9 +263,11 @@ pub fn moveEmitted(ctx: *z.common.Context) ![]const u8 {
     return ctx.fmt(
         \\import Compiler.ZigAir.Captured
         \\open Compiler.ZigAir Compiler.ZigAir.Memory Compiler.ZigAir.MemoryAir
-        \\def move : Program := {s}
+        \\def move : Program :=
         \\{s}
-        \\def copy : Program := {s}
+        \\{s}
+        \\def copy : Program :=
+        \\{s}
         \\def byte : Ty := .scalar (.int false 8)
         \\def value (n : Nat) : Value := .scalar (.int false 8 n)
         \\def before : State :=
@@ -306,16 +309,20 @@ pub fn lengthsEmitted(ctx: *z.common.Context) ![]const u8 {
         \\import Compiler.ZigAir.Captured
         \\import Compiler.ZigAir.AggregateAir
         \\open Compiler.ZigAir Compiler.ZigAir.Memory Compiler.ZigAir.MemoryAir
-        \\def copySlices : Program := {s}
+        \\def copySlices : Program :=
         \\{s}
-        \\def borrowedCopy : Program := {s}
+        \\{s}
+        \\def borrowedCopy : Program :=
+        \\{s}
         \\{s}
         \\example : Captured.decode false {s} = none := rfl
         \\example : Captured.decode false {s} = none := rfl
         \\example : (Captured.decode false {s}).isSome = true := rfl
         \\example : Captured.decode false {s} = none := rfl
-        \\def aggregateCopy : AggregateAir.Program := {s}
-        \\def aggregateMove : AggregateAir.Program := {s}
+        \\def aggregateCopy : AggregateAir.Program :=
+        \\{s}
+        \\def aggregateMove : AggregateAir.Program :=
+        \\{s}
         \\def missingLengths : Captured.Raw := {s}
         \\example : Captured.decode false missingLengths = none := rfl
         \\def byte : Ty := .scalar (.int false 8)
@@ -352,11 +359,14 @@ pub fn divisionEmitted(ctx: *z.common.Context) ![]const u8 {
     return ctx.fmt(
         \\import Compiler.ZigAir.CapturedScalar
         \\open Compiler.ZigAir
-        \\def quotient : Scalar.Program := {s}
+        \\def quotient : Scalar.Program :=
         \\{s}
-        \\def quotientMemory : MemoryAir.Program := {s}
         \\{s}
-        \\def zeroDivisor : Scalar.Program := {s}
+        \\def quotientMemory : MemoryAir.Program :=
+        \\{s}
+        \\{s}
+        \\def zeroDivisor : Scalar.Program :=
+        \\{s}
         \\example : quotient.run [] = .ok (.int false 64 3) := rfl
         \\example : quotientMemory.run [] {{}} = (.ok (.scalar (.int false 64 3)), {{}}) := rfl
         \\example : zeroDivisor.run [] = .error .illegalBehavior := rfl
@@ -378,8 +388,10 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
     return ctx.fmt(
         \\import Compiler.ZigAir.MemoryAir
         \\open Compiler.ZigAir.MemoryAir
-        \\def maximum : Program := {s}
-        \\def minimum : Program := {s}
+        \\def maximum : Program :=
+        \\{s}
+        \\def minimum : Program :=
+        \\{s}
         \\example : maximum.run [] {{}} = (.ok (.scalar (.int false 64 9)), {{}}) := rfl
         \\example : minimum.run [] {{}} = (.ok (.scalar (.int false 64 7)), {{}}) := rfl
         \\

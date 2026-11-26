@@ -37,7 +37,7 @@ pub fn decode(ctx: *c.Context, record: c.Value, sources: c.Value) !Decoded {
     const arguments = try ctx.array(try ctx.field(specialization, "arguments"));
     try ctx.require(c.equal(arguments[0], try ctx.parse("{\"kind\":\"type\",\"value\":{\"kind\":\"int\",\"bits\":32,\"signedness\":\"unsigned\"}}")), "word-swap comptime argument must be u32");
     var decoder = try air.Decoder.initWith(ctx, try normalized(ctx, record), .word_byte_loops, .{ .source_parameters = mapping.indices });
-    const program = try ctx.fmt("{{ program :=\n  {s} }}", .{try decoder.program()});
+    const program = try ctx.fmt("{{ program :=\n{s} }}", .{try decoder.program()});
     return .{ .decoder = decoder, .program = program, .key = mapping.sha.?, .mapping = mapping.indices };
 }
 fn indices(ctx: *c.Context, values: []const bool) ![]const usize {

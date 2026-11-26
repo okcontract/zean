@@ -451,9 +451,12 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
     const previous = try ctx.fmt(
         \\import Compiler.ZigAir.CapturedCalls
         \\open Compiler.ZigAir.MemoryCall
-        \\def child : Program := {s}
-        \\def parent : Program := {s}
-        \\def resumable : Program true := {s}
+        \\def child : Program :=
+        \\{s}
+        \\def parent : Program :=
+        \\{s}
+        \\def resumable : Program true :=
+        \\{s}
         \\{s}
         \\{s}
         \\{s}
@@ -485,9 +488,11 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
         \\import Compiler.ZigAir.CapturedCallMachine
         \\import Compiler.ZigAir.CapturedNestedCalls
         \\{s}
-        \\def loopChild : Compiler.ZigAir.MemoryCall.Program true := {s}
+        \\def loopChild : Compiler.ZigAir.MemoryCall.Program true :=
         \\{s}
-        \\def partialCaller : Compiler.ZigAir.MemoryPartialCall.Program := {s}
+        \\{s}
+        \\def partialCaller : Compiler.ZigAir.MemoryPartialCall.Program :=
+        \\{s}
         \\{s}
         \\example : partialCaller.observe 10 [] {{}} = .finished (.ok (.scalar .unit)) {{}} := rfl
         \\example : partialCaller.observe 0 [] {{}} = .pending {{}} := rfl
@@ -495,7 +500,8 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
         \\example : CapturedNestedCalls.decode 64 [loopChild_captured, loopChild_captured] partialCaller_captured = none := rfl
         \\example : CapturedNestedCalls.decode 64 [replaceIdentity loopChild_captured] partialCaller_captured = none := rfl
         \\example : CapturedNestedCalls.decode 0 [loopChild_captured] partialCaller_captured = none := rfl
-        \\def machineChild : MemoryCallMachine.Function := {s}
+        \\def machineChild : MemoryCallMachine.Function :=
+        \\{s}
         \\def machineParent : MemoryCallMachine.Function :=
         \\{s}
         \\example : CapturedCallMachine.decode [child_captured, parent_captured] = some [machineChild, machineParent] := rfl

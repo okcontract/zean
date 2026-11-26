@@ -13,37 +13,32 @@ open Compiler.ZigAir.MemoryAir
 
 -- AIR SHA-256: 8f4dde283301053fd13aece2b8d7b2f49c7aa6f0c13731f4cba465f64b763dfa
 def fn_replace : Program :=
-{ parameters := [(.pointer true true (.scalar (.int false 32))), (.scalar (.int false 64)), (.scalar (.int false 64)), (.scalar (.int false 32))], returnType := (.scalar .bool), body :=
-  (.bind 0 (.pointer true true (.scalar (.int false 32)))
-  (.argument 0)
-  (.bind 1 (.scalar (.int false 64))
-  (.argument 1)
-  (.bind 2 (.scalar (.int false 64))
-  (.argument 2)
-  (.bind 3 (.scalar (.int false 32))
-  (.argument 3)
-  (.bind 4 (.pointer true false (.pointer true true (.scalar (.int false 32))))
-  (.alloc (.pointer true true (.scalar (.int false 32))))
-  (.bind 5 (.scalar .unit)
-  (.store (.local 4) (.local 0))
-  (.bind 6 (.pointer false false (.pointer true true (.scalar (.int false 32))))
-  (.pointerCast (.pointer false false (.pointer true true (.scalar (.int false 32)))) (.local 4))
-  (.block 7 (.scalar .unit)
-  (.bind 8 (.scalar (.int false 64))
-  (.scalar (.cast .bitcast (.int false 64) (.local 2)))
-  (.bind 9 (.scalar (.int false 64))
-  (.scalar (.cast .bitcast (.int false 64) (.local 1)))
-  (.bind 10 (.scalar .bool)
-  (.scalar (.comparison .ge (.local 8) (.local 9)))
-  (.branch (.local 10)
-  (.ret (.constant (.scalar (.bool false))))
-  (.jump 7 (.constant (.scalar .unit)))))))
-  (.bind 14 (.pointer true true (.scalar (.int false 32)))
-  (.load (.local 6))
-  (.bind 15 (.pointer true false (.scalar (.int false 32)))
-  (.elementPointer (.local 14) (.local 2))
-  (.bind 16 (.scalar .unit)
-  (.store (.local 15) (.local 3))
-  (.ret (.constant (.scalar (.bool true))))))))))))))) }
+  { parameters := [(.pointer true true (.scalar (.int false 32))), (.scalar (.int false 64)), (.scalar (.int false 64)), (.scalar (.int false 32))],
+    returnType := (.scalar .bool),
+    body :=
+      .bind 0 (.pointer true true (.scalar (.int false 32))) (.argument 0) <|
+      .bind 1 (.scalar (.int false 64)) (.argument 1) <|
+      .bind 2 (.scalar (.int false 64)) (.argument 2) <|
+      .bind 3 (.scalar (.int false 32)) (.argument 3) <|
+      .bind 4 (.pointer true false (.pointer true true (.scalar (.int false 32)))) (.alloc (.pointer true true (.scalar (.int false 32)))) <|
+      .bind 5 (.scalar .unit) (.store (.local 4) (.local 0)) <|
+      .bind 6 (.pointer false false (.pointer true true (.scalar (.int false 32)))) (.pointerCast (.pointer false false (.pointer true true (.scalar (.int false 32)))) (.local 4)) <|
+      .block 7 (.scalar .unit) (
+        .bind 8 (.scalar (.int false 64)) (.scalar (.cast .bitcast (.int false 64) (.local 2))) <|
+        .bind 9 (.scalar (.int false 64)) (.scalar (.cast .bitcast (.int false 64) (.local 1))) <|
+        .bind 10 (.scalar .bool) (.scalar (.comparison .ge (.local 8) (.local 9))) <|
+        .branch (.local 10)
+          (
+            (.ret (.constant (.scalar (.bool false))))
+          )
+          (
+            (.jump 7 (.constant (.scalar .unit)))
+          )
+      ) <|
+      .bind 14 (.pointer true true (.scalar (.int false 32))) (.load (.local 6)) <|
+      .bind 15 (.pointer true false (.scalar (.int false 32))) (.elementPointer (.local 14) (.local 2)) <|
+      .bind 16 (.scalar .unit) (.store (.local 15) (.local 3)) <|
+      (.ret (.constant (.scalar (.bool true))))
+  }
 
 end «Compiler».«Tutorial».«Buffer».«V2».«Generated»

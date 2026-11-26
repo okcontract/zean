@@ -91,7 +91,7 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
     var callees: std.ArrayList(air.Callee) = .empty;
     var machine_names: std.ArrayList([]const u8) = .empty;
     var machine_records: std.ArrayList([]const u8) = .empty;
-    var machine_captures: std.ArrayList([]const u8) = .empty;
+    var certificates: std.ArrayList([]const u8) = .empty;
     if (options.profile.hasCalls()) {
         for (options.roots) |root| try closure.visit(root, null, 0);
         if (recursive_calls) {
@@ -125,7 +125,7 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
                 if (emit_certificate) {
                     const record_name = try ctx.fmt("CapturedRecords.{s}", .{unit.name});
                     try machine_records.append(ctx.allocator, record_name);
-                    try machine_captures.append(ctx.allocator, try ctx.fmt("def {s} : Compiler.ZigAir.Captured.Raw :=\n{s}\n\n", .{ record_name, try @import("certificate.zig").lift(ctx, unit.record, 0) }));
+                    try certificates.append(ctx.allocator, try ctx.fmt("def {s} : Compiler.ZigAir.Captured.Raw :=\n{s}\n\n", .{ record_name, try @import("certificate.zig").lift(ctx, unit.record, 0) }));
                 }
             }
             const summary = try ctx.parse(try ctx.json(.{ .declaration = try ctx.fmt("{s}.{s}", .{ options.namespace, unit.name }), .airSha256 = unit.sha, .sourceSha256 = try ctx.field(unit.record, "sourceSha256"), .callee = unit.called, .interpreter = "call-machine", .machineIndex = machine_index, .configuration = try ctx.field(unit.record, "configuration") }));
@@ -136,12 +136,8 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
         {
             try lines.append(ctx.allocator, try ctx.fmt("def functions : Program := [{s}]\n\n", .{try std.mem.join(ctx.allocator, ", ", machine_names.items)}));
             if (emit_certificate) {
-                try lines.append(ctx.allocator, "-- Captured AIR and independent decoding certificate.\n\n");
-                try lines.appendSlice(ctx.allocator, machine_captures.items);
-            }
-            if (emit_certificate) {
                 const decoder = if (recursive_calls) "decodeRecursive" else "decode";
-                try lines.append(ctx.allocator, try ctx.fmt("set_option maxRecDepth 8192 in\nset_option maxHeartbeats 2000000 in\ntheorem functions_correspondence :\n  Compiler.ZigAir.CapturedCallMachine.{s} [{s}] = some functions := by rfl'\n\n", .{ decoder, try std.mem.join(ctx.allocator, ", ", machine_records.items) }));
+                try certificates.append(ctx.allocator, try ctx.fmt("set_option maxRecDepth 8192 in\nset_option maxHeartbeats 2000000 in\ntheorem functions_correspondence :\n  Compiler.ZigAir.CapturedCallMachine.{s} [{s}] = some functions := by rfl'\n\n", .{ decoder, try std.mem.join(ctx.allocator, ", ", machine_records.items) }));
             }
         }
     }
@@ -180,7 +176,7 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
             const certificate = if (options.profile == .scalar) try @import("certificate.zig").scalarDeclaration(ctx, record, name) else try @import("certificate.zig").declaration(ctx, record, name, options.profile.hasLoops());
             // Preserve existing certificate names wherever the source leaves them available.
             const collision = standalone.contains(try ctx.fmt("{s}_captured", .{name})) or standalone.contains(try ctx.fmt("{s}_correspondence", .{name}));
-            try lines.append(ctx.allocator, if (collision) try ctx.fmt("namespace Certificate.{s}\n{s}\nend Certificate.{s}\n\n", .{ name, certificate, name }) else certificate);
+            try certificates.append(ctx.allocator, if (collision) try ctx.fmt("namespace Certificate.{s}\n{s}\nend Certificate.{s}\n\n", .{ name, certificate, name }) else certificate);
         }
         var body_instructions: usize = 0;
         for (decoder.visited) |visited| if (visited) {
@@ -189,6 +185,10 @@ pub fn run(ctx: *c.Context, io: std.Io, options: Options) !c.Value {
         const summary = try ctx.parse(try ctx.json(.{ .declaration = try ctx.fmt("{s}.{s}", .{ options.namespace, name }), .airSha256 = sha, .sourceSha256 = source_sha, .bodyInstructions = body_instructions, .configuration = try ctx.field(record, "configuration") }));
         try functions.object.put(ctx.allocator, root, summary);
         try identities.append(ctx.allocator, .{ .path = path, .sha = sha });
+    }
+    if (certificates.items.len > 0) {
+        try lines.append(ctx.allocator, "-- Captured AIR and independent decoding certificate.\n\n");
+        try lines.appendSlice(ctx.allocator, certificates.items);
     }
     try lines.append(ctx.allocator, try ctx.fmt("end {s}\n", .{lean_namespace}));
     const lean = try std.mem.concat(ctx.allocator, u8, lines.items);

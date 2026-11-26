@@ -17,6 +17,41 @@ pub fn controls() !void {
     try std.testing.expectError(error.InvalidInput, z.certificate.lift(&ctx, .null, 129));
 }
 
+pub fn standaloneOrder() !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx: z.common.Context = .{ .allocator = arena.allocator() };
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "air", .default_dir);
+    const directory = try std.fs.path.resolve(ctx.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path });
+    const roots = [_][]const u8{ "fixture.choose", "fixture.choose_captured" };
+    var entries: z.common.Value = .{ .object = .empty };
+    var record = try f.load(ctx.allocator, shared.air_scalar_program_1_input_2);
+    for (roots, 0..) |root, i| {
+        try record.object.put(ctx.allocator, "name", .{ .string = root });
+        const bytes = try ctx.json(record);
+        const file = try ctx.fmt("{d}.json", .{i});
+        try tmp.dir.writeFile(io, .{ .sub_path = try ctx.fmt("air/{s}", .{file}), .data = bytes });
+        try entries.object.put(ctx.allocator, root, try ctx.parse(try ctx.json(.{ .requested = true, .file = file, .sha256 = &z.common.digest(bytes) })));
+    }
+    const report = try ctx.json(.{ .schema = "oksolc.fresh-air-capture.v1", .status = "captured", .captureComplete = true, .zigVersion = z.version, .zigRevision = z.revision, .sourceSha256 = try ctx.field(record, "sourceSha256"), .functions = entries });
+    try tmp.dir.writeFile(io, .{ .sub_path = "report.json", .data = report });
+    const output = try ctx.fmt("{s}/model", .{directory});
+    _ = try z.translate.run(&ctx, io, .{ .capture = try ctx.fmt("{s}/report.json", .{directory}), .roots = &roots, .output = output, .emit_correspondence = true });
+    const model = try ctx.read(io, try ctx.fmt("{s}/Generated.lean", .{output}), 65536);
+    var rest = model;
+    for ([_][]const u8{
+        "def fn_choose : Program :=",      "def fn_choose_captured : Program :=",
+        "namespace Certificate.fn_choose", "theorem fn_choose_correspondence :",
+        "end Certificate.fn_choose",       "theorem fn_choose_captured_correspondence :",
+    }) |marker| {
+        const at = std.mem.indexOf(u8, rest, marker) orelse return error.TestUnexpectedResult;
+        rest = rest[at + marker.len ..];
+    }
+}
+
 pub const mutations = [_]f.Edit{
     f.set("/instructions/0/zirParameterIndex", f.n("1")),
     f.set("/instructions/3/operand/value", f.n("2")),

@@ -117,6 +117,12 @@ kernel-checked equality. `Binding.Saved` combines a register binding with
 its stored value and, for mutable locals, its write capability. The invariant
 still has to establish dynamic lifetime IDs, including conditional allocations.
 
+In a call-machine proof, select the receiving register with
+`air_binding% ((Bindings.callResult caller.body calleeId).get (by decide)).register`.
+A missing call or multiple calls to the same function yields `none`. When a
+body has multiple matching calls, select the relevant subterm before looking
+up its result.
+
 For initialized writable slices, use `air_slice_finish [yourFacts]` after
 `air_vcgen`. It normalizes slice selections and reads, preserves initialization
 through writes and private allocations, and supplies witnesses for bounded

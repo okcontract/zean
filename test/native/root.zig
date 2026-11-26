@@ -247,6 +247,10 @@ test "word swap retains source mapping and wraps the explicit word-pair contract
     }
 }
 
+test "standalone executables precede both certificates when their names overlap" {
+    try @import("certificate.zig").standaloneOrder();
+}
+
 fn tmpPath(ctx: *z.common.Context, tmp: std.testing.TmpDir) ![]const u8 {
     return std.fs.path.resolve(ctx.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path });
 }

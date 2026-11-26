@@ -85,7 +85,8 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
     return ctx.fmt(
         \\import Compiler.ZigAir.CapturedScalar
         \\open Compiler.ZigAir Compiler.ZigAir.Scalar
-        \\def selectRange : Program := {s}
+        \\def selectRange : Program :=
+        \\{s}
         \\{s}
         \\def overlap : Captured.Raw := {s}
         \\example : CapturedScalar.decode overlap = none := rfl

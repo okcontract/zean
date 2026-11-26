@@ -118,11 +118,14 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
         \\import Compiler.ZigAir.Captured
         \\open Compiler.ZigAir Compiler.ZigAir.MemoryAir
         \\namespace EnumControls
-        \\def compare : Program := {s}
+        \\def compare : Program :=
         \\{s}
-        \\def choose : Program := {s}
         \\{s}
-        \\def full : Program := {s}
+        \\def choose : Program :=
+        \\{s}
+        \\{s}
+        \\def full : Program :=
+        \\{s}
         \\{s}
         \\def hole : Captured.Raw := {s}
         \\def foreign : Captured.Raw := {s}

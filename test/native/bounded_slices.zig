@@ -56,7 +56,8 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
     return ctx.fmt(
         \\import Compiler.ZigAir.Captured
         \\open Compiler.ZigAir Compiler.ZigAir.MemoryAir Compiler.ZigAir.Memory
-        \\def boundedSlice : Program := {s}
+        \\def boundedSlice : Program :=
+        \\{s}
         \\{s}
         \\def heap : State := ⟨[(0, ⟨1, .array 5 (.scalar (.int false 8)), [], true, false⟩)], 1, 6⟩
         \\def view : Value := .slice (.slice false (.scalar (.int false 8))) ⟨0, 0⟩ 3
