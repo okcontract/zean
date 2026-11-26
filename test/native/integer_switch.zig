@@ -16,14 +16,14 @@ fn integer(comptime value: []const u8) f.Value {
     return f.obj(&.{ .{ "kind", f.s("constant") }, .{ "type", byte }, .{ "value", f.n(value) } });
 }
 
-fn jump(comptime index: []const u8, comptime result: []const u8) f.Value {
+fn jump(comptime index: []const u8, comptime operand: f.Value) f.Value {
     return f.obj(&.{
         .{ "index", f.n(index) },
         .{ "tag", f.s("br") },
         .{ "payloadVisited", f.b(true) },
         .{ "type", never },
         .{ "target", f.n("1") },
-        .{ "operand", integer(result) },
+        .{ "operand", operand },
     });
 }
 
@@ -48,14 +48,22 @@ const selector = f.derive(&shared.air_memory_program_2_input_13, &.{
             }) },
             .{ "elseBody", f.arr(&.{f.n("5")}) },
         }),
-        jump("3", "7"),
-        jump("4", "8"),
-        jump("5", "9"),
+        jump("3", integer("7")),
+        jump("4", integer("8")),
+        jump("5", integer("9")),
         f.obj(&.{ .{ "index", f.n("6") }, .{ "tag", f.s("ret") }, .{ "payloadVisited", f.b(true) }, .{ "type", never }, .{ "operand", ref("1") } }),
     })),
 });
 
 const overlap = f.derive(&selector, &.{f.set("/instructions/2/cases/0/ranges/0/1/value", f.n("0"))});
+const computed_arm = f.derive(&selector, &.{
+    f.set("/instructions/2/cases/0/body", f.arr(&.{ f.n("3"), f.n("7") })),
+    f.set("/instructions/3", f.obj(&.{
+        .{ "index", f.n("3") }, .{ "tag", f.s("add") }, .{ "payloadVisited", f.b(true) },
+        .{ "type", byte },      .{ "lhs", ref("0") },   .{ "rhs", integer("11") },
+    })),
+    f.add("/instructions/7", jump("7", ref("3"))),
+});
 
 pub fn controls() !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -66,6 +74,9 @@ pub fn controls() !void {
         const model = try z.air.decode(&ctx, raw, profile);
         try std.testing.expect(std.mem.indexOf(u8, model, "(.inRanges (.local 0) [((-4), (-2))])") != null);
         try std.testing.expect(std.mem.indexOf(u8, model, "(.inRanges (.local 0) [((0), (0)), ((2), (3))])") != null);
+        // Each fallback starts the next case at the same indentation.
+        try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, model, "\n        .branch (.local "));
+        try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, model, ") (.jump 1 "));
     }
     const invalid = [_]f.Value{
         overlap,
@@ -82,6 +93,7 @@ pub fn controls() !void {
 
 pub fn emitted(ctx: *z.common.Context) ![]const u8 {
     const raw = try f.load(ctx.allocator, selector);
+    const computed = try f.load(ctx.allocator, computed_arm);
     return ctx.fmt(
         \\import Compiler.ZigAir.CapturedScalar
         \\open Compiler.ZigAir Compiler.ZigAir.Scalar
@@ -95,10 +107,20 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
         \\example : selectRange.run [.int true 8 0] = .ok (.int true 8 8) := rfl
         \\example : selectRange.run [.int true 8 3] = .ok (.int true 8 8) := rfl
         \\example : selectRange.run [.int true 8 1] = .ok (.int true 8 9) := rfl
+        \\def computedRange : Program :=
+        \\{s}
+        \\{s}
+        \\example : computedRange.run [.int true 8 (-2)] = .ok (.int true 8 9) := rfl
         \\example : (Prim.shiftLeft (.constant (.int false 8 128)) (.constant (.int false 3 1))).eval [] (fun _ => none) =
         \\  .ok (.int false 8 0) := rfl
         \\example : (Prim.shiftLeft (.constant (.int false 3 1)) (.constant (.int false 2 3))).eval [] (fun _ => none) =
         \\  .error .illegalBehavior := rfl
         \\
-    , .{ try z.air.decode(ctx, raw, .scalar), try z.certificate.scalarDeclaration(ctx, raw, "selectRange"), try z.certificate.lift(ctx, try f.load(ctx.allocator, overlap), 0) });
+    , .{
+        try z.air.decode(ctx, raw, .scalar),
+        try z.certificate.scalarDeclaration(ctx, raw, "selectRange"),
+        try z.certificate.lift(ctx, try f.load(ctx.allocator, overlap), 0),
+        try z.air.decode(ctx, computed, .scalar),
+        try z.certificate.scalarDeclaration(ctx, computed, "computedRange"),
+    });
 }

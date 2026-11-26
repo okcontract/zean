@@ -922,7 +922,8 @@ pub const Decoder = struct {
         const defaultless = fallback.len == 0;
         if (defaultless) try ctx.require(enum_selector and
             (self.profile == .memory or self.profile == .loops or self.profile.hasCalls()), "an omitted switch default requires a declared enum and memory semantics");
-        var code = if (defaultless) try self.memoryUnreachable(index) else try self.bodyIndices(fallback, env, labels, depth + 1);
+        const parts = try ctx.allocator.alloc([]const u8, arms.len + 1);
+        parts[arms.len] = if (defaultless) try self.memoryUnreachable(index) else try self.bodyIndices(fallback, env, labels, depth + 1);
         var ordinal = arms.len;
         while (ordinal > 0) {
             ordinal -= 1;
@@ -952,11 +953,17 @@ pub const Decoder = struct {
             if (self.profile.hasCalls()) test_primitive = try ctx.fmt("(.memory {s})", .{test_primitive});
             const register = 3 * self.instructions.len + self.slice_guard_count + index * maximum_switch_ranges + ordinal;
             const bool_ty = if (self.profile == .scalar) ".bool" else "(.scalar .bool)";
-            const branch = try self.branchText(try ctx.fmt("(.local {d})", .{register}), selected, code);
-            code = try self.prepend(.{ .id = register, .ty = bool_ty, .child = test_primitive }, branch);
+            // A terminal is already a parenthesized argument. Group longer arms
+            // locally and pass the next case as the branch's final argument.
+            const arm_term = if (std.mem.indexOfScalar(u8, selected, '\n') == null)
+                selected
+            else
+                try ctx.fmt("(\n{s}\n)", .{try indent(ctx, selected, 2)});
+            const branch = try ctx.fmt(".branch (.local {d}) {s} <|", .{ register, arm_term });
+            parts[ordinal] = try self.prepend(.{ .id = register, .ty = bool_ty, .child = test_primitive }, branch);
         }
         if (defaultless) try ctx.require(checked.items.len == operand.ty.enumeration.tags.len, "defaultless enum switch must cover every declared tag");
-        return code;
+        return std.mem.join(ctx.allocator, "\n", parts);
     }
 
     fn memoryUnreachable(self: *Decoder, index: usize) Error![]const u8 {
