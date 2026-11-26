@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.2.1
+
+### Project workflow
+
+- Pass `--project` to `zean verify-client` to replay a declared client with
+  the project's source mappings and capture target. A client can declare
+  dependencies on other clients. Zean captures them in dependency order
+  and checks their proof modules together using the fresh models. The
+  importing client's report records dependency report digests and audited
+  theorems. [Client replay](examples/client/README.md#replay-a-client-declared-in-a-project) ·
+  [Client dependencies](examples/client/README.md#replay-a-proof-that-imports-another-client)
+- Admission diagnostics locate rejected AIR instructions, report unsupported
+  operand kinds, and show the compiler's type rejection reason when available.
+
+### AIR admission
+
+- Byte `@memcpy` checks equality of the original source and destination
+  lengths when both are available. Added overlapping byte `@memmove` and
+  typed `@memset` with `undefined`, which clears initialization in supported
+  scalar slices. [Byte transport](docs/byte-transport.md) ·
+  [Admitted operations](docs/admission.md)
+- Added unsigned truncating division, exhaustive enums backed by `u2`
+  through `u8`, and `?u8` values. Exhaustive enum switches can omit the
+  default arm. Register error unions support `try` with `void` or integer
+  payloads up to 64 bits. [Admitted operations](docs/admission.md)
+- Direct calls check the identities of named `comptime` callbacks and
+  zero-storage singleton arguments. Reached zero-storage field projections
+  check the owner even when the pointer result is unused, and reject reuse
+  of the discarded result. [Call machine](docs/call-machine.md) ·
+  [Admitted operations](docs/admission.md)
+- Slice guards from inlined helpers are checked against the matching file
+  in the retained source inventory.
+  [Cross-file slice guards](docs/admission.md#slice-guards-from-inline-helpers)
+
+### Verification
+
+- The `nested-calls` profile certifies calls to `std.ascii.upperString` and
+  `std.ascii.lowerString`, including integer switch ranges and defaults.
+  The fixed-buffer list example checks the effect of an append within
+  reserved capacity and the fault at capacity.
+  [ASCII compatibility](examples/compatibility/README.md) ·
+  [Reserved append](examples/allocator/README.md#verify-an-append-into-reserved-capacity)
+- Added Lean rules for writable typed-array views, checked array ranges and
+  one-past slice addresses, reads through nested subobjects, and initialized
+  stack spills. The overlapping move contract shows that the destination
+  receives the original snapshot of initialized source bytes.
+  [Memory contracts](docs/verification.md) ·
+  [Move contract](docs/verification.md#prove-a-move-that-can-overlap-its-source)
+- Call-machine proofs can replay straight-line memory prefixes and derive
+  modeled safety from successful execution. Finite register-only helpers
+  preserve the entire modeled state, including on faults.
+  [Prefix replay](docs/call-machine.md#prove-a-straight-line-prefix) ·
+  [Register-only proof rules](docs/call-machine.md#check-register-only-helpers)
+
 ## 0.2.0
 
 ### Project workflow
