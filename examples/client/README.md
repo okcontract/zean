@@ -111,6 +111,12 @@ at least one named theorem, checks its module of origin, and allows only
 Lean's standard logical axioms. Proofs run serially with a 4 GiB process
 limit. Lake dependency builds use two workers. [Reports and scope](../../docs/evidence.md)
 
+On successful replay, `report.json` includes a `theoremAxioms` object keyed
+by the full theorem name. Each value is the sorted list of axioms Lean found
+in that theorem and its dependencies. An empty list (`[]`) means the theorem
+uses no axioms. For the cell example, read `theoremAxioms["Cell.safe"]`.
+Reports from older versions may omit this field.
+
 Call profiles emit the explicit call machine. `"executionModel": "call-machine"`
 can assert that choice in a manifest. [Caller and helper example](calls/README.md)
 
@@ -130,7 +136,8 @@ zean verify-client --project . --manifest verification/combined.json \
 Zean captures and certifies each dependency once, in dependency order. It
 checks the proof modules and named theorems together using those fresh
 models. Each dependency's capture report is linked with its digest and
-audited theorem names in the importing client's report. Model generation
+audited theorem names in the importing client's report. The importing
+report's `theoremAxioms` includes those theorems as well. Model generation
 still uses the `generatedModule` and `leanDir` for each client, and Lake can
 load the committed models using the same imports.
 

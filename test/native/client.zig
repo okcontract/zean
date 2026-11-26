@@ -77,6 +77,7 @@ fn dependencyImports(ctx: *z.common.Context, baseline: z.client.Manifest) !void 
     root.manifest.generated = "Root.Generated";
     root.manifest.dependencies = &.{ a.path, b.path };
     root.manifest.proofs = &.{.{ .module = "Root.Proof", .path = "Root.lean" }};
+    root.manifest.theorems = &.{"Root.safe"};
     root.proofs = &.{"import A.Generated\nimport B.Generated\nimport Shared.Proof\n"};
     for ([_][]const u8{ "import A.Generated\n", "import Shared.Proof\n", words }) |unavailable| {
         b.proofs = &.{unavailable};
@@ -91,6 +92,10 @@ fn dependencyImports(ctx: *z.common.Context, baseline: z.client.Manifest) !void 
     const shared = try z.client.planProofs(ctx, &.{ a, b, root }, "Test");
     try std.testing.expectEqual(5, shared.modules.len);
     try std.testing.expectEqualStrings("import Test_0\nimport Test_2\nimport Test_1\n", shared.modules[4].body);
+    try std.testing.expectEqual(3, shared.obligations.len);
+    try std.testing.expectEqualStrings("(#[\"Cell.safe\"], #[\"Test_1\"])", shared.obligations[0]);
+    try std.testing.expectEqualStrings(shared.obligations[0], shared.obligations[1]);
+    try std.testing.expectEqualStrings("(#[\"Root.safe\"], #[\"Test_4\"])", shared.obligations[2]);
 
     b.manifest.dependencies = &.{a.path};
     b.manifest.proofs = &.{ .{ .module = "B.First", .path = "First.lean" }, .{ .module = "B.Second", .path = "Second.lean" } };

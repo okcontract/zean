@@ -291,20 +291,26 @@ pub fn build(b: *std.Build) void {
     b.step("lean-examples", "Check tutorial and standard-library proof clients").dependOn(&examples_lean.step);
     const regressions_lean = leanScope(b, lake, &.{ "Compiler/Captures", "Compiler/Cases", "Compiler/Tests", "Compiler/Baselines" }) catch @panic("cannot enumerate Lean regressions");
     b.step("lean-regressions", "Check retained captures, case studies, controls and historical baselines").dependOn(&regressions_lean.step);
-    const declaration_source = b.addWriteFiles().add("DeclarationEncodingTests.lean", @import("test/lean/declaration_encoding.zig").source);
-    const declaration_checks = if (lake) |path| b.addSystemCommand(&.{ path, "env", "lean" }) else b.addSystemCommand(&.{ "elan", "run", lean_toolchain, "lake", "env", "lean" });
-    declaration_checks.addFileArg(declaration_source);
-    // Lake manages the imported modules outside Zig's file cache.
-    declaration_checks.has_side_effects = true;
-    declaration_checks.setEnvironmentVariable("LEAN_NUM_THREADS", "2");
-    declaration_checks.step.dependOn(&lean.step);
-    b.step("lean", "Check the full Lean library and admission controls with two workers").dependOn(&declaration_checks.step);
+    var lean_checks = lean;
+    inline for (.{
+        .{ "DeclarationEncodingTests.lean", @import("test/lean/declaration_encoding.zig").source },
+        .{ "ProofAuditTests.lean", @import("test/lean/proof_audit.zig").source },
+    }) |lean_fixture| {
+        const check_fixture = if (lake) |path| b.addSystemCommand(&.{ path, "env", "lean" }) else b.addSystemCommand(&.{ "elan", "run", lean_toolchain, "lake", "env", "lean" });
+        check_fixture.addFileArg(b.addWriteFiles().add(lean_fixture[0], lean_fixture[1]));
+        // Lake manages the imported modules outside Zig's file cache.
+        check_fixture.has_side_effects = true;
+        check_fixture.setEnvironmentVariable("LEAN_NUM_THREADS", "2");
+        check_fixture.step.dependOn(&lean_checks.step);
+        lean_checks = check_fixture;
+    }
+    b.step("lean", "Check the full Lean library and admission controls with two workers").dependOn(&lean_checks.step);
     const benchmark = b.addRunArtifact(executable);
     benchmark.addArg("benchmark");
     if (lake) |path| benchmark.addArgs(&.{ "--lake", path });
     benchmark.addPassthruArgs();
     benchmark.has_side_effects = true;
-    benchmark.step.dependOn(&declaration_checks.step);
+    benchmark.step.dependOn(&lean_checks.step);
     b.step("benchmark", "Measure serial proof re-elaboration with warm dependencies and retained receipts").dependOn(&benchmark.step);
     const wp_lean = if (lake) |path| b.addSystemCommand(&.{ path, "build", "Compiler.Tests.ZigAir.MemoryFiniteWPControls", "Compiler.Tests.ZigAir.MemoryResourceControls", "Compiler.Tests.ZigAir.MemoryCallControls", "Compiler.Tests.ZigAir.ControlWPControls", "Compiler.Tests.ZigAir.MemoryVerificationControls", "Compiler.Tests.ZigAir.ControlFragmentWPControls" }) else b.addSystemCommand(&.{ "elan", "run", lean_toolchain, "lake", "build", "Compiler.Tests.ZigAir.MemoryFiniteWPControls", "Compiler.Tests.ZigAir.MemoryResourceControls", "Compiler.Tests.ZigAir.MemoryCallControls", "Compiler.Tests.ZigAir.ControlWPControls", "Compiler.Tests.ZigAir.MemoryVerificationControls", "Compiler.Tests.ZigAir.ControlFragmentWPControls" });
     wp_lean.setEnvironmentVariable("LEAN_NUM_THREADS", "2");
@@ -357,7 +363,7 @@ pub fn build(b: *std.Build) void {
     emitted.addArgs(if (lake) |path| &.{ path, "env", "lean" } else &.{ "elan", "run", lean_toolchain, "lake", "env", "lean" });
     emitted.has_side_effects = true;
     // Serialize Lean processes, including their two worker pools.
-    emitted.step.dependOn(&declaration_checks.step);
+    emitted.step.dependOn(&lean_checks.step);
     b.step("emitted-lean", "Compile actual emitted AIR, hash, source and layout controls").dependOn(&emitted.step);
     const emitted_control = b.addRunArtifact(emitted_exe);
     emitted_control.addArgs(&.{ "--only", b.option([]const u8, "emitted-control", "Single control for the emitted-control development check") orelse "certificate" });

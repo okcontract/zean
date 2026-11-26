@@ -273,7 +273,10 @@ pub fn execute(ctx: *c.Context, io: std.Io, base: Dir, plan: Plan, options: RunO
     const generated = try ctx.read(io, try files.join(ctx, &.{ bundle, "Generated.lean" }), c.max_json_bytes);
     try ctx.require(c.tag(translated, "leanSha256", &c.digest(generated)), "generated Lean changed after translation");
     const proof_sources = snapshots[source_count..];
-    if (options.verify) try checkProofs(ctx, io, options, environment, output, .{ .path = plan.path, .manifest = manifest, .generated = generated, .proofs = proof_sources }, prerequisites);
+    const theorem_axioms = if (options.verify)
+        try checkProofs(ctx, io, options, environment, output, .{ .path = plan.path, .manifest = manifest, .generated = generated, .proofs = proof_sources }, prerequisites)
+    else
+        null;
     if (prerequisites.len != 0) {
         var dependency_reports: c.Value = .{ .object = .empty };
         for (options.prerequisites, prerequisites, 1..) |dep, checked, index| {
@@ -298,6 +301,7 @@ pub fn execute(ctx: *c.Context, io: std.Io, base: Dir, plan: Plan, options: RunO
         try ctx.require(std.mem.eql(u8, snapshot, try ctx.read(io, path, c.max_json_bytes)), "retained client input changed during verification");
     }
     if (certify) try z.provenance.verifyWorkspace(ctx, io);
+    if (theorem_axioms) |axioms| try report.object.put(ctx.allocator, "theoremAxioms", axioms);
     try z.toolchain.set(ctx, &report, "modelProofsChecked", options.verify);
     try z.toolchain.set(ctx, &report, "theorems", manifest.theorems);
     try z.toolchain.set(ctx, &report, "status", "passed");
@@ -350,16 +354,16 @@ pub fn planProofs(ctx: *c.Context, inputs: []const ReplayInput, prefix: []const 
             }
             const fresh = entry.value_ptr.fresh;
             try visible.put(ctx.allocator, original, .{ .original = original, .fresh = fresh });
-            if (!generated) try owners.append(ctx.allocator, try z.certificate.string(ctx, fresh));
+            if (!generated) try owners.append(ctx.allocator, fresh);
         }
         try exports.put(input.path, visible.values());
-        const allowed = try std.mem.join(ctx.allocator, ", ", owners.items);
-        for (input.manifest.theorems) |name| try obligations.append(ctx.allocator, try ctx.fmt("#audit_proof {s} from [{s}]\n", .{ try z.certificate.string(ctx, name), allowed }));
+        // Manifest identifiers and fresh module names contain only ASCII identifier characters.
+        try obligations.append(ctx.allocator, try ctx.fmt("(#{s}, #{s})", .{ try ctx.json(input.manifest.theorems), try ctx.json(owners.items) }));
     }
     return .{ .modules = modules.values(), .obligations = obligations.items };
 }
 
-fn checkProofs(ctx: *c.Context, io: std.Io, options: RunOptions, environment: *const std.process.Environ.Map, output: []const u8, root: ReplayInput, prerequisites: []const Prerequisite) !void {
+fn checkProofs(ctx: *c.Context, io: std.Io, options: RunOptions, environment: *const std.process.Environ.Map, output: []const u8, root: ReplayInput, prerequisites: []const Prerequisite) !c.Value {
     var env = try environment.clone(ctx.allocator);
     try env.put("LEAN_NUM_THREADS", "2");
     const runner: runtime.Runner = .{ .ctx = ctx, .io = io, .output = output };
@@ -391,7 +395,14 @@ fn checkProofs(ctx: *c.Context, io: std.Io, options: RunOptions, environment: *c
     var audit: std.ArrayList([]const u8) = .empty;
     try audit.append(ctx.allocator, "import Compiler.ZigAir.ProofAudit\n");
     for (plan.modules) |module| try audit.append(ctx.allocator, try ctx.fmt("import {s}\n", .{module.fresh}));
-    try audit.appendSlice(ctx.allocator, plan.obligations);
+    const axioms_path = try files.join(ctx, &.{ output, "theorem-axioms.json" });
+    try audit.append(ctx.allocator, try ctx.fmt(
+        \\run_cmd do
+        \\  let axioms ← Compiler.ZigAir.ProofAudit.theoremAxioms #[
+        \\    {s}]
+        \\  IO.FS.writeFile {s} axioms.compress
+        \\
+    , .{ try std.mem.join(ctx.allocator, ",\n    ", plan.obligations), try z.certificate.string(ctx, axioms_path) }));
     const auditPath = try files.join(ctx, &.{ output, "Audit.lean" });
     const auditBytes = try std.mem.concat(ctx.allocator, u8, audit.items);
     try files.write(io, auditPath, auditBytes);
@@ -399,6 +410,15 @@ fn checkProofs(ctx: *c.Context, io: std.Io, options: RunOptions, environment: *c
     try ctx.require(std.mem.eql(u8, auditBytes, try ctx.read(io, auditPath, c.max_json_bytes)), "client audit changed during checking");
     var artifactIter = artifacts.iterator();
     while (artifactIter.next()) |entry| try ctx.require(std.mem.eql(u8, entry.value_ptr.*, &(try runtime.fileDigest(ctx, io, entry.key_ptr.*))), "checked client artifact changed");
+    const axioms = (try files.readJson(ctx, io, axioms_path)).value;
+    try ctx.require(axioms == .object, "expected a theorem axiom map");
+    var expected: std.StringHashMap(void) = .init(ctx.allocator);
+    for (inputs) |input| for (input.manifest.theorems) |name| {
+        try expected.put(name, {});
+        _ = try strings(ctx, try ctx.field(axioms, name));
+    };
+    try ctx.require(expected.count() == axioms.object.count(), "unexpected theorem in axiom report");
+    return axioms;
 }
 
 fn readInput(ctx: *c.Context, io: std.Io, base: Dir, path: []const u8) ![]const u8 {
