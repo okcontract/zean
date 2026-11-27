@@ -2,6 +2,9 @@
 
 ## 0.2.2-dev
 
+- AIR admission errors identify missing or unexpected fields. Instruction-limit
+  errors include the captured function, actual size, configured limit and ceiling.
+
 - `ReadView.BaseAccessible.element_of_load` proves many-pointer indexing
   from an accessible base and a single initialized element. This supports
   partially initialized lookup tables. [Memory contracts](docs/verification.md)

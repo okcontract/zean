@@ -232,7 +232,12 @@ pub const Decoder = struct {
             try ctx.require(!result.hasAlignment(), "aligned signature needs an external memory contract");
         }
         const instructions = try ctx.array(try ctx.field(record, "instructions"));
-        try ctx.require(instructions.len > 0 and instructions.len <= options.instruction_limit and options.instruction_limit <= maximum_instructions, "scalar AIR instruction resource limit");
+        if (instructions.len == 0 or instructions.len > options.instruction_limit or options.instruction_limit > maximum_instructions) {
+            const name = try ctx.str(try ctx.field(record, "name"));
+            return ctx.fail("AIR instruction resource limit for {f}: {d} instructions, configured limit {d}, maximum {d}", .{
+                std.zig.fmtString(name[0..@min(name.len, 256)]), instructions.len, options.instruction_limit, maximum_instructions,
+            });
+        }
         for (instructions, 0..) |inst, index| {
             try ctx.require(try ctx.nat(try ctx.field(inst, "index"), maximum_instructions) == index, "invalid AIR instruction table");
             _ = try ctx.str(try ctx.field(inst, "tag"));

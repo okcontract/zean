@@ -42,14 +42,22 @@ pub const Context = struct {
         return get(value, name) orelse return self.fail("missing field: {s}", .{name});
     }
     pub fn fields(self: *Context, value: Value, names: []const u8) Error!void {
-        if (value != .object) return self.fail("unexpected AIR fields: {s}", .{names});
+        if (value != .object) return self.fail("expected an AIR object with fields [{s}], found {s}", .{ names, @tagName(value) });
         var words = std.mem.tokenizeScalar(u8, names, ' ');
         var count: usize = 0;
         while (words.next()) |word| {
-            if (!value.object.contains(word)) return self.fail("unexpected AIR fields: {s}", .{names});
+            if (!value.object.contains(word)) return self.fail("missing AIR field '{s}' (expected [{s}])", .{ word, names });
             count += 1;
         }
-        if (value.object.count() != count) return self.fail("unexpected AIR fields: {s}", .{names});
+        if (value.object.count() != count) {
+            for (value.object.keys()) |key| {
+                var expected = std.mem.tokenizeScalar(u8, names, ' ');
+                while (expected.next()) |word| {
+                    if (std.mem.eql(u8, key, word)) break;
+                } else return self.fail("unexpected AIR field '{f}' (expected [{s}])", .{ std.zig.fmtString(key[0..@min(key.len, 160)]), names });
+            }
+            return self.fail("AIR field count differs from expected [{s}]", .{names});
+        }
     }
     pub fn str(self: *Context, value: Value) Error![]const u8 {
         if (value != .string) return self.fail("expected a string", .{});
@@ -170,6 +178,17 @@ test "JSON is bounded, exact and rejects duplicate keys" {
     const value = try context.parse("123456789123456789123456789123456789123456789");
     try std.testing.expectEqual(@as(i1024, 123456789123456789123456789123456789123456789), try context.integer(value));
     try std.testing.expectError(error.InvalidInput, context.nat(.{ .bool = true }, 1));
+}
+
+test "AIR field diagnostics identify missing and additional keys" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx: Context = .{ .allocator = arena.allocator() };
+    const record = try ctx.parse("{\"kind\":1,\"layout\":2}");
+    try std.testing.expectError(error.InvalidInput, ctx.fields(record, "kind identity"));
+    try std.testing.expectEqualStrings("missing AIR field 'identity' (expected [kind identity])", ctx.diagnostic);
+    try std.testing.expectError(error.InvalidInput, ctx.fields(record, "kind"));
+    try std.testing.expectEqualStrings("unexpected AIR field 'layout' (expected [kind])", ctx.diagnostic);
 }
 
 pub fn ordered(ctx: *Context, value: Value) Error!Value {
