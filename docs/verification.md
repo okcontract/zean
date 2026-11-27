@@ -117,6 +117,10 @@ kernel-checked equality. `Binding.Saved` combines a register binding with
 its stored value and, for mutable locals, its write capability. The invariant
 still has to establish dynamic lifetime IDs, including conditional allocations.
 
+Use `Bindings.resultOf code type operation` to select a typed producer with its
+actual operands. Use the selected register in the next operation to follow
+dataflow. An absent or ambiguous match yields `none`.
+
 In a call-machine proof, select the receiving register with
 `air_binding% ((Bindings.callResult caller.body calleeId).get (by decide)).register`.
 A missing call or multiple calls to the same function yields `none`. When a

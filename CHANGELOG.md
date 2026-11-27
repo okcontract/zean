@@ -2,6 +2,13 @@
 
 ## 0.2.2-dev
 
+- `MemoryAir.Bindings.resultOf` selects a unique binding by result type and
+  exact operation and operands. Proofs can follow a chain across register
+  renumbering and reject changed dataflow. [Checked bindings](docs/verification.md#checked-local-bindings)
+- Scalar AIR accepts typed Boolean negation and certifies it with the Lean
+  decoder. `Compiler.ZigAir.ResultDecision` supplies decidable success and
+  fault observations without requiring equality on the unobserved branch.
+
 - `Generated.lean` puts executable definitions before captured AIR and
   correspondence certificates. Consecutive switch cases align at the same
   indentation. [Native tooling](docs/native-tooling.md)

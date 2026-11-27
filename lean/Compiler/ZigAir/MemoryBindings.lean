@@ -70,6 +70,12 @@ theorem unique_exact (values : List α) (selected : unique values = some value) 
     | nil => cases selected; rfl
     | cons => cases selected
 
+/-- Select the unique result of a typed operation, including its operands and
+arithmetic mode. Chaining selections follows dataflow across local renumbering. -/
+def resultOf (code : Control.Code Ty Prim Ref loops) (type : Ty) (operation : Prim) : Option Binding :=
+  unique ((primitives code).filterMap fun (binding, prim) =>
+    if binding.type = type ∧ prim = operation then some binding else none)
+
 def argument (code : Control.Code Ty Prim Ref loops) (index : Nat) : Option Binding :=
   unique ((primitives code).filterMap fun (binding, prim) => match prim with
     | .argument actual => if actual = index then some binding else none
