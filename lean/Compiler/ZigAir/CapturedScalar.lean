@@ -24,6 +24,7 @@ def scalarRef : MemoryAir.Ref → Option Scalar.Ref
 def scalarPrim : MemoryAir.Prim → Option Scalar.Prim
   | .argument index => some (.argument index)
   | .scalar operation => some operation
+  | .booleanNot ref => return .booleanNot (← scalarRef ref)
   | _ => none
 
 def scalarCode : Control.Code Memory.Ty MemoryAir.Prim MemoryAir.Ref → Option Scalar.Code

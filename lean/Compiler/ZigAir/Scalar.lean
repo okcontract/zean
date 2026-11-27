@@ -126,6 +126,7 @@ inductive Prim where
   | bitXor (left right : Ref)
   | shiftRight (left right : Ref)
   | shiftLeft (left right : Ref)
+  | booleanNot (operand : Ref)
   | boolToInt (operand : Ref)
   | comparison (op : Comparison) (left right : Ref)
   | compareEnum (equal : Bool) (left right : Ref)
@@ -150,6 +151,9 @@ def Prim.eval (prim : Prim) (args : List Value) (env : Env) : Result := do
     if n = 0 ∨ n ≠ m then .error .malformed
     else if y = 0 then .error .illegalBehavior
     else .ok (.int false n (x.toNat / y.toNat : Nat))
+  | .booleanNot operand =>
+    let .bool value ← operand.eval env | .error .malformed
+    return .bool (!value)
   | .comparison op left right =>
     let .int s n x ← left.eval env | .error .malformed
     let .int t m y ← right.eval env | .error .malformed

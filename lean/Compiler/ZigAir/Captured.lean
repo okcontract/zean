@@ -531,6 +531,7 @@ def primitive (parameters : List Nat) (inst : Raw) (table : List Raw := []) : Op
     | .slice .. => unary inst (.sliceCast target)
     | _ => unary inst (.pointerCast target)
   | "not" =>
+    require ((← referenceType table (← inst.get "operand")) == .scalar .bool)
     require ((← typeOf 17 (← inst.get "type")) == .scalar .bool)
     unary inst .booleanNot
   | "is_err" | "is_non_err" | "unwrap_errunion_payload" | "unwrap_errunion_err" |

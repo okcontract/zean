@@ -1065,6 +1065,11 @@ pub const Decoder = struct {
                 const right = try self.reference(try ctx.field(inst, "rhs"), env, self.profile != .scalar);
                 try ctx.require(ty.* == .int and !ty.int.signed and ty.int.bits > 0 and Ty.same(left.ty, ty) and Ty.same(right.ty, ty), "ill-typed unsigned AIR division");
                 primitive = try self.scalarPrimitive(try ctx.fmt("(.divideUnsigned {s} {s})", .{ left.text, right.text }));
+            } else if (self.profile == .scalar and eq(u8, tag, "not")) {
+                try ctx.fields(inst, base ++ "operand");
+                const operand = try self.reference(try ctx.field(inst, "operand"), env, false);
+                try ctx.require(ty.* == .boolean and operand.ty.* == .boolean, "unsupported nonboolean complement");
+                primitive = try ctx.fmt("(.booleanNot {s})", .{operand.text});
             } else if (c.oneOf(tag, &.{ "bit_and", "bit_or", "xor", "shr", "shl" })) {
                 try ctx.fields(inst, base ++ "lhs rhs");
                 const left = try self.reference(try ctx.field(inst, "lhs"), env, self.profile != .scalar);
