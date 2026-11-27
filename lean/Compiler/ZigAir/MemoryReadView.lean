@@ -30,6 +30,17 @@ def slice (view : ReadView) : Value := .slice (.slice false view.child) view.add
 def Represents (state : State) (view : ReadView) (values : Nat → Value) : Prop :=
   ∀ index < view.length, load state (view.pointer index) = .ok (values index)
 
+/-- The many-pointer base passes its aligned, zero-width access check.
+No initialized cell is required, including at index zero. -/
+def BaseAccessible (state : State) (view : ReadView) : Prop :=
+  ∃ cell, access state view.address ⟨0, view.layout.alignment⟩ false = .ok cell
+
+theorem BaseAccessible.stack (frame : StackFrame before after) (base : BaseAccessible before view) :
+    BaseAccessible after view := by
+  obtain ⟨cell, checked⟩ := base
+  have found := (access_success_region _ _ _ _ _ checked).1
+  exact ⟨cell, by simpa only [access, frame.old_lookup _ _ found, found] using checked⟩
+
 theorem Represents.read (cap : Represents state view values) (index : Nat) (inside : index < view.length) :
     load state (view.pointer index) = .ok (values index) := cap index inside
 
@@ -37,25 +48,39 @@ theorem Represents.stack (frame : StackFrame before after) (cap : Represents bef
     Represents after view values :=
   fun index inside => frame.old_load false false view.child _ _ (cap index inside)
 
-theorem Represents.checked_access (cap : Represents state view values) (index : Nat) (inside : index < view.length) :
+private theorem checked_access_of_load {view : ReadView}
+    (loaded : load state (view.pointer index) = .ok value) :
     ∃ cell, access state (view.addressAt index) view.layout false = .ok cell := by
-  have loaded := cap index inside
   cases checked : access state (view.addressAt index) view.layout false with
   | error fault => simp [pointer, load, view.shaped, checked, bind, Except.bind] at loaded
   | ok cell => exact ⟨cell, rfl⟩
 
-theorem Represents.element (cap : Represents state view values) (index : Nat) (inside : index < view.length) :
+theorem Represents.checked_access (cap : Represents state view values) (index : Nat) (inside : index < view.length) :
+    ∃ cell, access state (view.addressAt index) view.layout false = .ok cell :=
+  checked_access_of_load (cap index inside)
+
+theorem baseAccessible_of_first_load {view : ReadView} (loaded : load state (view.pointer 0) = .ok value) :
+    BaseAccessible state view := by
+  obtain ⟨cell, checked⟩ := checked_access_of_load loaded
+  have narrow := access_narrow _ _ _ 0 false _ checked (Nat.zero_le _)
+  exact ⟨cell, by simpa only [addressAt, Nat.zero_mul, Nat.add_zero] using narrow⟩
+
+/-- A many-pointer lookup needs the base geometry and the selected element only.
+A slice additionally checks the index against its declared length. -/
+theorem BaseAccessible.element_of_load (base : BaseAccessible state view)
+    (loaded : load state (view.pointer index) = .ok value) :
     elementPointer state view.buffer index = .ok (view.pointer index) := by
-  obtain ⟨first, start⟩ := cap.checked_access 0 (by omega)
-  obtain ⟨last, finish⟩ := cap.checked_access index inside
-  have firstFound := (access_success_region _ _ _ _ _ start).1
-  have lastFound := (access_success_region _ _ _ _ _ finish).1
-  have same : last = first := Option.some.inj (lastFound.symm.trans firstFound)
+  obtain ⟨first, start⟩ := base
+  obtain ⟨last, finish⟩ := checked_access_of_load loaded
+  have same : last = first := Option.some.inj
+    ((access_success_region _ _ _ _ _ finish).1.symm.trans (access_success_region _ _ _ _ _ start).1)
   subst last
-  have narrow := access_narrow _ _ _ 0 false _ start (by omega)
-  simpa only [buffer, pointer, addressAt, Nat.zero_mul, Nat.add_zero] using
-    elementPointer_of_access state false view.child view.address index view.layout first
-      view.shaped view.positive (by simpa [addressAt] using narrow) finish
+  exact elementPointer_of_access state false view.child view.address index view.layout first
+    view.shaped view.positive start finish
+
+theorem Represents.element (cap : Represents state view values) (index : Nat) (inside : index < view.length) :
+    elementPointer state view.buffer index = .ok (view.pointer index) :=
+  (baseAccessible_of_first_load (cap 0 (by omega))).element_of_load (cap index inside)
 
 theorem Represents.offset_zero (cap : Represents state view values) (positive : 0 < view.length) :
     offsetPointer state false view.buffer 0 = .ok view.buffer := by

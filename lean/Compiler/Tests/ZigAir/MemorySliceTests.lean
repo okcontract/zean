@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 -/
 import Compiler.Cases.Memory.MemorySliceInvocation
+import Compiler.ZigAir.MemoryReadView
 import Compiler.ZigAir.MemoryRecordCapability
 import Compiler.ZigAir.MemorySliceSlotReads
 
@@ -52,6 +53,16 @@ theorem second_allocation_exhausted : fn_slice_element.run (arguments (view 1 2)
 def uninitialized : State := { caller with heap := [(0, { cell with cells := [] })] }
 theorem uninitialized_address : fn_slice_element.run (arguments (view 1 2) 1) uninitialized =
     (.ok ((view 1 2).pointer 1), ⟨uninitialized.heap, 3, 72⟩) := by decide +kernel
+
+private def sparse : State := { caller with heap := [(0, { cell with cells := [(28, number 42)] })] }
+private def sparseView : ReadView := ⟨word, ⟨4, 4⟩, rfl, by decide, ⟨0, 0⟩, 8⟩
+
+example : elementPointer sparse sparseView.buffer 7 = .ok (sparseView.pointer 7) :=
+  ReadView.BaseAccessible.element_of_load
+    (show sparseView.BaseAccessible sparse from ⟨_, rfl⟩)
+    (show load sparse (sparseView.pointer 7) = .ok (number 42) from rfl)
+
+example : load sparse (sparseView.pointer 0) = .error .uninitialized := rfl
 
 theorem dead_slice : sliceElementPointer {} (view 1 2).slice 0 = .error .unallocated := by decide +kernel
 theorem oversized_slice : sliceElementPointer caller (.slice (.slice true word) ⟨0, 0⟩ addressLimit) 0 =

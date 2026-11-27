@@ -73,6 +73,12 @@ theorem Writable.retained {view : ReadView} (cap : Writable state view)
   obtain ⟨updated, accessed, same⟩ := shape.access checked
   exact ⟨updated, accessed, same.2.1 ▸ accepted, same.2.1 ▸ declared⟩
 
+theorem BaseAccessible.stored {view : ReadView} {pointer : Value} (base : BaseAccessible state view)
+    (stored : store state pointer value = .ok after) : BaseAccessible after view := by
+  obtain ⟨cell, checked⟩ := base
+  obtain ⟨updated, accessed, _⟩ := (store_retains_shape _ _ _ _ stored).access checked
+  exact ⟨updated, accessed⟩
+
 theorem Writable.stored {view : ReadView} {pointer : Value} (cap : Writable state view)
     (stored : store state pointer value = .ok after) : Writable after view :=
   cap.retained (store_retains_shape _ _ _ _ stored)

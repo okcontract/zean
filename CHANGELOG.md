@@ -2,6 +2,10 @@
 
 ## 0.2.2-dev
 
+- `ReadView.BaseAccessible.element_of_load` proves many-pointer indexing
+  from an accessible base and a single initialized element. This supports
+  partially initialized lookup tables. [Memory contracts](docs/verification.md)
+
 - `MemoryAir.Bindings.resultOf` selects a unique binding by result type and
   exact operation and operands. Proofs can follow a chain across register
   renumbering and reject changed dataflow. [Checked bindings](docs/verification.md#checked-local-bindings)

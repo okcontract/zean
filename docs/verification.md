@@ -65,6 +65,7 @@ stack capacity needs a native argument.
 | `WordArray.Readable` | Live storage covering the word view |
 | `WordArray.Represents` | Initialized words corresponding to a list |
 | `WordArray.Initialized` | Initialized words with arbitrary contents |
+| `ReadView.BaseAccessible` | Live, aligned many-pointer base. Use `element_of_load` with a successful load at the selected index for a partially initialized table |
 | `ReadView.Represents` | Initialized readonly elements of a given type, layout, and extent |
 | `ReadView.Writable` | Writable declared leaf elements in typed slice geometry, including uninitialized destinations |
 | `ByteArray.Region` | Live byte storage and extent with the requested permissions, including fields in complete records |
