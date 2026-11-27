@@ -62,6 +62,7 @@ def decode (raw : Raw) : Option Scalar.Program := do
     !(← validity.boolAt "complete") && (← validity.listAt "slices").isEmpty)
   let table ← raw.listAt "instructions"
   require (table.length > 0 && table.length ≤ 512)
+  Captured.checkCopyCoverage raw validity table
   let code ← Captured.body false (List.range parameters.length) table [] 1024 (← raw.listAt "body")
   pure ⟨parameters, returnType, ← scalarCode code⟩
 

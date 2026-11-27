@@ -23,6 +23,27 @@ theorem access_narrow (state : State) (address : Address) (layout : Layout) (byt
   cases write <;> simp only [access, found, shaped, Bool.false_and, Bool.false_eq_true, ↓reduceIte, ite_eq_right checks]
   simp only [permitted rfl, Bool.not_true, Bool.true_and, Bool.false_eq_true, ↓reduceIte]
 
+/-- A checked start and finish determine the result of an actual pointer
+addition, including an address one past the last element. -/
+theorem offsetPointer_of_access (state : State) (writable : Bool) (child : Ty)
+    (address : Address) (index : Nat) (layout : Layout) (cell : Allocation)
+    (shaped : child.layout = some layout) (positive : 0 < layout.bytes)
+    (start : access state address ⟨0, layout.alignment⟩ false = .ok cell)
+    (finish : access state ⟨address.allocation, address.offset + index * layout.bytes⟩
+      ⟨0, layout.alignment⟩ false = .ok cell) :
+    offsetPointer state false (.pointer (.pointer writable true child) address) index =
+      .ok (.pointer (.pointer writable true child) ⟨address.allocation, address.offset + index * layout.bytes⟩) := by
+  obtain ⟨_, _, _, _, _, pointerBound, _, _, _⟩ := access_success_region _ _ _ _ _ finish
+  dsimp only at pointerBound
+  have rawBounds : ¬((cell.base : Int) + ↑address.offset + ↑(index * layout.bytes) < 0 ∨
+      (cell.base : Int) + ↑address.offset + ↑(index * layout.bytes) ≥ ↑addressLimit) := by omega
+  have lower : ¬((cell.base : Int) + ↑address.offset + ↑(index * layout.bytes) < ↑cell.base) := by omega
+  have offset : ((cell.base : Int) + ↑address.offset + ↑(index * layout.bytes)).toNat - cell.base =
+      address.offset + index * layout.bytes := by omega
+  have nonzero : layout.bytes ≠ 0 := by omega
+  simp only [offsetPointer, shaped, nonzero, ↓reduceIte, start, bind, Except.bind, Bool.false_eq_true,
+    ite_eq_right rawBounds, ite_eq_right lower, offset, finish]
+
 /-- Derive the actual many-pointer offset and element cast from checked
 accesses, without an operation-success premise. Both native map components
 consume this arithmetic; neither supplies an already selected entry pointer. -/
@@ -34,19 +55,23 @@ theorem elementPointer_of_access (state : State) (writable : Bool) (child : Ty)
     elementPointer state (.pointer (.pointer writable true child) address) index =
       .ok (.pointer (.pointer writable false child) ⟨address.allocation, address.offset + index * layout.bytes⟩) := by
   have atEnd := access_narrow state _ layout 0 false cell finish (by omega)
-  obtain ⟨_, _, _, _, _, pointerBound, _, _, _⟩ := access_success_region state _ layout false cell finish
-  dsimp only at pointerBound
-  have rawBounds : ¬((cell.base : Int) + ↑address.offset + ↑(index * layout.bytes) < 0 ∨
-      (cell.base : Int) + ↑address.offset + ↑(index * layout.bytes) ≥ ↑addressLimit) := by omega
-  have lower : ¬((cell.base : Int) + ↑address.offset + ↑(index * layout.bytes) < ↑cell.base) := by omega
-  have offset : ((cell.base : Int) + ↑address.offset + ↑(index * layout.bytes)).toNat - cell.base =
-      address.offset + index * layout.bytes := by omega
-  have nonzero : layout.bytes ≠ 0 := by omega
-  simp only [elementPointer, offsetPointer, shaped, nonzero, ↓reduceIte, start,
-    bind, Except.bind, Bool.false_eq_true, ite_eq_right rawBounds, ite_eq_right lower, offset, atEnd,
-    pointerCast, pointerCompatible, decide_true, Bool.true_or,
-    Bool.not_true, finish]
+  have moved := offsetPointer_of_access state writable child address index layout cell shaped positive start atEnd
+  simp only [elementPointer, moved, bind, Except.bind, shaped, pointerCast, pointerCompatible, decide_true,
+    Bool.true_or, Bool.not_true, Bool.false_eq_true, ↓reduceIte, finish]
   cases writable <;> rfl
+
+/-- A checked range constructs the corresponding slice, including the empty
+slice of a live zero-length object. Element initialization is independent. -/
+theorem makeSlice_of_access (state : State) (writable : Bool) (child : Ty)
+    (address : Address) (length : Nat) (layout : Layout) (cell : Allocation)
+    (shaped : child.layout = some layout) (positive : 0 < layout.bytes) (width : length < addressLimit)
+    (checked : access state address ⟨length * layout.bytes, layout.alignment⟩ false = .ok cell) :
+    makeSlice state (.slice writable child) (.pointer (.pointer writable true child) address) length =
+      .ok (.slice (.slice writable child) address length) := by
+  have nonzero : layout.bytes ≠ 0 := by omega
+  cases writable <;> simp only [makeSlice, ne_self_iff_false, Bool.not_true, Bool.not_false, Bool.false_and,
+    Bool.true_and, Bool.false_eq_true, or_self, ↓reduceIte, Nat.not_le.mpr width, shaped, nonzero, checked,
+    bind, Except.bind]
 
 theorem pointerCast_address (state : State) (target : Ty) (writable many : Bool)
     (child : Ty) (address : Address) (result : Value)

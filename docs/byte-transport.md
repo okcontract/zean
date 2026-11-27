@@ -1,10 +1,13 @@
 # Copying undefined storage
 
-`@memcpy` transports byte initialization. Copying an undefined source byte
+`@memcpy` and `@memmove` transport byte initialization. Copying an undefined source byte
 clears initialization at the destination. A later value read of that byte
 faults until it is initialized.
 
-The model checks lifetime, bounds, destination permission, and non-overlap.
+The model checks source length equality, lifetime, bounds, and destination
+permission. `@memcpy` requires disjoint ranges. A move whose destination
+overlaps the source to its right traverses high bytes first and otherwise
+traverses low bytes first.
 Unsupported padding and representation views reject. A fault keeps writes
 already reached. On success, a copy preserves heap validity and observations
 outside its destination. With initialized source bytes, the copied prefix

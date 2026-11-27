@@ -6,8 +6,10 @@ const c = @import("common.zig");
 const types = @import("types.zig");
 const air = @import("air.zig");
 const capture = @import("capture.zig");
+const declaration_source = @import("declaration_source.zig");
 const eq = std.mem.eql;
-const Signature = struct { parameters: []*const types.Ty, result: *const types.Ty, alias_bits: u64 };
+const Parameter = union(enum) { stored: *const types.Ty, singleton: c.Value };
+const Signature = struct { parameters: []Parameter, result: *const types.Ty, alias_bits: u64 };
 pub const Mapping = struct { indices: []const usize, sha: ?[]const u8 };
 pub fn identity(ctx: *c.Context, value: c.Value, sources: c.Value) c.Error!void {
     try ctx.fields(value, "name sourceFile sourceSha256");
@@ -21,19 +23,24 @@ pub fn recordIdentity(ctx: *c.Context, record: c.Value) c.Error!c.Value {
     for ([_][]const u8{ "name", "sourceFile", "sourceSha256" }) |key| try value.object.put(ctx.allocator, key, try ctx.field(record, key));
     return value;
 }
-pub fn signature(ctx: *c.Context, record: c.Value) c.Error!Signature {
+pub fn signature(ctx: *c.Context, record: c.Value, profile: types.Profile) c.Error!Signature {
     const value = try ctx.field(record, "signature");
     try ctx.fields(value, "callingConvention genericInstance varArgs noaliasBits parameters returnType");
     try ctx.require(c.get(value, "genericInstance").? == .bool and c.flag(value, "varArgs", false), "unsupported specialization or variadic signature");
     const parameters = try ctx.array(try ctx.field(value, "parameters"));
     try ctx.require(parameters.len <= 32, "unsupported signature parameter count");
     const alias_bits = try ctx.nat(try ctx.field(value, "noaliasBits"), (@as(u64, 1) << @intCast(parameters.len)) - 1);
-    const parsed = try ctx.allocator.alloc(*const types.Ty, parameters.len);
-    for (parameters, parsed) |parameter, *out| out.* = try types.parse(ctx, parameter, .word_bytes, 0);
-    return .{ .parameters = parsed, .result = try types.parse(ctx, try ctx.field(value, "returnType"), .word_bytes, 0), .alias_bits = alias_bits };
+    const parsed = try ctx.allocator.alloc(Parameter, parameters.len);
+    for (parameters, parsed, 0..) |parameter, *out, index| {
+        if (try types.isSingletonParameter(ctx, parameter)) {
+            try ctx.require(alias_bits & (@as(u64, 1) << @intCast(index)) == 0, "singleton argument cannot have a noalias contract");
+            out.* = .{ .singleton = parameter };
+        } else out.* = .{ .stored = try types.parse(ctx, parameter, profile, 0) };
+    }
+    return .{ .parameters = parsed, .result = try types.parse(ctx, try ctx.field(value, "returnType"), profile, 0), .alias_bits = alias_bits };
 }
-pub fn mapping(ctx: *c.Context, record: c.Value, sources: c.Value) c.Error!Mapping {
-    const sig = try signature(ctx, record);
+pub fn mapping(ctx: *c.Context, record: c.Value, profile: types.Profile, sources: c.Value, retained: ?*declaration_source.Retained) c.Error!Mapping {
+    const sig = try signature(ctx, record, profile);
     const signature_record = try ctx.field(record, "signature");
     if (c.flag(signature_record, "genericInstance", false)) {
         try ctx.require(c.get(record, "specialization") == null, "nongeneric function has specialization metadata");
@@ -65,7 +72,26 @@ pub fn mapping(ctx: *c.Context, record: c.Value, sources: c.Value) c.Error!Mappi
         } else {
             try ctx.fields(arg, "kind value");
             try ctx.require(comptime_bits & bit != 0 and alias_bits & bit == 0, "implicit comptime or comptime alias_bits is outside the metadata profile");
-            if (c.tag(arg, "kind", "type") or c.tag(arg, "kind", "anytypeType")) _ = try types.parse(ctx, try ctx.field(arg, "value"), .word_bytes, 0) else if (c.tag(arg, "kind", "value")) _ = try air.constant(ctx, try ctx.field(arg, "value"), .memory) else return ctx.fail("unsupported compile-time argument", .{});
+            const value = try ctx.field(arg, "value");
+            if (c.tag(arg, "kind", "type") or c.tag(arg, "kind", "anytypeType")) {
+                _ = try types.parse(ctx, value, profile, 0);
+            } else if (c.tag(arg, "kind", "value")) {
+                if (c.tag(value, "kind", "function")) {
+                    try ctx.fields(value, "kind identity");
+                    const callback = try ctx.field(value, "identity");
+                    try identity(ctx, callback, sources);
+                    const declarations = retained orelse return ctx.fail("comptime callback requires retained source", .{});
+                    const path = try ctx.str(try ctx.field(callback, "sourceFile"));
+                    const file = declarations.get(path) catch |err| switch (err) {
+                        error.InvalidInput, error.OutOfMemory => |e| return e,
+                        else => return ctx.fail("cannot read callback source {s}: {s}", .{ path, @errorName(err) }),
+                    };
+                    const name = try ctx.str(try ctx.field(callback, "name"));
+                    try ctx.require(c.tag(callback, "sourceSha256", &file.sha) and std.mem.startsWith(u8, name, file.prefix), "callback source identity mismatch");
+                    var buffer: [1]std.zig.Ast.Node.Index = undefined;
+                    _ = try declaration_source.functionProto(ctx, callback, &file.declarations, name[file.prefix.len..], &buffer);
+                } else _ = try air.constant(ctx, value, profile);
+            } else return ctx.fail("unsupported compile-time argument", .{});
         }
     }
     try ctx.require(indices.items.len == sig.parameters.len and remapped == sig.alias_bits, "specialization lost runtime parameters or alias_bits bits");
@@ -86,8 +112,8 @@ pub fn link(ctx: *c.Context, records: c.Value, roots: []const []const u8, source
         const record = try ctx.field(records, name);
         try ctx.require(c.tag(record, "name", name) and c.tag(record, "schema", "oksolc.fresh-air.v3") and c.tag(record, "capturePoint", "after-sema-before-legalize") and c.equal(try ctx.field(record, "configuration"), configuration), "linked function identity, phase or configuration mismatch");
         try identity(ctx, try recordIdentity(ctx, record), sources);
-        const sig = try signature(ctx, record);
-        const spec = try mapping(ctx, record, sources);
+        const sig = try signature(ctx, record, .word_bytes);
+        const spec = try mapping(ctx, record, .word_bytes, sources, null);
         const instructions = try ctx.array(try ctx.field(record, "instructions"));
         const body = try ctx.array(try ctx.field(record, "body"));
         try ctx.require(instructions.len > 0 and instructions.len <= 512, "invalid linked instruction inventory");
@@ -98,10 +124,13 @@ pub fn link(ctx: *c.Context, records: c.Value, roots: []const []const u8, source
             _ = try ctx.str(try ctx.field(inst, "tag"));
             if (!c.flag(inst, "payloadVisited", true)) unvisited += 1 else if (c.flag(inst, "unsupportedPayload", true)) try unsupported.array.append(try ctx.parse(try ctx.json(.{ .index = index, .tag = try ctx.field(inst, "tag") })));
         }
-        for (spec.indices, 0..) |source_index, runtime_index| {
-            try ctx.require(runtime_index < body.len, "missing linked argument prefix");
-            const instruction = instructions[try ctx.nat(body[runtime_index], instructions.len - 1)];
-            try ctx.require(c.tag(instruction, "tag", "arg") and c.flag(instruction, "payloadVisited", true) and try ctx.nat(try ctx.field(instruction, "zirParameterIndex"), 31) == source_index and types.Ty.same(try types.parse(ctx, try ctx.field(instruction, "type"), .word_bytes, 0), sig.parameters[runtime_index]), "linked AIR arguments disagree with runtime/source mapping");
+        var position: usize = 0;
+        for (spec.indices, sig.parameters) |source_index, parameter| {
+            if (parameter == .singleton) continue;
+            try ctx.require(position < body.len, "missing linked argument prefix");
+            const instruction = instructions[try ctx.nat(body[position], instructions.len - 1)];
+            try ctx.require(c.tag(instruction, "tag", "arg") and c.flag(instruction, "payloadVisited", true) and try ctx.nat(try ctx.field(instruction, "zirParameterIndex"), 31) == source_index and types.Ty.same(try types.parse(ctx, try ctx.field(instruction, "type"), .word_bytes, 0), parameter.stored), "linked AIR arguments disagree with runtime/source mapping");
+            position += 1;
         }
         try functions.object.put(ctx.allocator, name, try ctx.parse(try ctx.json(.{ .recordSha256 = try c.fingerprint(ctx, record), .specializationSha256 = spec.sha, .runtimeParameterIndices = spec.indices, .noaliasBits = sig.alias_bits, .unsupportedBodyInstructions = unsupported, .unvisitedInstructions = unvisited })));
         for (instructions) |inst| {
@@ -115,17 +144,21 @@ pub fn link(ctx: *c.Context, records: c.Value, roots: []const []const u8, source
             const target_name = try ctx.str(try ctx.field(target, "name"));
             const target_record = try ctx.field(records, target_name);
             try ctx.require(c.equal(target, try recordIdentity(ctx, target_record)), "call reference and captured callee disagree");
-            const expected = try signature(ctx, target_record);
+            const expected = try signature(ctx, target_record, .word_bytes);
             const args = try ctx.array(try ctx.field(inst, "arguments"));
             try ctx.require(args.len == expected.parameters.len, "call runtime argument count disagrees with callee");
             for (args, expected.parameters) |arg, wanted| {
+                if (wanted == .singleton) {
+                    try types.checkSingletonValue(ctx, arg, wanted.singleton);
+                    continue;
+                }
                 const actual = if (c.tag(arg, "kind", "instruction")) blk: {
                     try ctx.fields(arg, "kind index");
                     const instruction = instructions[try ctx.nat(try ctx.field(arg, "index"), instructions.len - 1)];
                     try ctx.require(c.flag(instruction, "payloadVisited", true), "call uses an unvisited argument");
                     break :blk try types.parse(ctx, try ctx.field(instruction, "type"), .word_bytes, 0);
                 } else (try air.constant(ctx, arg, .memory)).ty;
-                try ctx.require(types.Ty.same(actual, wanted), "call runtime argument type disagrees with callee");
+                try ctx.require(types.Ty.same(actual, wanted.stored), "call runtime argument type disagrees with callee");
             }
             try ctx.require(types.Ty.same(try types.parse(ctx, try ctx.field(inst, "type"), .word_bytes, 0), expected.result), "call return type disagrees with callee");
             try edges.append(ctx.allocator, try ctx.parse(try ctx.json(.{ .caller = name, .instruction = try ctx.field(inst, "index"), .tag = try ctx.field(inst, "tag"), .callee = target_name, .arguments = args })));

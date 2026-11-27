@@ -21,7 +21,7 @@ private def sameIdentity (raw expected : Raw) : Bool :=
 def decode : Nat → (loops : Bool) → List Raw → Raw → Option (MemoryCall.Program loops)
   | 0, _, _, _ => none
   | fuel + 1, loops, closure, raw => do
-    let input ← prepare raw
+    let input ← prepare raw .directCall
     let operation (inst : Raw) : Option MemoryCall.Prim := do
       if ["call", "call_never_inline", "call_never_tail"].contains (← inst.textAt "tag") then
         let callee ← inst.get "callee"
@@ -29,7 +29,7 @@ def decode : Nat → (loops : Bool) → List Raw → Raw → Option (MemoryCall.
         let identity ← callee.get "identity"
         let [record] := closure.filter (sameIdentity · identity) | none
         let target ← decode fuel false closure record
-        let arguments ← (← inst.listAt "arguments").mapM reference
+        let arguments ← callArguments inst (← (← record.get "signature").listAt "parameters")
         require (arguments.length == target.parameters.length &&
           (← typeOf 17 (← inst.get "type")) == target.returnType)
         pure (.call target.target arguments)

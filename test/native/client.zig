@@ -37,6 +37,14 @@ pub fn controls() !void {
         try value.object.put(ctx.allocator, mutation.key, .{ .string = mutation.value });
         try std.testing.expectError(error.InvalidInput, z.client.parse(&ctx, value));
     }
+    var dependent = try ctx.parse(try ctx.json(baseline));
+    try dependent.object.put(ctx.allocator, "dependencies", try ctx.parse("[\"proofs/other.json\"]"));
+    const parsed = try z.client.parse(&ctx, dependent);
+    try std.testing.expectEqualStrings("proofs/other.json", parsed.dependencies[0]);
+    for ([_][]const u8{ "[\"../outside.json\"]", "[\"proofs/other.json\",\"proofs/other.json\"]" }) |invalid| {
+        try dependent.object.put(ctx.allocator, "dependencies", try ctx.parse(invalid));
+        try std.testing.expectError(error.InvalidInput, z.client.parse(&ctx, dependent));
+    }
     const source = "/- header /- nested -/ -/\n import Cell.Generated\nimport Compiler.ZigAir.Verify.Words -- framework\n\nnamespace Cell\ntheorem safe : True := True.intro\nend Cell\n";
     const replayed = try z.proof_replay.replay(&ctx, source, &.{"Compiler.ZigAir.Verify.Words"}, &.{.{ .original = "Cell.Generated", .fresh = "Fresh_0" }});
     try std.testing.expectEqualStrings("import Fresh_0\nimport Compiler.ZigAir.Verify.Words\nnamespace Cell\ntheorem safe : True := True.intro\nend Cell\n", replayed);
@@ -49,4 +57,47 @@ pub fn controls() !void {
         "/- unterminated",
     }) |bad| try std.testing.expectError(error.InvalidInput, z.proof_replay.replay(&ctx, bad, &.{}, &.{.{ .original = "Cell.Generated", .fresh = "Fresh_0" }}));
     try std.testing.expectError(error.InvalidInput, z.proof_replay.replay(&ctx, "import Cell.Later\n", &.{}, &.{}));
+    try std.testing.expectEqualStrings("proof import Cell.Later is undeclared or has not been checked yet", ctx.diagnostic);
+    try dependencyImports(&ctx, parsed);
+}
+
+fn dependencyImports(ctx: *z.common.Context, baseline: z.client.Manifest) !void {
+    const words = "import Compiler.ZigAir.Verify.Words\n";
+    var a: z.client.ReplayInput = .{ .path = "a.json", .manifest = baseline, .generated = "", .proofs = &.{words} };
+    a.manifest.dependencies = &.{};
+    a.manifest.generated = "A.Generated";
+    a.manifest.proofs = &.{.{ .module = "Shared.Proof", .path = "Shared.lean" }};
+    var b = a;
+    b.path = "b.json";
+    b.manifest.generated = "B.Generated";
+    b.manifest.libraries = &.{};
+    b.manifest.proofs = &.{.{ .module = "B.Proof", .path = "B.lean" }};
+    var root = b;
+    root.path = "root.json";
+    root.manifest.generated = "Root.Generated";
+    root.manifest.dependencies = &.{ a.path, b.path };
+    root.manifest.proofs = &.{.{ .module = "Root.Proof", .path = "Root.lean" }};
+    root.proofs = &.{"import A.Generated\nimport B.Generated\nimport Shared.Proof\n"};
+    for ([_][]const u8{ "import A.Generated\n", "import Shared.Proof\n", words }) |unavailable| {
+        b.proofs = &.{unavailable};
+        try std.testing.expectError(error.InvalidInput, z.client.planProofs(ctx, &.{ a, b, root }, "Test"));
+        try std.testing.expectError(error.InvalidInput, z.client.planProofs(ctx, &.{ b, a, root }, "Test"));
+    }
+    // Even identical proof bytes must resolve again before reusing A's module.
+    b.manifest.proofs = a.manifest.proofs;
+    b.proofs = a.proofs;
+    try std.testing.expectError(error.InvalidInput, z.client.planProofs(ctx, &.{ a, b, root }, "Test"));
+    b.manifest.libraries = a.manifest.libraries;
+    const shared = try z.client.planProofs(ctx, &.{ a, b, root }, "Test");
+    try std.testing.expectEqual(5, shared.modules.len);
+    try std.testing.expectEqualStrings("import Test_0\nimport Test_2\nimport Test_1\n", shared.modules[4].body);
+
+    b.manifest.dependencies = &.{a.path};
+    b.manifest.proofs = &.{ .{ .module = "B.First", .path = "First.lean" }, .{ .module = "B.Second", .path = "Second.lean" } };
+    b.proofs = &.{ "import Shared.Proof\n", "import B.First\n" };
+    root.manifest.dependencies = &.{b.path};
+    const transitive = try z.client.planProofs(ctx, &.{ a, b, root }, "Test");
+    try std.testing.expectEqualStrings("import Test_0\nimport Test_2\nimport Test_1\n", transitive.modules[6].body);
+    b.proofs = &.{ "import B.Second\n", "import Shared.Proof\n" };
+    try std.testing.expectError(error.InvalidInput, z.client.planProofs(ctx, &.{ a, b, root }, "Test"));
 }

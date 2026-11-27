@@ -20,6 +20,12 @@ check the captured bodies and require unique declarations with matching
 source identities, arities, and return types. Translation checks runtime
 argument types as well. [Profile limits](architecture.md#supported-routes)
 
+A direct call to a generic specialization can supply a named `comptime`
+function. Zean checks the callback's source identity and the owner's
+function-typed parameter while building the runtime parameter map. The
+certificate interprets the concrete AIR after specialization, with each
+reached call checked against its own captured declaration.
+
 `MemoryCallMachine.run functions fuel root args state` returns a finished
 result or a suspended configuration. The default `.history` policy keeps
 address accounting. Pass `.reuse` to reclaim storage at invocation boundaries.
@@ -59,6 +65,29 @@ metadata across success, faults and suspension. `rootWritable_retained`
 preserves writable root capabilities under either policy. Use the function
 contract for contents and initialization guarantees.
 [Checked local bindings](verification.md#checked-local-bindings)
+
+## Prove a straight-line prefix
+
+`projectMemoryPrefix` selects a fixed number of memory bindings from the
+captured call-machine body and appends a proof continuation. It returns
+`none` if selection reaches a call or a control edge. Use a jump as the
+proof continuation to observe the resulting registers and memory.
+`advance_projected_prefix` connects that result to the real execution,
+which stops at its original next instruction with its control and caller
+stacks intact. [Prefix projection and replay](../lean/Compiler/ZigAir/MemoryCallMachinePrefix.lean)
+
+## Check register-only helpers
+
+Import `Compiler.ZigAir.MemoryRegisterOnly`. `projectFiniteMemory`
+recovers a finite memory body from a captured call-machine function.
+`steps_finite_memory` transfers its result back to the captured call
+table. Projection rejects calls and back edges in the selected body.
+
+When `MemoryAir.Code.registerOnly` holds, prove the result on a small valid
+reference state. `MemoryAir.Program.run_registerOnly` gives the same result
+on any valid initial state and preserves that entire state. This also
+applies to modeled faults. The register check includes all branches and
+block continuations. [Proof rules](../lean/Compiler/ZigAir/MemoryRegisterOnly.lean)
 
 ## Termination of finite closures
 

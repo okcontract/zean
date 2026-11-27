@@ -67,3 +67,64 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
         \\
     , .{ try z.air.decode(ctx, raw, .memory), try z.certificate.declaration(ctx, raw, "boundedSlice", false) });
 }
+
+/// Mutate one field of the bounded-slice capture or its retained evidence.
+pub fn inlineSources() !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx: z.common.Context = .{ .allocator = arena.allocator() };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const dir = try std.fs.path.resolve(ctx.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path });
+    try tmp.dir.createDir(io, "air", .default_dir);
+    try tmp.dir.createDir(io, "lib", .default_dir);
+    const helper = "pub inline fn view(bytes: []u8, i: usize, n: usize) []u8 { return bytes[i..][0..n]; }";
+    const file = "lib/helper.zig";
+    const digest = z.common.digest(helper);
+    const raw = try f.load(ctx.allocator, bounded);
+    const guard = &raw.object.getPtr("sourceValidity").?.object.getPtr("slices").?.array.items[0];
+    const source = guard.object.getPtr("source").?;
+    const span = source.object.getPtr("span").?;
+    const start = std.mem.indexOf(u8, helper, "bytes[i..]").?;
+    span.object.getPtr("start").?.* = .{ .integer = @intCast(start) };
+    span.object.getPtr("main").?.* = .{ .integer = @intCast(start + "bytes".len) };
+
+    var hashes: z.common.Value = .{ .object = .empty };
+    try hashes.object.put(ctx.allocator, "fixture.zig", try ctx.field(raw, "sourceSha256"));
+    try hashes.object.put(ctx.allocator, file, .{ .string = &digest });
+    const Mutation = enum { good, no_inventory, unlisted_path, wrong_digest, changed_bytes, past_end, bad_anchor };
+    for (std.meta.tags(Mutation)) |mutation| {
+        try tmp.dir.writeFile(io, .{ .sub_path = file, .data = if (mutation == .changed_bytes) helper ++ " " else helper });
+        source.object.getPtr("file").?.* = .{ .string = if (mutation == .unlisted_path) "helper.zig" else file };
+        source.object.getPtr("sha256").?.* = if (mutation == .wrong_digest) try ctx.field(raw, "sourceSha256") else .{ .string = &digest };
+        span.object.getPtr("end").?.* = .{ .integer = @intCast(if (mutation == .past_end) helper.len + 1 else start + "bytes[i..][0..n]".len) };
+        guard.object.getPtr("anchor").?.object.getPtr("index").?.* = .{ .integer = if (mutation == .bad_anchor) 1 else 6 };
+        const bytes = try ctx.json(raw);
+        try tmp.dir.writeFile(io, .{ .sub_path = "air/root.json", .data = bytes });
+        var functions: z.common.Value = .{ .object = .empty };
+        const root = try ctx.str(try ctx.field(raw, "name"));
+        try functions.object.put(ctx.allocator, root, try ctx.parse(try ctx.json(.{ .requested = true, .file = "root.json", .sha256 = &z.common.digest(bytes) })));
+        var report = try ctx.parse(try ctx.json(.{
+            .schema = "oksolc.fresh-air-capture.v1",
+            .status = "captured",
+            .captureComplete = true,
+            .zigVersion = z.version,
+            .zigRevision = z.revision,
+            .sourceSha256 = try ctx.field(raw, "sourceSha256"),
+            .functions = functions,
+        }));
+        if (mutation != .no_inventory) try report.object.put(ctx.allocator, "sourceFiles", hashes);
+        try tmp.dir.writeFile(io, .{ .sub_path = "report.json", .data = try ctx.json(report) });
+        const options: z.translate.Options = .{ .profile = .memory, .capture = try ctx.fmt("{s}/report.json", .{dir}), .roots = &.{root}, .output = try ctx.fmt("{s}/{s}", .{ dir, @tagName(mutation) }) };
+        if (mutation == .good) {
+            _ = try z.translate.run(&ctx, io, options);
+            const model = try ctx.read(io, try ctx.fmt("{s}/Generated.lean", .{options.output}), 65536);
+            try std.testing.expect(std.mem.indexOf(u8, model, "(.checkBounds (.local 1) (.local 5) (.slice (.local 0)))") != null);
+            try std.testing.expectError(error.InvalidInput, z.air.decode(&ctx, raw, .memory));
+        } else {
+            try std.testing.expectError(error.InvalidInput, z.translate.run(&ctx, io, options));
+            try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, @tagName(mutation), .{}));
+        }
+    }
+}

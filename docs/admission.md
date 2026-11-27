@@ -7,7 +7,7 @@ retained guards. An operation still counts when its result is unused.
 `zig build admission` prints the `zean.admission.v1` vocabulary, its Lean
 interpretations, and rejection controls. Every reached tag must be listed
 and pass its profile, payload, type, and identity checks. The report records
-selected source slice requirements and marks coverage as incomplete.
+selected source slice and copy-length requirements. Coverage is incomplete.
 [Supported profiles](architecture.md#supported-routes)
 
 ## Source owners and calls
@@ -51,15 +51,26 @@ profiles reject volatile and atomic accesses. [Call machine](call-machine.md) ·
 | Loads and stores | Access order, liveness, type, initialization for reads, and permissions for writes |
 | Pointer arithmetic and casts | Child type, permissions, scaling, bounds, and overflow |
 | Slices and projections | Pointer and logical extent. Source slice guards execute at their recorded anchors. |
-| Byte `memcpy` | Live extents, write permission, non-overlap, and per-byte initialization. A fault preserves writes already reached. Unsupported element types and `memmove` reject. |
+| Byte `memcpy` | Equality of lengths supplied by both source operands, live extents, write permission, non-overlap, and per-byte initialization. A fault preserves writes already reached. |
+| Byte `memmove` | The same length, extent, permission, and initialization checks, with backwards traversal when the destination overlaps the source to its right. |
+| Undefined `memset` | A writable slice of supported scalars and an exact typed `undefined` operand. Each reached element loses initialization. Empty slices touch no storage. |
 | Array to slice | Static extent, pointer, and permissions. Conversion itself performs no storage access. |
-| Record fields | Complete owner layout and declared field. Padding accesses reject. |
-| Opaque enum storage | Identity, exhaustive tag table, backing width and layout. Runtime enum values and operations reject. |
-| Direct calls | Exact callee identity and execution of its captured body, including faults and effects |
+| Record fields | Complete owner layout and declared field. An unused pointer projection to a validated zero-storage field checks the live owner and representable address. Admission rejects uses of that pointer and accesses to padding. |
+| Enum values and storage | Exhaustive enums with unsigned backing widths from two to eight bits have checked one-byte layout and declared tags. Equality, inequality, and switches preserve the nominal declaration. Other admitted enum fields supply opaque storage geometry. |
+| Optional bytes | The checked two-byte layout and defined `?u8` constants preserve presence and payload separately. The memory and call profiles check the input and result types of wrapping, presence tests, and extraction. Extracting from null faults. |
+| Direct calls | Exact callee identity and execution of its captured body, including faults and effects. A by-value singleton is omitted only after checking its exact zero-storage declaration and sole defined value. The other arguments keep their source order. |
+| Error unions and `try` | Concrete named errors and void or integer payloads up to 64 bits in registers. The selected branch executes, and a failure arm can use its own labels. An absent component faults on extraction. ABI byte layouts and other payloads remain outside this subset. |
 | Branches, blocks, and loops | Branch selection, labels, block results, continuations, and back edges |
+| Switches | Integers use typed, disjoint constant items and inclusive ranges. Enums use disjoint declared tags. The memory and call profiles accept an omitted enum default when the arms cover every declared tag. Every supplied arm and default must pass admission. |
 | Return | Result type and reference, followed by release of private stack storage |
 | Debug metadata | Erasure only for the four admitted tags with the explicit debug flag and unit type |
 | Unknown reached tags | Rejection, including operations with unused results |
+
+Sema records copy lengths before slice decay and array-pointer upgrades.
+When both operands supplied a length, the model checks equality at the copy
+instruction before its first write. A runtime equality without a supported
+AIR anchor rejects. Records with source copy operations require a capture
+that records those obligations.
 
 ## Correspondence checks
 
@@ -98,3 +109,15 @@ recorded model. Each mutation must fail at the correspondence theorem.
 ```sh
 zig build emitted-control -Demitted-control=scalar-certificate
 ```
+
+### Slice guards from inline helpers
+
+A client can keep an export in its adapter and list the imported Zig helper in
+`sources`. The capture retains both files. When an AIR slice guard names another
+file, translation looks up its full relative path in the capture inventory,
+checks the SHA-256 of the retained bytes and bounds the span by that file's
+length. Each guard still needs its original instruction anchor and dominated
+operands. Standalone AIR decoding without a capture inventory accepts only
+guards from the declaration's own file. The Lean correspondence checker
+replays the captured bounds operations. Source identity is checked during
+native translation.

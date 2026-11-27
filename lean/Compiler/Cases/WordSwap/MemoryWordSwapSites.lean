@@ -20,15 +20,17 @@ def dataSite (site : Nat × Ty × Prim) : Prop :=
   | .load _ => site = (13, usize, .load (.local 7))
   | .store .. => site = (8, .scalar .unit, .store (.local 7) (.constant (.scalar (.int false 64 0)))) ∨
       site = (28, .scalar .unit, .store (.local 7) (.local 27))
-  | .copyBytes .. => False
+  | .copyBytes .. | .moveBytes .. | .invalidateSlice .. => False
   | .wordByteLoad .. => site = (20, ByteAccess.byte, .wordByteLoad .little (.local 18)) ∨
       site = (21, ByteAccess.byte, .wordByteLoad .little (.local 19))
   | .wordByteStore .. => site = (22, .scalar .unit, .wordByteStore .little (.local 18) (.local 21)) ∨
       site = (23, .scalar .unit, .wordByteStore .little (.local 19) (.local 20))
-  | .argument .. | .scalar .. | .pointerField .. | .fieldPointer .. | .booleanNot .. |
+  | .argument .. | .scalar .. | .pointerField .. | .fieldPointer .. | .checkZeroField .. | .booleanNot .. |
+    .testOptional .. | .optionalPayload .. | .wrapOptional .. |
+    .testError .. | .unwrapError .. | .wrapError .. | .wrapScalarError .. |
     .unreachable | .pointerCast .. | .sliceCast .. | .arrayToSlice .. | .offsetPointer .. |
     .elementPointer .. | .wordByteCast .. | .sliceElementPointer .. | .slice .. | .sliceLen .. |
-    .slicePtr .. | .checkBounds .. => True
+    .slicePtr .. | .checkBounds .. | .checkCopyLengths .. => True
 
 theorem data_sites_checked : fn_swap_u32.program.body.Covered dataSite := by
   simp [Control.Code.Covered, Control.Code.bindings, fn_swap_u32, dataSite, usize, ByteAccess.byte]

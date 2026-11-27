@@ -14,6 +14,8 @@ structure Address where
 mutual
 inductive Value where
   | scalar (value : Scalar.Value)
+  | errorValue (kind : ErrorValueKind) (allowed : List String) (name : Option String)
+  | errorScalar (child : Scalar.Ty) (allowed : List String) (result : Sum String Scalar.Value)
   | optionalScalar (child : Scalar.Ty) (payload : Option Scalar.Value)
   | pointer (type : Ty) (address : Address)
   | slice (type : Ty) (address : Address) (length : Nat)
@@ -35,6 +37,10 @@ mutual
 private def Value.decEq (a b : Value) : Decidable (a = b) :=
   match a, b with
   | .scalar a, .scalar b => decidable_of_iff (a = b) (by simp)
+  | .errorValue a0 a1 a2, .errorValue b0 b1 b2 =>
+    decidable_of_iff (a0 = b0 ∧ a1 = b1 ∧ a2 = b2) (by simp)
+  | .errorScalar a0 a1 a2, .errorScalar b0 b1 b2 =>
+    decidable_of_iff (a0 = b0 ∧ a1 = b1 ∧ a2 = b2) (by simp)
   | .optionalScalar a0 a1, .optionalScalar b0 b1 => decidable_of_iff (a0 = b0 ∧ a1 = b1) (by simp)
   | .pointer a0 a1, .pointer b0 b1 => decidable_of_iff (a0 = b0 ∧ a1 = b1) (by simp)
   | .slice a0 a1 a2, .slice b0 b1 b2 => decidable_of_iff (a0 = b0 ∧ a1 = b1 ∧ a2 = b2) (by simp)
@@ -48,6 +54,17 @@ private def Value.decEq (a b : Value) : Decidable (a = b) :=
   | .slice _ _ _, .scalar _ | .slice _ _ _, .optionalScalar _ _ | .slice _ _ _, .pointer _ _ | .slice _ _ _, .optionalObject _ _ _
   | .optionalObject _ _ _, .scalar _ | .optionalObject _ _ _, .optionalScalar _ _
   | .optionalObject _ _ _, .pointer _ _ | .optionalObject _ _ _, .slice _ _ _ => isFalse (by intro h; cases h)
+  | .errorValue .., .scalar _ | .scalar _, .errorValue ..
+  | .errorValue .., .optionalScalar .. | .optionalScalar .., .errorValue ..
+  | .errorValue .., .pointer .. | .pointer .., .errorValue ..
+  | .errorValue .., .slice .. | .slice .., .errorValue ..
+  | .errorValue .., .optionalObject .. | .optionalObject .., .errorValue .. => isFalse (by intro h; cases h)
+  | .errorScalar .., .scalar _ | .scalar _, .errorScalar ..
+  | .errorScalar .., .errorValue .. | .errorValue .., .errorScalar ..
+  | .errorScalar .., .optionalScalar .. | .optionalScalar .., .errorScalar ..
+  | .errorScalar .., .pointer .. | .pointer .., .errorScalar ..
+  | .errorScalar .., .slice .. | .slice .., .errorScalar ..
+  | .errorScalar .., .optionalObject .. | .optionalObject .., .errorScalar .. => isFalse (by intro h; cases h)
 termination_by structural a
 
 private def ObjectValue.decEq (a b : ObjectValue) : Decidable (a = b) :=

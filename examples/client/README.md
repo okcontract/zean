@@ -113,3 +113,35 @@ limit. Lake dependency builds use two workers. [Reports and scope](../../docs/ev
 
 Call profiles emit the explicit call machine. `"executionModel": "call-machine"`
 can assert that choice in a manifest. [Caller and helper example](calls/README.md)
+
+## Replay a proof that imports another client
+
+Declare both clients in the project's `zean.json`. In the importing manifest,
+set `"dependencies": ["verification/scan.json"]` using paths relative to the
+project root. A proof can then import the generated or handwritten modules
+named in those manifests. Dependencies may declare their own dependencies.
+List shared proof modules under the same module name with identical source.
+
+```sh
+zean verify-client --project . --manifest verification/combined.json \
+  --toolchain "$toolchain_report" --output "$evidence_dir/composition"
+```
+
+Zean captures and certifies each dependency once, in dependency order. It
+checks the proof modules and named theorems together using those fresh
+models. Each dependency's capture report is linked with its digest and
+audited theorem names in the importing client's report. Model generation
+still uses the `generatedModule` and `leanDir` for each client, and Lake can
+load the committed models using the same imports.
+
+## Replay a client declared in a project
+
+Pass `--project` to use the source mappings and capture target from the
+project's `zean.json`. The manifest path is relative to the project and
+must appear in its client list. The new output directory contains the
+retained project and client manifests, generated Lean, and proof receipts.
+
+```sh
+zean verify-client --project "$project" --manifest verification/gap.json \
+  --toolchain "$toolchain_report" --output "$evidence_dir"
+```

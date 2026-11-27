@@ -1916,6 +1916,7 @@ pub const cases = blk: {
             f.remove("/input/instructions/1/lhs/value"),
             f.add("/input/instructions/1/lhs/index", f.n("0")),
             f.set("/input/instructions/1/tag", f.s("shl")),
+            f.set("/input/instructions/1/rhs/type/bits", f.n("7")),
         }),
         // Control 153
         f.derive(&scalar_program_14, &.{

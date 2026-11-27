@@ -5,6 +5,7 @@
 const std = @import("std");
 const c = @import("common.zig");
 const source = @import("source.zig");
+const files = @import("files.zig");
 
 /// File namespaces retain every directory component. A basename match cannot
 /// bind a declaration from a different module with the same leaf filename.
@@ -28,6 +29,49 @@ pub const File = struct {
 
     pub fn init(ctx: *c.Context, filename: []const u8, bytes: []const u8) !File {
         return .{ .filename = filename, .prefix = try ownerPrefix(ctx, filename), .sha = c.digest(bytes), .declarations = try source.Declarations.init(ctx, bytes) };
+    }
+};
+
+/// Retain parsed declarations for reached functions and comptime callbacks alike.
+pub const Retained = struct {
+    ctx: *c.Context,
+    io: std.Io,
+    directory: []const u8,
+    root_source: ?[]const u8 = null,
+    root_bytes: ?[]const u8 = null,
+    entries: std.StringHashMapUnmanaged(struct { path: []const u8, file: *File }) = .empty,
+
+    pub fn get(self: *Retained, name: []const u8) !*const File {
+        const ctx = self.ctx;
+        const cached = try self.entries.getOrPut(ctx.allocator, name);
+        if (cached.found_existing) return cached.value_ptr.file;
+        errdefer _ = self.entries.remove(name);
+        const selected = self.root_source != null and std.mem.eql(u8, name, std.fs.path.basename(self.root_source.?));
+        const path = if (selected) self.root_source.? else try files.closureMember(ctx, self.io, self.directory, name);
+        try files.regular(ctx, self.io, path);
+        const bytes = if (selected and self.root_bytes != null) self.root_bytes.? else try ctx.read(self.io, path, 64 * 1024 * 1024);
+        const file = try ctx.allocator.create(File);
+        errdefer ctx.allocator.destroy(file);
+        file.* = try File.init(ctx, name, bytes);
+        cached.value_ptr.* = .{ .path = path, .file = file };
+        return file;
+    }
+
+    pub fn deinit(self: *Retained) void {
+        var entries = self.entries.valueIterator();
+        while (entries.next()) |entry| {
+            entry.file.declarations.deinit();
+            self.ctx.allocator.destroy(entry.file);
+        }
+        self.entries.deinit(self.ctx.allocator);
+    }
+
+    pub fn revalidate(self: *Retained) !void {
+        var entries = self.entries.valueIterator();
+        while (entries.next()) |entry| {
+            const bytes = try self.ctx.read(self.io, entry.path, 64 * 1024 * 1024);
+            try self.ctx.require(std.mem.eql(u8, &c.digest(bytes), &entry.file.sha), "declaration source changed during translation");
+        }
     }
 };
 

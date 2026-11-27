@@ -32,6 +32,10 @@ private def Ty.decEq (a b : Ty) : Decidable (a = b) :=
   | .aggregate a0 a1 a2, .aggregate b0 b1 b2 =>
     letI : Decidable (a2 = b2) := fieldsDecEq a2 b2
     decidable_of_iff (a0 = b0 ∧ a1 = b1 ∧ a2 = b2) (by simp)
+  | .errorValue a0 a1, .errorValue b0 b1 =>
+    decidable_of_iff (a0 = b0 ∧ a1 = b1) (by simp)
+  | .errorScalar a0 a1, .errorScalar b0 b1 =>
+    decidable_of_iff (a0 = b0 ∧ a1 = b1) (by simp)
   | .scalar _, .pointer _ _ _ => isFalse (by intro impossible; cases impossible)
   | .scalar _, .slice _ _ => isFalse (by intro impossible; cases impossible)
   | .scalar _, .array _ _ => isFalse (by intro impossible; cases impossible)
@@ -88,6 +92,25 @@ private def Ty.decEq (a b : Ty) : Decidable (a = b) :=
   | .optionalObject _ _, .record _ _ => isFalse (by intro impossible; cases impossible)
   | .aggregate _ _ _, .optionalObject _ _ => isFalse (by intro impossible; cases impossible)
   | .optionalObject _ _, .aggregate _ _ _ => isFalse (by intro impossible; cases impossible)
+  | .errorValue .., .scalar _ | .scalar _, .errorValue ..
+  | .errorValue .., .optionalScalar _ | .optionalScalar _, .errorValue ..
+  | .errorValue .., .optionalObject .. | .optionalObject .., .errorValue ..
+  | .errorValue .., .pointer .. | .pointer .., .errorValue ..
+  | .errorValue .., .slice .. | .slice .., .errorValue ..
+  | .errorValue .., .array .. | .array .., .errorValue ..
+  | .errorValue .., .record .. | .record .., .errorValue ..
+  | .errorValue .., .aggregate .. | .aggregate .., .errorValue .. =>
+    isFalse (by intro impossible; cases impossible)
+  | .errorScalar .., .scalar _ | .scalar _, .errorScalar ..
+  | .errorScalar .., .errorValue .. | .errorValue .., .errorScalar ..
+  | .errorScalar .., .optionalScalar .. | .optionalScalar .., .errorScalar ..
+  | .errorScalar .., .optionalObject .. | .optionalObject .., .errorScalar ..
+  | .errorScalar .., .pointer .. | .pointer .., .errorScalar ..
+  | .errorScalar .., .slice .. | .slice .., .errorScalar ..
+  | .errorScalar .., .array .. | .array .., .errorScalar ..
+  | .errorScalar .., .record .. | .record .., .errorScalar ..
+  | .errorScalar .., .aggregate .. | .aggregate .., .errorScalar .. =>
+    isFalse (by intro impossible; cases impossible)
 termination_by structural a
 
 private def Field.decEq (a b : Field) : Decidable (a = b) :=

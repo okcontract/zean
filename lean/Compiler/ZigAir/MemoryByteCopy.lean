@@ -51,6 +51,14 @@ def copyLoop (state : State) (source target : Address) (index : Nat) :
     | .error fault => (.error fault, state)
     | .ok after => copyLoop after source target (index + 1) count
 
+def copyBackward (state : State) (source target : Address) :
+    Nat → Except Fault Unit × State
+  | 0 => (.ok (), state)
+  | count + 1 =>
+    match copyByte state source target count with
+    | .error fault => (.error fault, state)
+    | .ok after => copyBackward after source target count
+
 def destination : Value → Except Fault (Address × Nat)
   | .slice (.slice true (.scalar (.int false 8))) address count => .ok (address, count)
   | .pointer (.pointer true false (.array count (.scalar (.int false 8)))) address => .ok (address, count)
@@ -77,5 +85,71 @@ def copy (state : State) (target input : Value) : Except Fault Unit × State :=
         (.error .memoryValidity, state)
       else copyLoop state src dest 0 count
 
+/-- A rightward overlapping move reads high offsets first. For every
+other move, low offsets are safe to read first. Both paths transport
+initialization and retain the writes reached before a fault. -/
+def move (state : State) (target input : Value) : Except Fault Unit × State :=
+  match destination target with
+  | .error fault => (.error fault, state)
+  | .ok (dest, count) =>
+    match source input count with
+    | .error fault => (.error fault, state)
+    | .ok src =>
+      if src.allocation = dest.allocation ∧ src.offset < dest.offset ∧
+          dest.offset < src.offset + count then
+        copyBackward state src dest count
+      else copyLoop state src dest 0 count
+
+section
+variable (invariant : State → Prop)
+variable (transport : ∀ {before after source target index}, invariant before →
+  copyByte before source target index = .ok after → invariant after)
+include transport
+
+/-- A per-byte invariant holds at every stopping point, including a fault
+after a completed prefix. -/
+theorem copyLoop_preserves (state : State) (source target : Address) (index count : Nat)
+    (initial : invariant state) : invariant (copyLoop state source target index count).2 := by
+  induction count generalizing state index with
+  | zero => exact initial
+  | succ count ih =>
+    rw [copyLoop]
+    cases copied : copyByte state source target index with
+    | error fault => exact initial
+    | ok after => exact ih after (index + 1) (transport initial copied)
+
+theorem copyBackward_preserves (state : State) (source target : Address) (count : Nat)
+    (initial : invariant state) : invariant (copyBackward state source target count).2 := by
+  induction count generalizing state with
+  | zero => exact initial
+  | succ count ih =>
+    rw [copyBackward]
+    cases copied : copyByte state source target count with
+    | error fault => exact initial
+    | ok after => exact ih after (transport initial copied)
+
+theorem copy_preserves (state : State) (target input : Value) (initial : invariant state) :
+    invariant (copy state target input).2 := by
+  unfold copy
+  split
+  · exact initial
+  · split
+    · exact initial
+    · split
+      · exact initial
+      · exact copyLoop_preserves invariant transport _ _ _ _ _ initial
+
+theorem move_preserves (state : State) (target input : Value) (initial : invariant state) :
+    invariant (move state target input).2 := by
+  unfold move
+  split
+  · exact initial
+  · split
+    · exact initial
+    · split
+      · exact copyBackward_preserves invariant transport _ _ _ _ initial
+      · exact copyLoop_preserves invariant transport _ _ _ _ _ initial
+
+end
 
 end Compiler.ZigAir.Memory.ByteRange

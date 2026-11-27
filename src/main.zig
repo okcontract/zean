@@ -26,7 +26,7 @@ const help =
     \\  zig build capture -- --toolchain REPORT --source FILE --root NAME --output DIRECTORY
     \\  zig build atomic-publication-check -- --capture REPORT --output DIRECTORY
     \\  zig build admission         Report operation obligations and coverage limits
-    \\  zig build verify-client -- --manifest FILE --toolchain REPORT --output DIRECTORY
+    \\  zig build verify-client -- [--project DIRECTORY] --manifest FILE --toolchain REPORT --output DIRECTORY
     \\  zig build allocator-evaluate -- --toolchain REPORT --output DIRECTORY
     \\  zig build toolchain -- --zig-tree TREE --bootstrap-zig ZIG --llvm-prefix LLVM --lld-prefix LLD --output DIRECTORY [--fresh-air-capture]
     \\  zig build check-patch -- --zig-tree TREE --output DIRECTORY
@@ -60,8 +60,17 @@ fn execute(ctx: *z.common.Context, init: std.process.Init) !void {
         return output.interface.print("{s}\n", .{try ctx.json(result)});
     }
     if (std.mem.eql(u8, command, "verify-client")) {
-        const a = try Arguments.parse(ctx, tail, &.{ "--manifest", "--toolchain", "--output", "--lake" }, &.{});
-        const result = try z.client.run(ctx, init.io, .{ .manifest = try a.one("--manifest"), .toolchain = try a.one("--toolchain"), .output = try a.one("--output"), .lake = try a.optional("--lake") }, init.environ_map);
+        const a = try Arguments.parse(ctx, tail, &.{ "--project", "--manifest", "--toolchain", "--output", "--lake" }, &.{});
+        const options: z.client.Options = .{
+            .manifest = try a.one("--manifest"),
+            .toolchain = try a.one("--toolchain"),
+            .output = try a.one("--output"),
+            .lake = try a.optional("--lake"),
+        };
+        const result = if (try a.optional("--project")) |directory|
+            try z.project.replayClient(ctx, init.io, directory, options, init.environ_map)
+        else
+            try z.client.run(ctx, init.io, options, init.environ_map);
         return output.interface.print("{s}\n", .{try ctx.json(result)});
     }
     if (std.mem.eql(u8, command, "allocator-evaluate")) {

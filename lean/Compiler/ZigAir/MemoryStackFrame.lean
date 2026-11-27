@@ -130,15 +130,8 @@ of reads; no caller-allocation or successful post-load premise is added. -/
 theorem old_load (frame : StackFrame before after) (writable many : Bool) (child : Ty)
     (address : Address) (value : Value)
     (loaded : Memory.load before (.pointer (.pointer writable many child) address) = .ok value) :
-    Memory.load after (.pointer (.pointer writable many child) address) = .ok value := by
-  cases shaped : child.layout with
-  | none => simp only [Memory.load, shaped] at loaded; cases loaded
-  | some shape =>
-    cases found : before.heap.lookup address.allocation with
-    | none => simp only [Memory.load, shaped, Memory.access, found, bind, Except.bind] at loaded; cases loaded
-    | some cell =>
-      simp only [Memory.load, shaped, Memory.access, found] at loaded
-      simpa only [Memory.load, shaped, Memory.access, frame.old_lookup _ _ found] using loaded
+    Memory.load after (.pointer (.pointer writable many child) address) = .ok value :=
+  load_of_retained_lookup (frame.old_lookup address.allocation) loaded
 
 /-- The body is proved once at the cell layer; allocation and writable-root
 admission are derived here. Exhaustion is explicit, and every reached local is

@@ -15,29 +15,56 @@ private theorem bind_success {α β : Type} (first : Except Fault α) (next : α
     ∃ value, first = .ok value ∧ next value = .ok result := by
   cases first <;> simp_all [bind, Except.bind]
 
+private theorem byte_retains_shape (copied : ByteRange.copyByte state source target index = .ok after) :
+    state.heap.RetainsShape after.heap := by
+  rcases ByteRange.copyByte_success copied with ⟨bits, _, written⟩ | ⟨_, forgotten⟩
+  · exact store_retains_shape _ _ _ _ written
+  · exact invalidate_retains_shape _ _ _ _ _ forgotten
+
 theorem ByteRange.copyLoop_retains_shape (state : State) (source target : Address) (index count : Nat) :
-    state.heap.RetainsShape (ByteRange.copyLoop state source target index count).2.heap := by
-  induction count generalizing state index with
-  | zero => exact Heap.RetainsShape.refl _
-  | succ count ih =>
-    rw [ByteRange.copyLoop]
-    cases copied : ByteRange.copyByte state source target index with
-    | error fault => exact Heap.RetainsShape.refl _
-    | ok after =>
-      rcases ByteRange.copyByte_success copied with ⟨bits, _, written⟩ | ⟨_, forgotten⟩
-      · exact (store_retains_shape _ _ _ _ written).trans (ih after (index + 1))
-      · exact (invalidate_retains_shape _ _ _ _ _ forgotten).trans (ih after (index + 1))
+    state.heap.RetainsShape (ByteRange.copyLoop state source target index count).2.heap :=
+  Memory.ByteRange.copyLoop_preserves (fun after => state.heap.RetainsShape after.heap)
+    (fun prior copied => prior.trans (byte_retains_shape copied)) state source target index count (.refl _)
 
 theorem ByteRange.copy_retains_shape (state : State) (target source : Value) :
-    state.heap.RetainsShape (ByteRange.copy state target source).2.heap := by
-  unfold ByteRange.copy
-  split
-  · exact Heap.RetainsShape.refl _
-  · split
-    · exact Heap.RetainsShape.refl _
-    · split
-      · exact Heap.RetainsShape.refl _
-      · exact ByteRange.copyLoop_retains_shape _ _ _ _ _
+    state.heap.RetainsShape (ByteRange.copy state target source).2.heap :=
+  Memory.ByteRange.copy_preserves (fun after => state.heap.RetainsShape after.heap)
+    (fun prior copied => prior.trans (byte_retains_shape copied)) state target source (.refl _)
+
+theorem ByteRange.copyBackward_retains_shape (state : State) (source target : Address) (count : Nat) :
+    state.heap.RetainsShape (ByteRange.copyBackward state source target count).2.heap :=
+  Memory.ByteRange.copyBackward_preserves (fun after => state.heap.RetainsShape after.heap)
+    (fun prior copied => prior.trans (byte_retains_shape copied)) state source target count (.refl _)
+
+theorem ByteRange.move_retains_shape (state : State) (target source : Value) :
+    state.heap.RetainsShape (ByteRange.move state target source).2.heap :=
+  Memory.ByteRange.move_preserves (fun after => state.heap.RetainsShape after.heap)
+    (fun prior copied => prior.trans (byte_retains_shape copied)) state target source (.refl _)
+
+private theorem byte_preserves_counters {initial : State} (copied : ByteRange.copyByte state source target index = .ok after)
+    (prior : state.nextId = initial.nextId ∧ state.nextAddress = initial.nextAddress) :
+    after.nextId = initial.nextId ∧ after.nextAddress = initial.nextAddress := by
+  have same : after.nextId = state.nextId ∧ after.nextAddress = state.nextAddress := by
+    rcases ByteRange.copyByte_success copied with ⟨bits, _, stored⟩ | ⟨_, forgotten⟩
+    · exact store_keeps_counters _ _ _ _ stored
+    · exact ⟨(invalidate_frame _ _ _ _ _ forgotten).1, (invalidate_frame _ _ _ _ _ forgotten).2.1⟩
+  exact ⟨same.1.trans prior.1, same.2.trans prior.2⟩
+
+/-- Both counters are unchanged, including when an undefined source erases
+destination bytes or the copy stops at a fault after writing a prefix. -/
+theorem ByteRange.copy_keeps_counters (state : State) (target source : Value) :
+    let after := (ByteRange.copy state target source).2
+    after.nextId = state.nextId ∧ after.nextAddress = state.nextAddress :=
+  Memory.ByteRange.copy_preserves (fun after => after.nextId = state.nextId ∧ after.nextAddress = state.nextAddress)
+    (fun prior copied => byte_preserves_counters copied prior) state target source ⟨rfl, rfl⟩
+
+/-- Moving overlapping storage needs neither a fresh allocation nor a new
+modeled address. The invariant applies to both copy directions. -/
+theorem ByteRange.move_keeps_counters (state : State) (target source : Value) :
+    let after := (ByteRange.move state target source).2
+    after.nextId = state.nextId ∧ after.nextAddress = state.nextAddress :=
+  Memory.ByteRange.move_preserves (fun after => after.nextId = state.nextId ∧ after.nextAddress = state.nextAddress)
+    (fun prior copied => byte_preserves_counters copied prior) state target source ⟨rfl, rfl⟩
 
 theorem Prim.transition_retains_shape (prim : Prim) (args : List Value) (env : Env)
     (state : State) (value : Value) (after : State) (initial : state.valid = true)
@@ -65,25 +92,32 @@ theorem Prim.transition_retains_shape (prim : Prim) (args : List Value) (env : E
       | contradiction
       | (cases (Prod.mk.inj (Except.ok.inj success)).2; exact Heap.RetainsShape.refl _)
 
-/-- Includes bulk-copy faults after a completed prefix of writes. -/
+/-- Includes bulk faults after a completed prefix of writes or invalidations. -/
 theorem Prim.retains_shape (prim : Prim) (args : List Value) (env : Env)
     (state : State) (initial : state.valid = true) : state.heap.RetainsShape (prim.eval args env state).2.heap := by
-  by_cases bulk : ∃ target source, prim = .copyBytes target source
-  · obtain ⟨target, source, rfl⟩ := bulk
-    simp only [Prim.eval]
+  cases prim with
+  | copyBytes target source =>
+    simp only [Prim.eval, evalByteTransfer]
     cases target.eval env <;> cases source.eval env <;> simp only
     all_goals first | exact Heap.RetainsShape.refl _ | exact ByteRange.copy_retains_shape _ _ _
-  have atomic : ∀ target source, prim ≠ .copyBytes target source := by simpa using bulk
-  have equation : prim.eval args env state =
-      match prim.transition args env state with
-      | .ok (value, after) => (.ok value, after)
-      | .error fault => (.error fault, state) := by cases prim <;> first | rfl | exact False.elim (atomic _ _ rfl)
-  rw [equation]
-  cases step : prim.transition args env state with
-  | error fault => exact Heap.RetainsShape.refl state.heap
-  | ok result =>
-    rcases result with ⟨value, after⟩
-    exact prim.transition_retains_shape args env state value after initial step
+  | moveBytes target source =>
+    simp only [Prim.eval, evalByteTransfer]
+    cases target.eval env <;> cases source.eval env <;> simp only
+    all_goals first | exact Heap.RetainsShape.refl _ | exact ByteRange.move_retains_shape _ _ _
+  | invalidateSlice target =>
+    simp only [Prim.eval, evalSliceInvalidation]
+    cases target.eval env with
+    | error => exact Heap.RetainsShape.refl _
+    | ok value =>
+      exact SliceInvalidation.preserves (fun after => state.heap.RetainsShape after.heap)
+        (fun prior erased => prior.trans (invalidate_retains_shape _ _ _ _ _ erased))
+        state value (.refl _)
+  | _ =>
+    simp only [Prim.eval]
+    split
+    · rename_i value after success
+      exact Prim.transition_retains_shape _ args env state value after initial success
+    · exact Heap.RetainsShape.refl _
 
 theorem machine_steps_retain_shape (args : List Value)
     (first last : Execution Ty Prim Ref Value Fault State)

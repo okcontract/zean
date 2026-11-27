@@ -16,12 +16,22 @@ test "captured standard-library source evidence binds hashes and safe identities
 test "record fields preserve complete geometry, declaration indices and permissions" {
     try @import("record_fields.zig").controls();
 }
+test "inlined slice guards bind the retained source and preserve the bound check" {
+    try @import("bounded_slices.zig").inlineSources();
+}
+
 test "bounded length-based slices retain their original extent and overflow work" {
     try @import("bounded_slices.zig").controls();
 }
 test "integer extrema and byte copies retain their types and effects" {
     try @import("bulk_copy.zig").controls();
     try @import("byte_reads.zig").controls();
+}
+test "integer switches keep typed disjoint cases and own each body" {
+    try @import("integer_switch.zig").controls();
+}
+test "native byte moves allow overlap in either direction" {
+    try @import("bulk_copy.zig").nativeMoves();
 }
 const fixtures = @import("fixtures.zig");
 
@@ -34,6 +44,10 @@ test "declarative clients reject ambiguous paths, profiles and unchecked proof i
 }
 test "project workflows retain explicit paths and protect existing Lean sources" {
     try @import("project.zig").controls();
+}
+
+test "project client replay selects only a declared manifest" {
+    try @import("project.zig").replayControls();
 }
 
 test "project freshness reports obsolete outputs and keeps evidence outside the checkout" {
@@ -94,6 +108,22 @@ test "explicit type specialization binds its actual declaration and parameter ma
 
 test "direct-call closure rejects identity, signature, recursion and unsupported body mutations" {
     try @import("call_admission.zig").controls();
+}
+
+test "void-payload error unions keep checked try branches and named errors" {
+    try @import("error_status.zig").controls();
+}
+
+test "integer-payload error unions preserve typed try continuations and named errors" {
+    try @import("scalar_error.zig").controls();
+}
+
+test "enum comparisons and switches check declared tags and identities" {
+    try @import("enum_tags.zig").controls();
+}
+
+test "optional bytes preserve presence, payload type, and null extraction faults" {
+    try @import("optional_bytes.zig").controls();
 }
 
 test "counter regeneration compares complete programs and admits only replayed imports" {

@@ -7,27 +7,29 @@ const c = @import("common.zig");
 const source = @import("source.zig");
 const specialization = @import("specialization.zig");
 const declaration_source = @import("declaration_source.zig");
+const Profile = @import("types.zig").Profile;
 
 const Selection = enum { standalone, direct_call };
 
-pub fn select(ctx: *c.Context, record: c.Value, filename: []const u8, bytes: []const u8) !specialization.Mapping {
+pub fn select(ctx: *c.Context, record: c.Value, profile: Profile, filename: []const u8, bytes: []const u8) !specialization.Mapping {
     var file = try declaration_source.File.init(ctx, filename, bytes);
     defer file.declarations.deinit();
     var sources: c.Value = .{ .object = .empty };
     try sources.object.put(ctx.allocator, filename, .{ .string = &file.sha });
-    return bind(ctx, record, &file, sources, .standalone);
+    return bind(ctx, record, profile, &file, sources, null);
 }
 
-pub fn selectForCall(ctx: *c.Context, record: c.Value, file: *const declaration_source.File, sources: c.Value) !specialization.Mapping {
-    return bind(ctx, record, file, sources, .direct_call);
+pub fn selectForCall(ctx: *c.Context, record: c.Value, profile: Profile, file: *const declaration_source.File, sources: c.Value, retained: *declaration_source.Retained) !specialization.Mapping {
+    return bind(ctx, record, profile, file, sources, retained);
 }
 
-fn bind(ctx: *c.Context, record: c.Value, file: *const declaration_source.File, sources: c.Value, selection: Selection) !specialization.Mapping {
+fn bind(ctx: *c.Context, record: c.Value, profile: Profile, file: *const declaration_source.File, sources: c.Value, retained: ?*declaration_source.Retained) !specialization.Mapping {
+    const selection: Selection = if (retained != null) .direct_call else .standalone;
     const prefix = file.prefix;
     try ctx.require(c.tag(record, "sourceFile", file.filename) and c.tag(record, "sourceSha256", &file.sha), "specialization source identity mismatch");
     const signature = try ctx.field(record, "signature");
     try ctx.require(c.flag(signature, "genericInstance", true) and try ctx.nat(try ctx.field(signature, "noaliasBits"), 0) == 0, "specialization must be concrete and omit noalias parameters");
-    const mapping = try specialization.mapping(ctx, record, sources);
+    const mapping = try specialization.mapping(ctx, record, profile, sources, retained);
     const spec = try ctx.field(record, "specialization");
     const owner = try ctx.str(try ctx.field(try ctx.field(spec, "owner"), "name"));
     try ctx.require(std.mem.startsWith(u8, owner, prefix), "specialization has a different source owner");
@@ -55,7 +57,14 @@ fn bind(ctx: *c.Context, record: c.Value, file: *const declaration_source.File, 
         if (parameter.comptime_noalias) |token| {
             try ctx.require(declarations.tree.tokenTag(token) == .keyword_comptime, "source noalias contract is not admitted");
             const ty = parameter.type_expr.?;
-            try ctx.require(declarations.tree.firstToken(ty) == declarations.tree.lastToken(ty) and std.mem.eql(u8, declarations.tree.tokenSlice(declarations.tree.firstToken(ty)), "type") and c.tag(arguments[count], "kind", "type"), "only explicit comptime type parameters are admitted");
+            const arg = arguments[count];
+            const tree = &declarations.tree;
+            const first = tree.firstToken(ty);
+            const type_argument = c.tag(arg, "kind", "type") and first == tree.lastToken(ty) and std.mem.eql(u8, tree.tokenSlice(first), "type");
+            var callback_buffer: [1]std.zig.Ast.Node.Index = undefined;
+            const callback = selection == .direct_call and c.tag(arg, "kind", "value") and
+                c.tag(try ctx.field(arg, "value"), "kind", "function") and tree.fullFnProto(&callback_buffer, ty) != null;
+            try ctx.require(type_argument or callback, "expected an explicit comptime type or a named callback in a direct call");
             comptime_bits |= @as(u64, 1) << @intCast(count);
         } else {
             const arg = arguments[count];

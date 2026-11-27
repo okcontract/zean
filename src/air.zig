@@ -10,9 +10,12 @@ const Context = c.Context;
 const Value = c.Value;
 const Error = c.Error;
 const eq = std.mem.eql;
+const unit_type: Ty = .unit;
 const maximum_instructions = 1024;
+const maximum_switch_ranges = 256;
 pub const Extension = enum { none, assertion, hash_update, scalar_view, slice_view };
 pub const Options = struct {
+    guard_sources: ?*const @import("guard_sources.zig").Identities = null,
     source_parameters: ?[]const usize = null,
     explicit_type_specialization: bool = false,
     instruction_limit: usize = 512,
@@ -31,8 +34,60 @@ const Prefix = struct { kind: []const u8 = "bind", id: usize, ty: []const u8, ch
 const Env = []?*const Ty;
 const Labels = []?Label;
 const Cell = struct { offset: u64, text: []const u8 };
+const Parameter = struct { ty: *const Ty, source_index: usize };
+const FieldSelection = struct { owner: Reference, field: Ty.Field };
+const field_tags: []const []const u8 = &.{ "struct_field_ptr", "struct_field_ptr_index_0", "struct_field_ptr_index_1", "struct_field_ptr_index_2", "struct_field_ptr_index_3" };
 
 pub fn constant(ctx: *Context, value: Value, profile: Profile) Error!Reference {
+    if (c.tag(value, "kind", "optionalValue")) {
+        try ctx.fields(value, "kind type payload");
+        const ty = try types.parse(ctx, try ctx.field(value, "type"), profile, 0);
+        try ctx.require(ty.* == .optional_byte, "optional constant requires a byte optional type");
+        const raw_payload = try ctx.field(value, "payload");
+        const payload = if (raw_payload == .null) "none" else blk: {
+            const child = try scalarConstant(ctx, raw_payload);
+            try ctx.require(child.ty.isInt(false, 8), "optional constant changes payload type");
+            break :blk try ctx.fmt("(some {s})", .{scalarConstantValue(child)});
+        };
+        return .{ .ty = ty, .text = try ctx.fmt("(.constant (.optionalScalar (.int false 8) {s}))", .{payload}) };
+    }
+    if (c.tag(value, "kind", "errorScalar")) {
+        try ctx.fields(value, "kind type name payload");
+        const ty = try types.parse(ctx, try ctx.field(value, "type"), profile, 0);
+        try ctx.require(ty.* == .error_value and ty.error_value.result and ty.error_value.payload != null, "scalar error constant has the wrong union type");
+        const child = ty.error_value.payload.?;
+        const name = try ctx.field(value, "name");
+        const payload = try ctx.field(value, "payload");
+        const result = if (name == .null) blk: {
+            const contents = try scalarConstant(ctx, payload);
+            try ctx.require(Ty.same(contents.ty, child), "error constant changes its payload type");
+            break :blk try ctx.fmt("(.inr {s})", .{scalarConstantValue(contents)});
+        } else blk: {
+            const named = try ctx.str(name);
+            try ctx.require(payload == .null and ty.error_value.contains(named), "malformed scalar error constant");
+            break :blk try ctx.fmt("(.inl {s})", .{try ctx.json(named)});
+        };
+        return .{ .ty = ty, .text = try ctx.fmt("(.constant (.errorScalar {s} {s} {s}))", .{
+            try child.lean(ctx, .scalar), try ctx.json(ty.error_value.names), result,
+        }) };
+    }
+    if (c.tag(value, "kind", "errorValue") or c.tag(value, "kind", "errorStatus")) {
+        try ctx.fields(value, "kind type name");
+        const ty = try types.parse(ctx, try ctx.field(value, "type"), profile, 0);
+        try ctx.require(ty.* == .error_value and ty.error_value.payload == null and ty.error_value.result == c.tag(value, "kind", "errorStatus"), "error constant disagrees with its declared kind");
+        const raw_name = try ctx.field(value, "name");
+        const name = if (raw_name == .null) blk: {
+            try ctx.require(ty.error_value.result, "an error tag requires a name");
+            break :blk "none";
+        } else blk: {
+            const named = try ctx.str(raw_name);
+            try ctx.require(ty.error_value.contains(named), "error constant is outside its declared set");
+            break :blk try ctx.fmt("(some {s})", .{try ctx.json(named)});
+        };
+        return .{ .ty = ty, .text = try ctx.fmt("(.constant (.errorValue .{s} {s} {s}))", .{
+            ty.error_value.leanKind(), try ctx.json(ty.error_value.names), name,
+        }) };
+    }
     if (profile == .aggregate and (c.tag(value, "kind", "aggregate") or c.tag(value, "kind", "undefined"))) {
         const ty = try types.parse(ctx, try ctx.field(value, "type"), profile, 0);
         try ctx.require(ty.* == .structure, "undefined scalar/array cannot be an evaluated register");
@@ -49,17 +104,29 @@ pub fn constant(ctx: *Context, value: Value, profile: Profile) Error!Reference {
     }
     const result = try scalarConstant(ctx, value);
     if (profile == .scalar) return result;
-    const body = result.text["(.constant ".len .. result.text.len - 1];
+    const body = scalarConstantValue(result);
     return .{ .ty = result.ty, .text = if (profile == .aggregate) try ctx.fmt("(.constant (.value (.scalar {s})))", .{body}) else try ctx.fmt("(.constant (.scalar {s}))", .{body}) };
 }
 
+fn scalarConstantValue(reference: Reference) []const u8 {
+    return reference.text["(.constant ".len .. reference.text.len - 1];
+}
+
 fn scalarConstant(ctx: *Context, value: Value) Error!Reference {
-    if (c.tag(value, "kind", "unit")) {
+    const kind = try ctx.str(try ctx.field(value, "kind"));
+    if (eq(u8, kind, "unit")) {
         try ctx.fields(value, "kind");
         return .{ .ty = try ctx.make(Ty, .unit), .text = "(.constant .unit)" };
     }
+    if (eq(u8, kind, "enumTag")) {
+        try ctx.fields(value, "kind type value");
+        const ty = try types.parse(ctx, try ctx.field(value, "type"), .scalar, 0);
+        const tag: u8 = @intCast(try ctx.nat(try ctx.field(value, "value"), 255));
+        try ctx.require(ty.isRuntimeEnum() and ty.enumeration.hasTag(tag), "enum tag is outside its declared runtime type");
+        return .{ .ty = ty, .text = try ctx.fmt("(.constant (.enumTag {s} {d}))", .{ try ty.enumeration.leanDeclaration(ctx), tag }) };
+    }
+    if (!eq(u8, kind, "constant")) return ctx.fail("unsupported AIR constant kind '{s}'", .{kind});
     try ctx.fields(value, "kind type value");
-    try ctx.require(c.tag(value, "kind", "constant"), "unsupported or malformed AIR constant");
     const ty = try types.parse(ctx, try ctx.field(value, "type"), .scalar, 0);
     const number = try ctx.integer(try ctx.field(value, "value"));
     if (ty.* == .boolean) {
@@ -85,7 +152,10 @@ fn leaves(ctx: *Context, value: Value, expected: *const Ty, offset: u64, cells: 
         try ctx.require(expected.* == .structure and Ty.same(try types.parse(ctx, try ctx.field(value, "type"), .aggregate, 0), expected), "aggregate constant changes type");
         const values = try ctx.array(try ctx.field(value, "fields"));
         try ctx.require(values.len == expected.structure.fields.len, "incomplete aggregate constant");
-        for (expected.structure.fields, values) |field, item| try leaves(ctx, item, field.ty, offset + field.offset, cells);
+        for (expected.structure.fields, values) |field, item| {
+            try ctx.require(field.ty == .stored, "zero-storage fields are not supported in aggregate values");
+            try leaves(ctx, item, field.ty.stored, offset + field.offset, cells);
+        }
         return;
     }
     const leaf = try constant(ctx, value, .memory);
@@ -97,7 +167,7 @@ pub const Decoder = struct {
     ctx: *Context,
     profile: Profile,
     record: Value,
-    parameters: []*const Ty,
+    parameters: []const Parameter,
     result: *const Ty,
     instructions: []const Value,
     visited: []bool,
@@ -107,6 +177,8 @@ pub const Decoder = struct {
     guards: []?Value,
     guard_positions: []usize,
     guard_seen: []bool,
+    slice_guard_count: usize = 0,
+    copy_lengths_recorded: bool = false,
     byte_values: []?usize,
     byte_slots: []?usize,
     byte_alignments: []u64,
@@ -132,18 +204,28 @@ pub const Decoder = struct {
         try ctx.require(c.flag(signature, "genericInstance", options.explicit_type_specialization) and (!options.explicit_type_specialization or options.source_parameters != null) and c.flag(signature, "varArgs", false) and try ctx.nat(try ctx.field(signature, "noaliasBits"), std.math.maxInt(u64)) == 0, "unsupported function specialization or parameter contract");
         const params = try ctx.array(try ctx.field(signature, "parameters"));
         try ctx.require(params.len <= 512, "malformed or oversized parameter list");
-        const parameters = try ctx.allocator.alloc(*const Ty, params.len);
+        const parameter_buffer = try ctx.allocator.alloc(Parameter, params.len);
         if (options.source_parameters) |mapping| try ctx.require(mapping.len == params.len, "runtime/source parameter mapping has the wrong length");
-        for (params, parameters) |value, *target| target.* = try types.parse(ctx, value, profile, 0);
+        var stored: usize = 0;
+        for (params, 0..) |value, index| {
+            if (profile.hasCalls() and try types.isSingletonParameter(ctx, value)) continue;
+            parameter_buffer[stored] = .{
+                .ty = try types.parse(ctx, value, profile, 0),
+                .source_index = if (options.source_parameters) |mapping| mapping[index] else index,
+            };
+            stored += 1;
+        }
+        const parameters = parameter_buffer[0..stored];
         const result = try types.parse(ctx, try ctx.field(signature, "returnType"), profile, 0);
-        for (parameters) |ty| _ = try ty.lean(ctx, profile);
+        for (parameters) |parameter| _ = try parameter.ty.lean(ctx, profile);
         _ = try result.lean(ctx, profile);
         if (profile != .scalar) {
-            for (parameters) |ty| try ctx.require(ty.* != .array, "array values are not implemented in memory AIR");
+            for (parameters) |parameter| try ctx.require(parameter.ty.* != .array, "array values are not implemented in memory AIR");
             try ctx.require(result.* != .array, "array values are not implemented in memory AIR");
         }
         if (profile.hasBytes()) {
-            for (parameters) |ty| {
+            for (parameters) |parameter| {
+                const ty = parameter.ty;
                 try ctx.require(!ty.hasAlignment(), "aligned signature needs an external memory contract");
                 try ctx.require(ty.* == .int or ty.* == .boolean or ty.* == .unit or (ty.* == .pointer and ty.pointer.child.isInt(false, 32)), "byte profile parameters require scalar or u32-pointer types");
             }
@@ -171,27 +253,46 @@ pub const Decoder = struct {
     fn readValidity(self: *Decoder) Error!void {
         const ctx = self.ctx;
         const validity = try ctx.field(self.record, "sourceValidity");
-        try ctx.fields(validity, "schema coverage complete slices");
+        const fields = "schema coverage complete slices";
+        if (c.get(validity, "copyLengthsAnchored")) |anchored| {
+            try ctx.fields(validity, fields ++ " copyLengthsAnchored");
+            try ctx.require(anchored == .bool and anchored.bool, "copy length obligation has no supported AIR anchor");
+            self.copy_lengths_recorded = true;
+        } else try ctx.fields(validity, fields);
         const slices = try ctx.array(try ctx.field(validity, "slices"));
         try ctx.require(c.tag(validity, "schema", "oksolc.source-validity.v1") and c.tag(validity, "coverage", "runtime-slice-results") and c.flag(validity, "complete", false), "unsupported source-validity obligations");
         const tags = try ctx.array(try ctx.field(self.record, "sourceOperationTags"));
+        for (tags) |value| if (c.stringIs(value, "memcpy") or c.stringIs(value, "memmove")) {
+            try ctx.require(self.copy_lengths_recorded, "source copy operations require length-aware capture");
+        };
         var length_slices = false;
         if (self.profile != .scalar and self.options.extension != .hash_update) for (tags) |value| {
             length_slices = length_slices or c.stringIs(value, "slice_length");
         };
         if (self.profile == .scalar or (self.profile == .aggregate and self.options.extension != .hash_update and self.options.extension != .slice_view)) return ctx.require(slices.len == 0 and !length_slices, "unsupported source-validity obligations in scalar AIR");
         try ctx.require(slices.len <= 512, "unsupported memory source-validity inventory");
+        self.slice_guard_count = slices.len;
         if (length_slices) try ctx.require(slices.len > 0, "length-based slice lost its source guard");
         for (slices, 0..) |item, position| {
             try ctx.fields(item, "source anchor start end upperBound unsupportedReason");
             const source = try ctx.field(item, "source");
             try ctx.fields(source, "file sha256 span");
-            try ctx.require(c.equal(try ctx.field(source, "sha256"), try ctx.field(self.record, "sourceSha256")) and c.equal(try ctx.field(source, "file"), try ctx.field(self.record, "sourceFile")), "source guard identity mismatch");
+            const file = try ctx.str(try ctx.field(source, "file"));
+            const sha = try ctx.field(source, "sha256");
+            var source_limit: usize = std.math.maxInt(u32);
+            if (c.tag(self.record, "sourceFile", file)) {
+                try ctx.require(c.equal(sha, try ctx.field(self.record, "sourceSha256")), "source guard identity mismatch");
+            } else {
+                const sources = self.options.guard_sources orelse return ctx.fail("inline slice guard from {s} requires captured source evidence", .{file});
+                const identity = sources.get(file) orelse return ctx.fail("unknown inline slice guard source {s}", .{file});
+                try ctx.require(c.stringIs(sha, &identity.sha), "inline slice guard digest mismatch");
+                source_limit = @min(source_limit, identity.size);
+            }
             const span = try ctx.field(source, "span");
             try ctx.fields(span, "start end main");
-            const start = try ctx.nat(try ctx.field(span, "start"), std.math.maxInt(u32));
-            const main = try ctx.nat(try ctx.field(span, "main"), std.math.maxInt(u32));
-            const end = try ctx.nat(try ctx.field(span, "end"), std.math.maxInt(u32));
+            const start = try ctx.nat(try ctx.field(span, "start"), source_limit);
+            const main = try ctx.nat(try ctx.field(span, "main"), source_limit);
+            const end = try ctx.nat(try ctx.field(span, "end"), source_limit);
             try ctx.require(start <= main and main < end, "invalid source guard span");
             const anchor = try ctx.field(item, "anchor");
             try ctx.fields(anchor, "kind index inSupportedBody");
@@ -287,10 +388,95 @@ pub const Decoder = struct {
             return ctx.fail("unsupported source guard bound", .{});
         };
         self.guard_seen[index] = true;
-        var primitive = try ctx.fmt("(.checkBounds {s} {s} {s})", .{ start.text, end.text, upper });
+        const primitive = try ctx.fmt("(.checkBounds {s} {s} {s})", .{ start.text, end.text, upper });
+        try self.addMemoryGuard(prefixes, self.instructions.len + self.guard_positions[index], primitive);
+    }
+
+    fn addMemoryGuard(self: *Decoder, prefixes: *std.ArrayList(Prefix), id: usize, guard: []const u8) Error!void {
+        const ctx = self.ctx;
+        var primitive = guard;
         if (self.profile.hasCalls()) primitive = try ctx.fmt("(.memory {s})", .{primitive});
-        if (self.options.extension == .hash_update) primitive = try ctx.fmt("(.primitive (.memory {s}))", .{primitive}) else if (self.options.extension == .slice_view) primitive = try ctx.fmt("(.memory {s})", .{primitive});
-        try prefixes.append(ctx.allocator, .{ .id = self.instructions.len + self.guard_positions[index], .ty = "(.scalar .unit)", .child = primitive });
+        if (self.options.extension == .hash_update) primitive = try ctx.fmt("(.primitive (.memory {s}))", .{primitive}) else if (self.profile == .aggregate) primitive = try ctx.fmt("(.memory {s})", .{primitive});
+        try prefixes.append(ctx.allocator, .{ .id = id, .ty = "(.scalar .unit)", .child = primitive });
+    }
+
+    fn directCopyPointer(self: *Decoder, operand: Value) Error!bool {
+        const id = (try self.refId(operand)) orelse return false;
+        return c.oneOf(try self.ctx.str(try self.ctx.field(self.instructions[id], "tag")), &.{ "arg", "load" });
+    }
+
+    fn copyLength(self: *Decoder, value: Value, operand: Value, env: Env, source_length: ?Value) Error!?Reference {
+        const ctx = self.ctx;
+        const operand_ty = (try self.memoryReference(operand, env)).ty;
+        var view = operand;
+        if (operand_ty.* == .pointer and operand_ty.pointer.child.* == .array) {
+            const inst = self.instructions[(try self.refId(view)) orelse return ctx.fail("copy array has no instruction", .{})];
+            if (c.tag(inst, "tag", "ptr_cast")) view = try ctx.field(inst, "operand");
+        }
+        if (c.tag(value, "kind", "manyPointer")) {
+            try ctx.fields(value, "kind operand");
+            const original = try ctx.field(value, "operand");
+            const original_ty = (try self.memoryReference(original, env)).ty;
+            try ctx.require(original_ty.* == .pointer and original_ty.pointer.many and original_ty.pointer.child.isInt(false, 8), "only a many pointer can omit a byte copy length");
+            // A destination that borrowed the source length is lowered to a slice.
+            if (operand_ty.* == .slice) {
+                const id = (try self.refId(operand)) orelse return ctx.fail("copy destination has no instruction", .{});
+                const slice = self.instructions[id];
+                try ctx.require(original_ty.pointer.mutable and c.tag(slice, "tag", "slice") and
+                    c.equal(try ctx.field(slice, "lhs"), original), "copy destination lost its original pointer");
+                try ctx.require(source_length != null and c.equal(try ctx.field(slice, "rhs"), source_length.?), "copy destination did not borrow its source length");
+            } else {
+                try ctx.require(c.equal(original, view), "copy pointer identity changed");
+                if (source_length) |borrowed| {
+                    // A known source length can lower the destination to *[N]u8.
+                    try ctx.require(operand_ty.* == .pointer and operand_ty.pointer.child.* == .array and
+                        c.tag(borrowed, "kind", "constant") and try ctx.nat(try ctx.field(borrowed, "value"), std.math.maxInt(u64)) == operand_ty.pointer.child.array.len, "copy destination array did not borrow its source length");
+                }
+            }
+            return null;
+        }
+        const length = try self.memoryReference(value, env);
+        try ctx.require(length.ty.isInt(false, 64), "byte copy length is not usize");
+        if (try self.refId(view)) |id| {
+            const inst = self.instructions[id];
+            if (c.tag(inst, "tag", "slice_ptr")) view = try ctx.field(inst, "operand");
+        }
+        if (try self.refId(value)) |id| {
+            const projection = self.instructions[id];
+            try ctx.require(c.tag(projection, "tag", "slice_len") and
+                c.equal(try ctx.field(projection, "operand"), view), "copy length does not belong to its operand");
+        } else {
+            if (operand_ty.* == .pointer and operand_ty.pointer.child.* == .array) {
+                const count = try ctx.nat(try ctx.field(value, "value"), std.math.maxInt(u64));
+                try ctx.require(count == operand_ty.pointer.child.array.len, "copy length changes its array extent");
+            } else try ctx.require((try self.memoryReference(view, env)).ty.* != .slice, "runtime copy slice lost its length projection");
+        }
+        return length;
+    }
+
+    fn copyLengthGuard(self: *Decoder, inst: Value, index: usize, env: Env, prefixes: *std.ArrayList(Prefix)) Error!void {
+        const ctx = self.ctx;
+        if (c.get(inst, "copyLengths")) |lengths| {
+            try ctx.fields(lengths, "destination source");
+            const source_length = try ctx.field(lengths, "source");
+            const source = try self.copyLength(source_length, try ctx.field(inst, "rhs"), env, null);
+            const destination = try self.copyLength(try ctx.field(lengths, "destination"), try ctx.field(inst, "lhs"), env, source_length);
+            try ctx.require(destination != null or source != null, "byte copy lacks a source length");
+            if (destination != null and source != null) {
+                // Disjoint from captured registers, slice guards and element-pointer temporaries.
+                const id = 2 * self.instructions.len + self.slice_guard_count + index;
+                const primitive = try ctx.fmt("(.checkCopyLengths {s} {s})", .{ destination.?.text, source.?.text });
+                try self.addMemoryGuard(prefixes, id, primitive);
+            }
+            return;
+        }
+        // Earlier records can only establish the source lengths when the
+        // pointer operands have not been produced by view decay or an upgrade.
+        try ctx.require(!self.copy_lengths_recorded and c.tag(inst, "tag", "memcpy"), "byte transfer lacks captured source lengths");
+        const destination = try ctx.field(inst, "lhs");
+        const target = try self.memoryReference(destination, env);
+        try ctx.require(try self.directCopyPointer(try ctx.field(inst, "rhs")) and
+            (target.ty.* == .slice or try self.directCopyPointer(destination)), "byte copy lacks source-length evidence");
     }
 
     fn callPrimitive(self: *Decoder, inst: Value, ty: *const Ty, env: Env) Error![]const u8 {
@@ -311,6 +497,10 @@ pub const Decoder = struct {
             try ctx.require(arguments.len == parameters.len and Ty.same(ty, try types.parse(ctx, try ctx.field(signature, "returnType"), .memory, 0)), "call signature mismatch");
             var texts: std.ArrayList([]const u8) = .empty;
             for (arguments, parameters) |argument, parameter| {
+                if (try types.isSingletonParameter(ctx, parameter)) {
+                    try types.checkSingletonValue(ctx, argument, parameter);
+                    continue;
+                }
                 const ref = try self.reference(argument, env, false);
                 try ctx.require(Ty.same(ref.ty, try types.parse(ctx, parameter, .memory, 0)), "call argument type mismatch");
                 try texts.append(ctx.allocator, ref.text);
@@ -336,10 +526,61 @@ pub const Decoder = struct {
         return ctx.fail("call target is missing from the admitted closure", .{});
     }
 
+    fn errorPrimitive(self: *Decoder, inst: Value, tag: []const u8, ty: *const Ty, env: Env) Error!?[]const u8 {
+        const tags: []const []const u8 = &.{
+            "is_err",                "is_non_err",        "unwrap_errunion_payload", "unwrap_errunion_err",
+            "wrap_errunion_payload", "wrap_errunion_err",
+        };
+        if (!c.oneOf(tag, tags)) return null;
+        const ctx = self.ctx;
+        try ctx.require(self.profile == .memory or self.profile == .loops or self.profile.hasCalls(), "error values require the memory or call vocabulary");
+        try ctx.fields(inst, "index tag payloadVisited type operand");
+        const operand = try self.memoryReference(try ctx.field(inst, "operand"), env);
+        if (c.oneOf(tag, &.{ "wrap_errunion_payload", "wrap_errunion_err" })) {
+            try ctx.require(ty.* == .error_value and ty.error_value.result, "error wrapping requires an admitted error union");
+            const valid = if (eq(u8, tag, "wrap_errunion_payload"))
+                Ty.same(operand.ty, ty.error_value.payload orelse &unit_type)
+            else
+                operand.ty.* == .error_value and !operand.ty.error_value.result and ty.error_value.includes(operand.ty.error_value);
+            try ctx.require(valid, "error wrapping changes the declared set or payload");
+            if (ty.error_value.payload) |child|
+                return try ctx.fmt("(.wrapScalarError {s} {s} {s})", .{
+                    try child.lean(ctx, .scalar), try ctx.json(ty.error_value.names), operand.text,
+                });
+            return try ctx.fmt("(.wrapError {s} {s})", .{ try ctx.json(ty.error_value.names), operand.text });
+        }
+        try ctx.require(operand.ty.* == .error_value and operand.ty.error_value.result, "expected an error union operand");
+        if (c.oneOf(tag, &.{ "is_err", "is_non_err" })) {
+            try ctx.require(ty.* == .boolean, "error test requires a boolean result");
+            return try ctx.fmt("(.testError {s} {s})", .{ c.boolText(eq(u8, tag, "is_non_err")), operand.text });
+        }
+        const payload = eq(u8, tag, "unwrap_errunion_payload");
+        const expected: Ty = .{ .error_value = .{ .result = false, .names = operand.ty.error_value.names } };
+        try ctx.require(Ty.same(ty, if (payload) operand.ty.error_value.payload orelse &unit_type else &expected), "error extraction changes the declared set or payload");
+        return try ctx.fmt("(.unwrapError {s} {s})", .{ c.boolText(payload), operand.text });
+    }
+
     fn memoryPrimitive(self: *Decoder, inst: Value, ty: *const Ty, env: Env) Error!?[]const u8 {
         const ctx = self.ctx;
         const tag = try ctx.str(try ctx.field(inst, "tag"));
         const base = "index tag payloadVisited type ";
+        if (try self.errorPrimitive(inst, tag, ty, env)) |operation| return operation;
+        if (c.oneOf(tag, &.{ "is_null", "is_non_null", "optional_payload", "wrap_optional" })) {
+            try ctx.require(self.profile == .memory or self.profile == .loops or self.profile.hasCalls(), "optional values require the memory or call vocabulary");
+            try ctx.fields(inst, "index tag payloadVisited type operand");
+            const operand = try self.memoryReference(try ctx.field(inst, "operand"), env);
+            if (eq(u8, tag, "wrap_optional")) {
+                try ctx.require(operand.ty.isInt(false, 8) and ty.* == .optional_byte, "optional wrapping changes payload type");
+                return try ctx.fmt("(.wrapOptional {s})", .{operand.text});
+            }
+            try ctx.require(operand.ty.* == .optional_byte, "expected an optional byte operand");
+            if (eq(u8, tag, "optional_payload")) {
+                try ctx.require(ty.isInt(false, 8), "optional extraction changes payload type");
+                return try ctx.fmt("(.optionalPayload {s})", .{operand.text});
+            }
+            try ctx.require(ty.* == .boolean, "optional test requires a boolean result");
+            return try ctx.fmt("(.testOptional {s} {s})", .{ c.boolText(eq(u8, tag, "is_non_null")), operand.text });
+        }
         if (try self.fieldPrimitive(inst, ty, env)) |field| return field;
         if (eq(u8, tag, "not")) {
             try ctx.fields(inst, base ++ "operand");
@@ -347,14 +588,26 @@ pub const Decoder = struct {
             try ctx.require(ty.* == .boolean and operand.ty.* == .boolean, "unsupported nonboolean complement");
             return try ctx.fmt("(.booleanNot {s})", .{operand.text});
         }
-        if (eq(u8, tag, "memcpy")) {
-            try ctx.fields(inst, base ++ "lhs rhs");
+        if (c.oneOf(tag, &.{ "memcpy", "memmove" })) {
+            try ctx.fields(inst, if (c.get(inst, "copyLengths") != null) base ++ "lhs rhs copyLengths" else base ++ "lhs rhs");
             const target = try self.memoryReference(try ctx.field(inst, "lhs"), env);
             const input = try self.memoryReference(try ctx.field(inst, "rhs"), env);
             const dest = (target.ty.* == .slice and target.ty.slice.mutable and target.ty.slice.child.isInt(false, 8)) or (target.ty.* == .pointer and target.ty.pointer.mutable and !target.ty.pointer.many and target.ty.pointer.child.* == .array and target.ty.pointer.child.array.child.isInt(false, 8));
             const src = input.ty.* == .pointer and ((input.ty.pointer.many and input.ty.pointer.child.isInt(false, 8)) or (!input.ty.pointer.many and input.ty.pointer.child.* == .array and input.ty.pointer.child.array.child.isInt(false, 8)));
             try ctx.require(dest and src and ty.* == .unit, "unsupported byte-copy operands");
-            return try ctx.fmt("(.copyBytes {s} {s})", .{ target.text, input.text });
+            const operation = if (eq(u8, tag, "memmove")) "moveBytes" else "copyBytes";
+            return try ctx.fmt("(.{s} {s} {s})", .{ operation, target.text, input.text });
+        }
+        if (eq(u8, tag, "memset")) {
+            try ctx.fields(inst, base ++ "lhs rhs");
+            const target = try self.memoryReference(try ctx.field(inst, "lhs"), env);
+            try ctx.require(target.ty.* == .slice and target.ty.slice.mutable and ty.* == .unit, "undefined fill requires a writable slice and unit result");
+            const child = target.ty.slice.child;
+            try ctx.require((child.* == .int or child.* == .boolean) and (try child.layout(ctx))[0] > 0, "unsupported undefined fill element");
+            const fill = try ctx.field(inst, "rhs");
+            try ctx.fields(fill, "kind type");
+            try ctx.require(c.tag(fill, "kind", "undefined") and Ty.same(child, try types.parse(ctx, try ctx.field(fill, "type"), .memory, 0)), "fill must be undefined at the exact slice element type");
+            return try ctx.fmt("(.invalidateSlice {s})", .{target.text});
         }
         if (eq(u8, tag, "alloc")) {
             try ctx.fields(inst, base ++ "allocationKind");
@@ -421,19 +674,39 @@ pub const Decoder = struct {
         try ctx.require(if (eq(u8, tag, "ptr_slice_len_ptr")) ty.pointer.child.isInt(false, 64) else isPointer(ty.pointer.child, child.mutable, true, child.child), "ill-typed slice field projection");
         return try ctx.fmt("(.pointerField {s} {s})", .{ c.boolText(eq(u8, tag, "ptr_slice_len_ptr")), source.text });
     }
-    fn fieldPrimitive(self: *Decoder, inst: Value, ty: *const Ty, env: Env) Error!?[]const u8 {
+    fn selectField(self: *Decoder, inst: Value, tag: []const u8, env: Env) Error!FieldSelection {
         const ctx = self.ctx;
-        const tag = try ctx.str(try ctx.field(inst, "tag"));
-        if (!eq(u8, tag, "struct_field_ptr") and !std.mem.startsWith(u8, tag, "struct_field_ptr_index_")) return null;
         try ctx.fields(inst, "index tag payloadVisited type operand fieldIndex");
         const owner = try self.reference(try ctx.field(inst, "operand"), env, false);
         try ctx.require(owner.ty.* == .pointer and owner.ty.pointer.child.* == .structure, "field pointer lacks complete declaration");
         const fields = owner.ty.pointer.child.structure.fields;
         try ctx.require(fields.len > 0, "field pointer has no declared field");
         const index = try ctx.nat(try ctx.field(inst, "fieldIndex"), fields.len - 1);
-        if (!eq(u8, tag, "struct_field_ptr")) try ctx.require(c.oneOf(tag, &.{ "struct_field_ptr_index_0", "struct_field_ptr_index_1", "struct_field_ptr_index_2", "struct_field_ptr_index_3" }) and tag[tag.len - 1] - '0' == index, "fixed field pointer changes index");
-        try ctx.require(isPointer(ty, owner.ty.pointer.mutable, false, fields[index].ty), "field pointer changes type or permissions");
-        return try ctx.fmt("(.fieldPointer {s} {d})", .{ owner.text, fields[index].offset });
+        if (!eq(u8, tag, "struct_field_ptr")) try ctx.require(tag[tag.len - 1] - '0' == index, "fixed field pointer changes index");
+        return .{ .owner = owner, .field = fields[index] };
+    }
+
+    fn fieldPrimitive(self: *Decoder, inst: Value, ty: *const Ty, env: Env) Error!?[]const u8 {
+        const ctx = self.ctx;
+        const tag = try ctx.str(try ctx.field(inst, "tag"));
+        if (!c.oneOf(tag, field_tags)) return null;
+        const selection = try self.selectField(inst, tag, env);
+        const field = selection.field;
+        try ctx.require(field.ty == .stored, "zero-storage fields cannot be accessed");
+        try ctx.require(isPointer(ty, selection.owner.ty.pointer.mutable, false, field.ty.stored), "field pointer changes type or permissions");
+        return try ctx.fmt("(.fieldPointer {s} {d})", .{ selection.owner.text, field.offset });
+    }
+
+    fn zeroFieldPrimitive(self: *Decoder, inst: Value, tag: []const u8, env: Env) Error!?[]const u8 {
+        if (!c.oneOf(tag, field_tags)) return null;
+        const ctx = self.ctx;
+        const result = try ctx.field(inst, "type");
+        if (!c.tag(result, "kind", "pointer") or !try types.isSingletonParameter(ctx, try ctx.field(result, "child"))) return null;
+        const selection = try self.selectField(inst, tag, env);
+        const owner = selection.owner.ty.pointer;
+        try ctx.require(selection.field.ty == .zero_storage and !owner.many, "zero-storage field requires a declared singleton and a single owner");
+        try types.checkSingletonPointer(ctx, result, selection.field.ty.zero_storage, owner.mutable);
+        return try ctx.fmt("(.checkZeroField {s} {d})", .{ selection.owner.text, selection.field.offset });
     }
     fn aggregatePrimitive(self: *Decoder, inst: Value, ty: *const Ty, env: Env) Error!?[]const u8 {
         const ctx = self.ctx;
@@ -590,7 +863,7 @@ pub const Decoder = struct {
         }
         if (self.options.extension != .hash_update) return null;
         if (eq(u8, tag, "memcpy")) {
-            try ctx.fields(inst, base ++ "lhs rhs");
+            try ctx.fields(inst, if (c.get(inst, "copyLengths") != null) base ++ "lhs rhs copyLengths" else base ++ "lhs rhs");
             const target = try self.reference(try ctx.field(inst, "lhs"), env, false);
             const source = try self.reference(try ctx.field(inst, "rhs"), env, false);
             const dest = (target.ty.* == .slice and target.ty.slice.mutable and target.ty.slice.child.isInt(false, 8)) or (target.ty.* == .pointer and target.ty.pointer.mutable and !target.ty.pointer.many and target.ty.pointer.child.* == .array and target.ty.pointer.child.array.child.isInt(false, 8));
@@ -635,9 +908,93 @@ pub const Decoder = struct {
         return null;
     }
 
-    fn body(self: *Decoder, indices_value: Value, incoming: Env, labels: Labels, depth: usize) Error![]const u8 {
+    fn switchBranch(self: *Decoder, inst: Value, index: usize, env: Env, labels: Labels, depth: usize) Error![]const u8 {
         const ctx = self.ctx;
-        const indices = try ctx.array(indices_value);
+        try ctx.fields(inst, "index tag payloadVisited type operand cases elseBody");
+        const operand = try self.reference(try ctx.field(inst, "operand"), env, self.profile != .scalar);
+        const enum_selector = operand.ty.isRuntimeEnum();
+        try ctx.require(enum_selector or (operand.ty.* == .int and operand.ty.int.bits > 0), "switch requires an integer or declared enum selector");
+        const arms = try ctx.array(try ctx.field(inst, "cases"));
+        try ctx.require(arms.len > 0 and arms.len <= maximum_switch_ranges, "switch arm limit");
+        const Interval = struct { low: i1024, high: i1024 };
+        var checked: std.ArrayList(Interval) = .empty;
+        const fallback = try ctx.array(try ctx.field(inst, "elseBody"));
+        const defaultless = fallback.len == 0;
+        if (defaultless) try ctx.require(enum_selector and
+            (self.profile == .memory or self.profile == .loops or self.profile.hasCalls()), "an omitted switch default requires a declared enum and memory semantics");
+        var code = if (defaultless) try self.memoryUnreachable(index) else try self.bodyIndices(fallback, env, labels, depth + 1);
+        var ordinal = arms.len;
+        while (ordinal > 0) {
+            ordinal -= 1;
+            const arm = arms[ordinal];
+            try ctx.fields(arm, "ranges body");
+            const ranges = try ctx.array(try ctx.field(arm, "ranges"));
+            try ctx.require(ranges.len > 0 and ranges.len <= maximum_switch_ranges - checked.items.len, "switch range limit");
+            var encoded: std.ArrayList([]const u8) = .empty;
+            for (ranges) |pair| {
+                const bounds = try ctx.array(pair);
+                try ctx.require(bounds.len == 2, "switch requires closed ranges");
+                for (bounds) |bound| {
+                    try ctx.require(c.tag(bound, "kind", if (enum_selector) "enumTag" else "constant") and
+                        Ty.same((try scalarConstant(ctx, bound)).ty, operand.ty), "switch bound changes selector type");
+                }
+                const low = try ctx.integer(try ctx.field(bounds[0], "value"));
+                const high = try ctx.integer(try ctx.field(bounds[1], "value"));
+                try ctx.require(if (enum_selector) low == high else low <= high, "invalid switch range");
+                for (checked.items) |other| try ctx.require(high < other.low or other.high < low, "overlapping switch ranges");
+                try checked.append(ctx.allocator, .{ .low = low, .high = high });
+                try encoded.append(ctx.allocator, if (enum_selector) try ctx.fmt("{d}", .{low}) else try ctx.fmt("(({d}), ({d}))", .{ low, high }));
+            }
+            const selected = try self.body(try ctx.field(arm, "body"), env, labels, depth + 1);
+            var test_primitive = try self.scalarPrimitive(try ctx.fmt("(.{s} {s} [{s}])", .{
+                if (enum_selector) "enumInTags" else "inRanges", operand.text, try std.mem.join(ctx.allocator, ", ", encoded.items),
+            }));
+            if (self.profile.hasCalls()) test_primitive = try ctx.fmt("(.memory {s})", .{test_primitive});
+            const register = 3 * self.instructions.len + self.slice_guard_count + index * maximum_switch_ranges + ordinal;
+            const bool_ty = if (self.profile == .scalar) ".bool" else "(.scalar .bool)";
+            if (self.options.call_machine) {
+                const branch = try self.branchText(try ctx.fmt("(.local {d})", .{register}), selected, code);
+                code = try self.prepend(.{ .id = register, .ty = bool_ty, .child = test_primitive }, branch);
+            } else {
+                code = try ctx.fmt("(.bind {d} {s} {s}\n  (.branch (.local {d})\n    {s}\n    {s}))", .{
+                    register, bool_ty, test_primitive, register, selected, code,
+                });
+            }
+        }
+        if (defaultless) try ctx.require(checked.items.len == operand.ty.enumeration.tags.len, "defaultless enum switch must cover every declared tag");
+        return code;
+    }
+
+    fn memoryUnreachable(self: *Decoder, index: usize) Error![]const u8 {
+        return self.ctx.fmt("(.bind {d} (.scalar .unit) {s} (.ret (.constant (.scalar .unit))))", .{
+            index, if (self.profile.hasCalls()) "(.memory .unreachable)" else ".unreachable",
+        });
+    }
+
+    fn body(self: *Decoder, indices_value: Value, incoming: Env, labels: Labels, depth: usize) Error![]const u8 {
+        return self.bodyIndices(try self.ctx.array(indices_value), incoming, labels, depth);
+    }
+
+    fn branchText(self: *Decoder, condition: []const u8, yes: []const u8, no: []const u8) Error![]const u8 {
+        const ctx = self.ctx;
+        return if (self.options.call_machine)
+            ctx.fmt(".branch {s}\n  (\n{s}\n  )\n  (\n{s}\n  )", .{ condition, try indent(ctx, yes, 4), try indent(ctx, no, 4) })
+        else
+            ctx.fmt("(.branch {s}\n  {s}\n  {s})", .{ condition, yes, no });
+    }
+
+    fn prepend(self: *Decoder, prefix: Prefix, rest: []const u8) Error![]const u8 {
+        const ctx = self.ctx;
+        return if (!self.options.call_machine)
+            ctx.fmt("(.{s} {d} {s}\n  {s}\n  {s})", .{ prefix.kind, prefix.id, prefix.ty, prefix.child, rest })
+        else if (eq(u8, prefix.kind, "block"))
+            ctx.fmt(".block {d} {s} (\n{s}\n) <|\n{s}", .{ prefix.id, prefix.ty, try indent(ctx, prefix.child, 2), rest })
+        else
+            ctx.fmt(".bind {d} {s} {s} <|\n{s}", .{ prefix.id, prefix.ty, prefix.child, rest });
+    }
+
+    fn bodyIndices(self: *Decoder, indices: []const Value, incoming: Env, labels: Labels, depth: usize) Error![]const u8 {
+        const ctx = self.ctx;
         try ctx.require(indices.len > 0 and depth <= 64, "empty, malformed or too deeply nested AIR body");
         const env = try ctx.allocator.dupe(?*const Ty, incoming);
         var prefixes: std.ArrayList(Prefix) = .empty;
@@ -647,14 +1004,27 @@ pub const Decoder = struct {
             try ctx.require(!self.visited[index] and terminal == null, "duplicate AIR body ownership or code after terminator");
             self.visited[index] = true;
             const inst = self.instructions[index];
-            try ctx.require(c.flag(inst, "payloadVisited", true) and c.get(inst, "unsupportedPayload") == null, "unsupported or unvisited AIR body instruction");
             const tag = try ctx.str(try ctx.field(inst, "tag"));
+            const previous = ctx.diagnostic;
+            const prefix = "AIR instruction ";
+            // Keep the innermost location when a nested block is rejected.
+            errdefer if (ctx.diagnostic.ptr != previous.ptr and !std.mem.startsWith(u8, ctx.diagnostic, prefix)) {
+                ctx.diagnostic = std.fmt.allocPrint(ctx.allocator, prefix ++ "{d} ({s}) rejected. {s}", .{ index, tag, ctx.diagnostic }) catch ctx.diagnostic;
+            };
+            try ctx.require(c.flag(inst, "payloadVisited", true) and c.get(inst, "unsupportedPayload") == null, "unsupported or unvisited AIR body instruction");
             try @import("admission.zig").require(ctx, tag);
-            const ty = try types.parse(ctx, try ctx.field(inst, "type"), self.profile, 0);
+            const zero_field = if (self.options.extension == .none and (self.profile == .memory or self.profile == .loops or self.profile.hasCalls()))
+                try self.zeroFieldPrimitive(inst, tag, env)
+            else
+                null;
+            const ty = if (zero_field != null) try ctx.make(Ty, .unit) else try types.parse(ctx, try ctx.field(inst, "type"), self.profile, 0);
             const base = "index tag payloadVisited type ";
             try self.before(index, env, &prefixes);
+            if (c.oneOf(tag, &.{ "memcpy", "memmove" }) and self.profile != .scalar)
+                try self.copyLengthGuard(inst, index, env, &prefixes);
             const direct_call = self.profile.hasCalls() and c.oneOf(tag, &.{ "call", "call_never_inline", "call_never_tail" });
-            var primitive: ?[]const u8 = if (direct_call) try self.callPrimitive(inst, ty, env) else try self.extraPrimitive(inst, ty, env);
+            var primitive = zero_field;
+            if (primitive == null) primitive = if (direct_call) try self.callPrimitive(inst, ty, env) else try self.extraPrimitive(inst, ty, env);
             if (primitive == null and c.oneOf(tag, &.{ "slice_elem_val", "ptr_elem_val" })) {
                 try ctx.require(self.profile == .memory or self.profile == .loops or self.profile.hasCalls(), "element reads require the memory vocabulary");
                 try ctx.fields(inst, base ++ "lhs rhs");
@@ -665,7 +1035,7 @@ pub const Decoder = struct {
                 try ctx.require(if (slice) owner.ty.* == .slice and owner.ty.slice.child.isInt(false, 8) else owner.ty.* == .pointer and owner.ty.pointer.many and owner.ty.pointer.child.isInt(false, 8), "byte-element read lost its owner");
                 const mutable = if (slice) owner.ty.slice.mutable else owner.ty.pointer.mutable;
                 // Temporary IDs are disjoint from captured registers and source guards.
-                const temporary = self.instructions.len + (try ctx.array(try ctx.field(try ctx.field(self.record, "sourceValidity"), "slices"))).len + index;
+                const temporary = self.instructions.len + self.slice_guard_count + index;
                 const select = try ctx.fmt("(.{s} {s} {s})", .{ if (slice) "sliceElementPointer" else "elementPointer", owner.text, element.text });
                 try prefixes.append(ctx.allocator, .{ .id = temporary, .ty = try ctx.fmt("(.pointer {s} false (.scalar (.int false 8)))", .{c.boolText(mutable)}), .child = if (self.profile.hasCalls()) try ctx.fmt("(.memory {s})", .{select}) else select });
                 primitive = try ctx.fmt("(.load (.local {d}))", .{temporary});
@@ -682,8 +1052,8 @@ pub const Decoder = struct {
             if (primitive != null) {} else if (eq(u8, tag, "arg")) {
                 try ctx.fields(inst, base ++ "zirParameterIndex");
                 try ctx.require(depth == 0 and position == self.arguments and self.arguments < self.parameters.len, "invalid AIR argument prefix");
-                const source_index = if (self.options.source_parameters) |mapping| mapping[self.arguments] else self.arguments;
-                try ctx.require(try ctx.nat(try ctx.field(inst, "zirParameterIndex"), 511) == source_index and Ty.same(ty, self.parameters[self.arguments]), "AIR argument disagrees with signature");
+                const parameter = self.parameters[self.arguments];
+                try ctx.require(try ctx.nat(try ctx.field(inst, "zirParameterIndex"), 511) == parameter.source_index and Ty.same(ty, parameter.ty), "AIR argument disagrees with signature");
                 primitive = try ctx.fmt("(.argument {d})", .{self.arguments});
                 if (self.options.extension == .hash_update) primitive = try ctx.fmt("(.primitive {s})", .{primitive.?});
                 self.arguments += 1;
@@ -695,17 +1065,24 @@ pub const Decoder = struct {
                 const stop = std.mem.indexOfScalar(u8, tag, '_') orelse tag.len;
                 const mode = if (std.mem.endsWith(u8, tag, "_safe")) "checked" else if (std.mem.endsWith(u8, tag, "_wrap")) "wrapping" else "unchecked";
                 primitive = try self.scalarPrimitive(try ctx.fmt("(.arithmetic .{s} .{s} {s} {s})", .{ tag[0..stop], mode, left.text, right.text }));
-            } else if (c.oneOf(tag, &.{ "bit_and", "xor", "shr" })) {
+            } else if (eq(u8, tag, "div_trunc")) {
+                try ctx.fields(inst, base ++ "lhs rhs");
+                const left = try self.reference(try ctx.field(inst, "lhs"), env, self.profile != .scalar);
+                const right = try self.reference(try ctx.field(inst, "rhs"), env, self.profile != .scalar);
+                try ctx.require(ty.* == .int and !ty.int.signed and ty.int.bits > 0 and Ty.same(left.ty, ty) and Ty.same(right.ty, ty), "ill-typed unsigned AIR division");
+                primitive = try self.scalarPrimitive(try ctx.fmt("(.divideUnsigned {s} {s})", .{ left.text, right.text }));
+            } else if (c.oneOf(tag, &.{ "bit_and", "bit_or", "xor", "shr", "shl" })) {
                 try ctx.fields(inst, base ++ "lhs rhs");
                 const left = try self.reference(try ctx.field(inst, "lhs"), env, self.profile != .scalar);
                 const right = try self.reference(try ctx.field(inst, "rhs"), env, self.profile != .scalar);
                 try ctx.require(Ty.same(left.ty, ty) and left.ty.* == .int and !left.ty.int.signed and right.ty.* == .int and !right.ty.int.signed, "unsupported or ill-typed unsigned AIR bit operation");
-                if (eq(u8, tag, "shr")) {
-                    try ctx.require(left.ty.int.bits > 0, "right shift has an invalid count type");
+                if (c.oneOf(tag, &.{ "shr", "shl" })) {
+                    try ctx.require(left.ty.int.bits > 0, "shift has an invalid count type");
                     const width: u16 = 16 - @clz(left.ty.int.bits - 1);
-                    try ctx.require(right.ty.int.bits == width, "right shift has an invalid count type");
+                    try ctx.require(right.ty.int.bits == width, "shift has an invalid count type");
                 } else try ctx.require(Ty.same(left.ty, right.ty), "bitwise operation changes operand width");
-                primitive = try self.scalarPrimitive(try ctx.fmt("(.{s} {s} {s})", .{ if (eq(u8, tag, "shr")) "shiftRight" else if (eq(u8, tag, "xor")) "bitXor" else "bitAnd", left.text, right.text }));
+                const op = if (eq(u8, tag, "shr")) "shiftRight" else if (eq(u8, tag, "shl")) "shiftLeft" else if (eq(u8, tag, "xor")) "bitXor" else if (eq(u8, tag, "bit_or")) "bitOr" else "bitAnd";
+                primitive = try self.scalarPrimitive(try ctx.fmt("(.{s} {s} {s})", .{ op, left.text, right.text }));
             } else if (c.oneOf(tag, &.{ "min", "max" })) {
                 try ctx.fields(inst, base ++ "lhs rhs");
                 const left = try self.reference(try ctx.field(inst, "lhs"), env, self.profile != .scalar);
@@ -716,16 +1093,26 @@ pub const Decoder = struct {
                 try ctx.fields(inst, base ++ "lhs rhs");
                 const left = try self.reference(try ctx.field(inst, "lhs"), env, self.profile != .scalar);
                 const right = try self.reference(try ctx.field(inst, "rhs"), env, self.profile != .scalar);
-                try ctx.require(Ty.same(left.ty, right.ty) and left.ty.* == .int and ty.* == .boolean, "ill-typed AIR comparison");
+                try ctx.require(Ty.same(left.ty, right.ty) and ty.* == .boolean, "ill-typed AIR comparison");
                 const op = if (eq(u8, tag, "cmp_eq")) "eq" else if (eq(u8, tag, "cmp_neq")) "ne" else if (eq(u8, tag, "cmp_lt")) "lt" else if (eq(u8, tag, "cmp_lte")) "le" else if (eq(u8, tag, "cmp_gt")) "gt" else "ge";
-                primitive = try self.scalarPrimitive(try ctx.fmt("(.comparison .{s} {s} {s})", .{ op, left.text, right.text }));
+                if (left.ty.isRuntimeEnum()) {
+                    try ctx.require(eq(u8, op, "eq") or eq(u8, op, "ne"), "enum comparison requires equality or inequality");
+                    primitive = try self.scalarPrimitive(try ctx.fmt("(.compareEnum {s} {s} {s})", .{ c.boolText(eq(u8, op, "eq")), left.text, right.text }));
+                } else {
+                    try ctx.require(left.ty.* == .int, "comparison requires integer or declared enum operands");
+                    primitive = try self.scalarPrimitive(try ctx.fmt("(.comparison .{s} {s} {s})", .{ op, left.text, right.text }));
+                }
             } else if (c.oneOf(tag, &.{ "int_cast", "int_cast_safe", "bit_cast", "trunc" })) {
                 try ctx.fields(inst, base ++ "operand");
                 const source = try self.reference(try ctx.field(inst, "operand"), env, self.profile != .scalar);
-                try ctx.require(source.ty.* == .int and ty.* == .int, "unsupported AIR cast types");
-                if (eq(u8, tag, "bit_cast")) try ctx.require(source.ty.int.bits == ty.int.bits, "bitcast changes width");
-                if (eq(u8, tag, "trunc")) try ctx.require(source.ty.int.signed == ty.int.signed and source.ty.int.bits >= ty.int.bits, "invalid truncation");
-                primitive = try self.scalarPrimitive(try ctx.fmt("(.cast .{s} {s} {s})", .{ if (eq(u8, tag, "int_cast")) "unchecked" else if (eq(u8, tag, "int_cast_safe")) "checked" else if (eq(u8, tag, "bit_cast")) "bitcast" else "trunc", try ty.lean(ctx, .scalar), source.text }));
+                if (eq(u8, tag, "bit_cast") and source.ty.* == .boolean and ty.isInt(false, 1)) {
+                    primitive = try self.scalarPrimitive(try ctx.fmt("(.boolToInt {s})", .{source.text}));
+                } else {
+                    try ctx.require(source.ty.* == .int and ty.* == .int, "unsupported AIR cast types");
+                    if (eq(u8, tag, "bit_cast")) try ctx.require(source.ty.int.bits == ty.int.bits, "bitcast changes width");
+                    if (eq(u8, tag, "trunc")) try ctx.require(source.ty.int.signed == ty.int.signed and source.ty.int.bits >= ty.int.bits, "invalid truncation");
+                    primitive = try self.scalarPrimitive(try ctx.fmt("(.cast .{s} {s} {s})", .{ if (eq(u8, tag, "int_cast")) "unchecked" else if (eq(u8, tag, "int_cast_safe")) "checked" else if (eq(u8, tag, "bit_cast")) "bitcast" else "trunc", try ty.lean(ctx, .scalar), source.text }));
+                }
             } else if (eq(u8, tag, "block")) {
                 try ctx.fields(inst, base ++ "body");
                 const nested = try ctx.allocator.dupe(?Label, labels);
@@ -752,10 +1139,39 @@ pub const Decoder = struct {
                 try ctx.require(condition.ty.* == .boolean and ty.* == .noreturn, "ill-typed AIR conditional branch");
                 const yes = try self.body(try ctx.field(inst, "thenBody"), env, labels, depth + 1);
                 const no = try self.body(try ctx.field(inst, "elseBody"), env, labels, depth + 1);
-                terminal = if (self.options.call_machine)
-                    try ctx.fmt(".branch {s}\n  (\n{s}\n  )\n  (\n{s}\n  )", .{ condition.text, try indent(ctx, yes, 4), try indent(ctx, no, 4) })
-                else
-                    try ctx.fmt("(.branch {s}\n  {s}\n  {s})", .{ condition.text, yes, no });
+                terminal = try self.branchText(condition.text, yes, no);
+            } else if (c.oneOf(tag, &.{ "try", "try_cold" })) {
+                try ctx.fields(inst, base ++ "operand errorBody");
+                try ctx.require((self.profile == .memory or self.profile == .loops or self.profile.hasCalls()) and
+                    self.options.extension == .none, "try requires memory or call semantics");
+                const operand = try self.memoryReference(try ctx.field(inst, "operand"), env);
+                try ctx.require(operand.ty.* == .error_value and operand.ty.error_value.result, "try requires an admitted error union");
+                try ctx.require(Ty.same(ty, operand.ty.error_value.payload orelse &unit_type), "try changes the declared payload type");
+                // The error arm has its own labels. It can return or fault,
+                // but it cannot jump into the enclosing success continuation.
+                const handler_labels = try ctx.allocator.alloc(?Label, labels.len);
+                @memset(handler_labels, null);
+                const handler = try self.body(try ctx.field(inst, "errorBody"), env, handler_labels, depth + 1);
+                env[index] = ty;
+                const continuation = try self.bodyIndices(indices[position + 1 ..], env, labels, depth + 1);
+                const test_error = try ctx.fmt("(.testError false {s})", .{operand.text});
+                const unwrap = try ctx.fmt("(.unwrapError true {s})", .{operand.text});
+                const condition_id = 2 * self.instructions.len + self.slice_guard_count + index;
+                try prefixes.append(ctx.allocator, .{
+                    .id = condition_id,
+                    .ty = "(.scalar .bool)",
+                    .child = if (self.profile.hasCalls()) try ctx.fmt("(.memory {s})", .{test_error}) else test_error,
+                });
+                const success = try self.prepend(.{
+                    .id = index,
+                    .ty = try ty.lean(ctx, self.profile),
+                    .child = if (self.profile.hasCalls()) try ctx.fmt("(.memory {s})", .{unwrap}) else unwrap,
+                }, continuation);
+                terminal = try self.branchText(try ctx.fmt("(.local {d})", .{condition_id}), handler, success);
+                break;
+            } else if (eq(u8, tag, "switch_br")) {
+                try ctx.require(ty.* == .noreturn and self.options.extension == .none, "unsupported switch result or profile");
+                terminal = try self.switchBranch(inst, index, env, labels, depth);
             } else if (eq(u8, tag, "br")) {
                 try ctx.fields(inst, base ++ "target operand");
                 const target = try ctx.nat(try ctx.field(inst, "target"), self.instructions.len - 1);
@@ -769,7 +1185,7 @@ pub const Decoder = struct {
             } else if (eq(u8, tag, "unreach") and (self.profile == .memory or self.profile == .loops or self.profile.hasCalls())) {
                 try ctx.fields(inst, "index tag payloadVisited type");
                 try ctx.require(ty.* == .noreturn, "unreachable has a result");
-                terminal = try ctx.fmt("(.bind {d} (.scalar .unit) {s} (.ret (.constant (.scalar .unit))))", .{ index, if (self.profile.hasCalls()) "(.memory .unreachable)" else ".unreachable" });
+                terminal = try self.memoryUnreachable(index);
             } else if (c.oneOf(tag, &.{ "ret", "ret_safe" })) {
                 try ctx.fields(inst, base ++ "operand");
                 const operand = try self.reference(try ctx.field(inst, "operand"), env, false);
@@ -781,20 +1197,16 @@ pub const Decoder = struct {
             } else return ctx.fail("unsupported AIR operation: {s}", .{tag});
             if (primitive) |text| {
                 try prefixes.append(ctx.allocator, .{ .id = index, .ty = try ty.lean(ctx, self.profile), .child = if (self.profile.hasCalls() and !direct_call) try ctx.fmt("(.memory {s})", .{text}) else text });
-                env[index] = ty;
+                // Preserve the address check while keeping its discarded
+                // pointer out of the source register environment.
+                if (zero_field == null) env[index] = ty;
             }
         }
         var result = terminal orelse return ctx.fail("AIR body has no terminator", .{});
         var next = prefixes.items.len;
         while (next > 0) {
             next -= 1;
-            const prefix = prefixes.items[next];
-            result = if (!self.options.call_machine)
-                try ctx.fmt("(.{s} {d} {s}\n  {s}\n  {s})", .{ prefix.kind, prefix.id, prefix.ty, prefix.child, result })
-            else if (eq(u8, prefix.kind, "block"))
-                try ctx.fmt(".block {d} {s} (\n{s}\n) <|\n{s}", .{ prefix.id, prefix.ty, try indent(ctx, prefix.child, 2), result })
-            else
-                try ctx.fmt(".bind {d} {s} {s} <|\n{s}", .{ prefix.id, prefix.ty, prefix.child, result });
+            result = try self.prepend(prefixes.items[next], result);
         }
         return result;
     }
@@ -815,7 +1227,7 @@ pub const Decoder = struct {
         for (self.guards, self.guard_seen) |guard, seen| try ctx.require(guard == null or seen, "source guard was not executed by the decoded body");
         if (self.options.extension == .slice_view) try ctx.require(self.empty_constants == 1, "sliceAsBytes must retain its empty return");
         var parameters: std.ArrayList([]const u8) = .empty;
-        for (self.parameters) |ty| try parameters.append(ctx.allocator, try ty.lean(ctx, self.profile));
+        for (self.parameters) |parameter| try parameters.append(ctx.allocator, try parameter.ty.lean(ctx, self.profile));
         if (self.options.call_machine) return ctx.fmt("  {{ parameters := [{s}],\n    returnType := {s},\n    body :=\n{s}\n  }}", .{ try std.mem.join(ctx.allocator, ", ", parameters.items), try self.result.lean(ctx, self.profile), try indent(ctx, code, 6) });
         return ctx.fmt("{{ parameters := [{s}], returnType := {s}, body :=\n  {s} }}", .{ try std.mem.join(ctx.allocator, ", ", parameters.items), try self.result.lean(ctx, self.profile), code });
     }
