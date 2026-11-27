@@ -33,6 +33,26 @@ theorem Heap.RetainsShape.trans {a b c : Heap}
   obtain ⟨after, lookup, next⟩ := second id middle lookup
   exact ⟨after, lookup, shape.trans next⟩
 
+/-- Address checks depend on allocation metadata and survive changes to its
+initialized cells. -/
+theorem Heap.RetainsShape.access {before after : State} {address : Address} {layout : Layout}
+    {write : Bool} {cell : Allocation} (retained : before.heap.RetainsShape after.heap)
+    (accessed : Memory.access before address layout write = .ok cell) :
+    ∃ updated, Memory.access after address layout write = .ok updated ∧ cell.SameShape updated := by
+  obtain ⟨found, region, shaped, positive, extent, width, inside, aligned, permission⟩ :=
+    access_success_region before address layout write cell accessed
+  obtain ⟨updated, kept, same⟩ := retained address.allocation cell found
+  have updatedShape : updated.type.layout = some region := same.2.1 ▸ shaped
+  have admitted : (write && !updated.writable) = false := by
+    cases write
+    · rfl
+    · simp [same.2.2.1, permission rfl]
+  have bounds : ¬(updated.base = 0 ∨ updated.base + region.bytes > addressLimit ∨
+      updated.base + address.offset ≥ addressLimit ∨ address.offset + layout.bytes > region.bytes ∨
+      (updated.base + address.offset) % layout.alignment ≠ 0) := by rw [same.1]; omega
+  exact ⟨updated, by simp only [Memory.access, kept, updatedShape, admitted, Bool.false_eq_true,
+    ↓reduceIte, bounds], same⟩
+
 theorem store_retains_shape (state : State) (pointer value : Value) (after : State)
     (success : store state pointer value = .ok after) : state.heap.RetainsShape after.heap := by
   obtain ⟨_, _, address, _, cell, contents, _, _, _, accessed, _, rfl⟩ :=

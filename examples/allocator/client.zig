@@ -31,3 +31,20 @@ export fn release(list: *List, arena: *Arena) void {
 export fn reset(arena: *Arena) void {
     arena.reset();
 }
+
+test "reserved append uses the existing fixed-buffer allocation" {
+    var buffer: [16]u8 = undefined;
+    var arena: Arena = .init(&buffer);
+    const allocator = arena.allocator();
+    var list = try List.initCapacity(allocator, 2);
+    defer list.deinit(allocator);
+    const pointer = list.items.ptr;
+    const end_index = arena.end_index;
+    const capacity = list.capacity;
+    append_reserved(&list, 10);
+    append_reserved(&list, 42);
+    try std.testing.expectEqualSlices(u8, &.{ 10, 42 }, list.items);
+    try std.testing.expect(list.items.ptr == pointer);
+    try std.testing.expectEqual(capacity, list.capacity);
+    try std.testing.expectEqual(end_index, arena.end_index);
+}

@@ -24,12 +24,14 @@ def Footprint (view : View) (left right : Nat) (slot : Address) (event : Observa
   match event.site.2.2 with
   | .alloc child => child = usize ∧ event.state.nextId = slot.allocation
   | .load pointer | .store pointer _ => pointer.eval event.env = .ok (counter slot)
-  | .copyBytes .. => False
+  | .copyBytes .. | .moveBytes .. | .invalidateSlice .. => False
   | .wordByteLoad _ pointer | .wordByteStore _ pointer _ => ByteBorrow view left right event.env pointer
-  | .argument .. | .scalar .. | .pointerField .. | .fieldPointer .. | .booleanNot .. |
+  | .argument .. | .scalar .. | .pointerField .. | .fieldPointer .. | .checkZeroField .. | .booleanNot .. |
+    .testOptional .. | .optionalPayload .. | .wrapOptional .. |
+    .testError .. | .unwrapError .. | .wrapError .. | .wrapScalarError .. |
     .unreachable | .pointerCast .. | .sliceCast .. | .arrayToSlice .. | .offsetPointer .. |
     .elementPointer .. | .wordByteCast .. | .sliceElementPointer .. | .slice .. | .sliceLen .. |
-    .slicePtr .. | .checkBounds .. => True
+    .slicePtr .. | .checkBounds .. | .checkCopyLengths .. => True
 
 theorem Footprint.byte_access (view : View) (left right : Nat) (slot : Address)
     (event : Observation Ty Prim Value State) (order : WordBytes.Order) (pointer : Ref)

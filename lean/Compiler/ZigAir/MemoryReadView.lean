@@ -99,9 +99,8 @@ theorem Represents.make_slice (cap : Represents state view values) (positive : 0
     (width : view.length < addressLimit) :
     makeSlice state (.slice false view.child) view.buffer view.length = .ok view.slice := by
   obtain ⟨cell, region⟩ := cap.region positive
-  have nonzero : view.layout.bytes ≠ 0 := by have := view.positive; omega
-  simp only [makeSlice, buffer, slice, ne_self_iff_false, Bool.false_and, Bool.false_eq_true,
-    or_self, ↓reduceIte, Nat.not_le.mpr width, view.shaped, nonzero, region, bind, Except.bind]
+  exact makeSlice_of_access state false view.child view.address view.length view.layout cell
+    view.shaped view.positive width region
 
 theorem Represents.slice_element (cap : Represents state view values) (index : Nat)
     (width : view.length < addressLimit) (inside : index < view.length) :

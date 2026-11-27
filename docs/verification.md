@@ -13,7 +13,7 @@ experimental `vcgen` tactic locally through `air_vcgen`.
 2. Import the generated module and `Compiler.ZigAir.Verify.Core`. Add the
    domain you need, such as `Verify.Words` for word views, `Verify.Slices`
    for writable slices, `Verify.Reads` for readonly views, `Verify.Bytes`
-   for byte ranges and copies, or `Verify.Records` for complete record fields.
+   for byte ranges, copies, and overlapping moves, or `Verify.Records` for complete record fields.
 3. State the precondition, successful result, and allowed faults. Give each
    loop label an invariant about the live locals and memory.
 4. Prove a `Std.WP.Triple` over `MemoryAir.Verify.Invocation.mk program args invariants`.
@@ -66,6 +66,7 @@ stack capacity needs a native argument.
 | `WordArray.Represents` | Initialized words corresponding to a list |
 | `WordArray.Initialized` | Initialized words with arbitrary contents |
 | `ReadView.Represents` | Initialized readonly elements of a given type, layout, and extent |
+| `ReadView.Writable` | Writable declared leaf elements in typed slice geometry, including uninitialized destinations |
 | `ByteArray.Region` | Live byte storage and extent with the requested permissions, including fields in complete records |
 | `ByteArray.ByteField` | Static byte-leaf geometry in a complete owner |
 | `ByteArray.Represents` | Initialized bytes for a logical view |
@@ -116,6 +117,12 @@ kernel-checked equality. `Binding.Saved` combines a register binding with
 its stored value and, for mutable locals, its write capability. The invariant
 still has to establish dynamic lifetime IDs, including conditional allocations.
 
+In a call-machine proof, select the receiving register with
+`air_binding% ((Bindings.callResult caller.body calleeId).get (by decide)).register`.
+A missing call or multiple calls to the same function yields `none`. When a
+body has multiple matching calls, select the relevant subterm before looking
+up its result.
+
 For initialized writable slices, use `air_slice_finish [yourFacts]` after
 `air_vcgen`. It normalizes slice selections and reads, preserves initialization
 through writes and private allocations, and supplies witnesses for bounded
@@ -138,3 +145,13 @@ file. This measures proof elaboration for those files. Transitive proof size,
 aggregate memory, and native execution costs require separate measurements.
 [Shared-context experiment](automation-measurements.md) ·
 [Historical buffer proof](../lean/Compiler/Baselines/BufferExecution.lean)
+
+## Prove a move that can overlap its source
+
+With `Verify.Bytes`, use `ByteArray.move_refines` for the initialized contents
+of a `ByteRange.move`. Supply live readable and writable regions, an initial
+source snapshot through `Represents`, and a destination length within the
+source. The destination represents the original source snapshot on return.
+The heap frame preserves reads outside the destination. The proof tracks the
+unread source bytes in the actual forward or backward traversal.
+[Move contract](../lean/Compiler/ZigAir/MemoryByteMoveContracts.lean)

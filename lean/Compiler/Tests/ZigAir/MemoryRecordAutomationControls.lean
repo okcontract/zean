@@ -21,6 +21,13 @@ example (state : State) (child : Ty) (address : Address) (value : Value)
   air_record_prepare
   assumption
 
+example (before after : State) (id : Nat) (coordinate : Nat)
+    (stored : store before (.pointer (.pointer true false usize) ⟨id, 24⟩)
+      (.scalar (.int false 64 coordinate)) = .ok after) :
+    load after (.pointer (.pointer true false (.slice true usize)) ⟨id, 0⟩) =
+      load before (.pointer (.pointer true false (.slice true usize)) ⟨id, 0⟩) :=
+  load_disjoint_after_scalar_store stored (by change 24 ∉ (Ty.slice true usize).readOffsets 0; decide)
+
 open Memory.ByteArray in
 example (state : State) (view : View) (index : Nat) (result : Value)
     (valid : state.valid = true) (cap : Region state view true) (inside : index < view.length)

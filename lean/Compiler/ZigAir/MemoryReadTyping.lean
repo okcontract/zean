@@ -12,8 +12,8 @@ theorem Value.boolean_value (value : Value) (typed : value.hasType (.scalar .boo
   cases value with
   | scalar scalar => cases scalar with
     | bool flag => exact ⟨flag, rfl⟩
-    | int | unit => simp [Value.type, Scalar.Value.type] at same
-  | optionalScalar | optionalObject => simp [Value.type] at same
+    | int | enumTag | unit => simp [Value.type, Scalar.Value.type] at same
+  | errorValue | errorScalar | optionalScalar | optionalObject => simp [Value.type] at same
   | pointer type address =>
     change type = .scalar .bool at same
     subst type
@@ -31,7 +31,7 @@ theorem Value.unsigned_value (value : Value) (width : Nat)
   cases value with
   | scalar value =>
     cases value with
-    | unit | bool => simp [Value.type, Scalar.Value.type] at same
+    | unit | bool | enumTag => simp [Value.type, Scalar.Value.type] at same
     | int signed bits number =>
       simp only [Value.type, Scalar.Value.type, Ty.scalar.injEq, Scalar.Ty.int.injEq] at same
       obtain ⟨rfl, rfl⟩ := same
@@ -39,7 +39,7 @@ theorem Value.unsigned_value (value : Value) (width : Nat)
       simp only [Value.hasType, Value.type, Scalar.Value.type, decide_true, Bool.true_and,
         Value.valid, Scalar.Value.valid, Scalar.Ty.contains, Scalar.Ty.lower, Scalar.Ty.upper] at typed
       exact of_decide_eq_true typed
-  | optionalScalar child payload | optionalObject child _ payload =>
+  | errorValue _ child payload | errorScalar _ child payload | optionalScalar child payload | optionalObject child _ payload =>
     simp [Value.hasType, Value.type] at typed
   | pointer type address =>
     change type = .scalar (.int false width) at same
@@ -65,6 +65,8 @@ theorem Cells.read_hasType (cells : Cells) (owner : Ty) (offset : Nat) (wanted :
   · cases wanted with
     | array | record | aggregate => contradiction
     | scalar type => exact cells.readLeaf_hasType owner offset (.scalar type) value loaded
+    | errorValue kind allowed => exact cells.readLeaf_hasType owner offset (.errorValue kind allowed) value loaded
+    | errorScalar child allowed => exact cells.readLeaf_hasType owner offset (.errorScalar child allowed) value loaded
     | optionalScalar child => exact cells.readLeaf_hasType owner offset (.optionalScalar child) value loaded
     | optionalObject child layout => exact cells.readLeaf_hasType owner offset (.optionalObject child layout) value loaded
     | pointer writable many child => exact cells.readLeaf_hasType owner offset (.pointer writable many child) value loaded
@@ -74,7 +76,7 @@ theorem Cells.read_hasType (cells : Cells) (owner : Ty) (offset : Nat) (wanted :
       | ok pointer =>
         simp only [pointerRead, bind, Except.bind] at loaded
         cases pointer with
-        | scalar | optionalScalar | optionalObject | slice => cases loaded
+        | scalar | errorValue | errorScalar | optionalScalar | optionalObject | slice => cases loaded
         | pointer type address =>
           cases lengthRead : cells.readLeaf owner (offset + 8) usize with
           | error fault => simp only [lengthRead] at loaded; cases loaded
@@ -115,7 +117,7 @@ theorem load_hasType_of_pointer (state : State) (pointer value : Value)
   have valid := (Bool.and_eq_true_iff.mp typed).2
   simp only [decide_eq_true_eq] at type
   cases pointer with
-  | scalar | optionalScalar | optionalObject => cases type
+  | scalar | errorValue | errorScalar | optionalScalar | optionalObject => cases type
   | slice ty address length =>
     simp only [Value.type] at type
     subst ty
@@ -140,7 +142,7 @@ theorem Cells.read_slice_parts (cells : Cells) (owner : Ty) (offset : Nat) (writ
     | ok pointer =>
       simp only [pointerRead, bind, Except.bind] at loaded
       cases pointer with
-      | scalar | optionalScalar | optionalObject | slice => cases loaded
+      | scalar | errorValue | errorScalar | optionalScalar | optionalObject | slice => cases loaded
       | pointer type data =>
         have pointerTyped := cells.readLeaf_hasType owner offset (.pointer writable true child) (.pointer type data) pointerRead
         have pointerType : type = .pointer writable true child :=

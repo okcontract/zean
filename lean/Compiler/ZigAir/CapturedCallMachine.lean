@@ -54,7 +54,7 @@ private def functionWithTargets (targets : List Entry) (entry : Entry) (allowRec
       let identity ← readIdentity (← callee.get "identity")
       let target ← targets.find? (·.identity == identity)
       require (allowRecursion || target.index < entry.index)
-      let arguments ← (← inst.listAt "arguments").mapM reference
+      let arguments ← callArguments inst target.input.parameterTypes
       require (arguments.length == target.input.parameters.length &&
         (← typeOf 17 (← inst.get "type")) == target.input.returnType)
       pure (.call target.index arguments)

@@ -4,9 +4,11 @@
 -/
 import Compiler.ZigAir.MemoryByteAccess
 import Compiler.ZigAir.MemoryByteCopy
+import Compiler.ZigAir.MemorySliceInvalidationModel
+import Compiler.ZigAir.MemoryErrorValues
 
 /-! Memory primitives plug into the same structured interpreter as scalar AIR.
-Bulk-copy faults retain their completed prefix. Stack cleanup occurs at the invocation
+Bulk transfer faults retain the writes already reached. Stack cleanup occurs at the invocation
 boundary and does not rewind lifetime identities. Source guards are explicit
 primitives, positioned by the decoder; they are never inferred from heap extent.
 The current client admits 64-bit target layouts only. -/
@@ -51,9 +53,19 @@ inductive Prim where
   | load (pointer : Ref)
   | store (pointer value : Ref)
   | copyBytes (target source : Ref)
+  | moveBytes (target source : Ref)
+  | invalidateSlice (target : Ref)
   | pointerField (length : Bool) (pointer : Ref)
   | fieldPointer (pointer : Ref) (offset : Nat)
+  | checkZeroField (pointer : Ref) (offset : Nat)
   | booleanNot (value : Ref)
+  | testOptional (nonNull : Bool) (value : Ref)
+  | optionalPayload (value : Ref)
+  | wrapOptional (value : Ref)
+  | testError (nonError : Bool) (value : Ref)
+  | unwrapError (payload : Bool) (value : Ref)
+  | wrapError (allowed : List String) (value : Ref)
+  | wrapScalarError (child : Scalar.Ty) (allowed : List String) (value : Ref)
   | unreachable
   | pointerCast (target : Ty) (pointer : Ref)
   | sliceCast (target : Ty) (slice : Ref)
@@ -68,6 +80,7 @@ inductive Prim where
   | sliceLen (slice : Ref)
   | slicePtr (slice : Ref)
   | checkBounds (start finish : Ref) (upper : Bound)
+  | checkCopyLengths (destination source : Ref)
   deriving DecidableEq, Repr
 
 def scalarEnv (env : Env) : Scalar.Env := fun id =>
@@ -85,8 +98,8 @@ def sliceCast (target : Ty) (source : Value) : Except Fault Value := do
   if (targetWritable && !writable) || targetChild != child then .error .unsupported
   else .ok (.slice target address length)
 
-/-- Single-step primitives commit only on success. Bulk copying is interpreted
-by `eval`, since a failed copy can have completed earlier byte stores. -/
+/-- Single-step primitives commit only on success. Bulk effects are interpreted
+by `eval`, since a fault can follow completed writes or invalidations. -/
 def Prim.transition (prim : Prim) (args : List Value) (env : Env) (state : State) :
     Except Fault (Value × State) := do
   match prim with
@@ -106,7 +119,24 @@ def Prim.transition (prim : Prim) (args : List Value) (env : Env) (state : State
       | .load pointer => do Memory.load state (← pointer.eval env)
       | .pointerField length pointer => do Memory.pointerField length (← pointer.eval env)
       | .fieldPointer pointer offset => do Memory.fieldPointer state (← pointer.eval env) offset
+      | .checkZeroField pointer offset => do
+        Memory.checkZeroField state (← pointer.eval env) offset
+        .ok (.scalar .unit)
       | .booleanNot reference => do MemoryAir.booleanNot (← reference.eval env)
+      | .testOptional nonNull reference => do
+        let .optionalScalar _ payload ← reference.eval env | .error .malformed
+        .ok (.scalar (.bool (payload.isSome == nonNull)))
+      | .optionalPayload reference => do
+        let .optionalScalar _ payload ← reference.eval env | .error .malformed
+        let some value := payload | .error (.scalar .illegalBehavior)
+        .ok (.scalar value)
+      | .wrapOptional reference => do
+        let .scalar value ← reference.eval env | .error .malformed
+        .ok (.optionalScalar value.type (some value))
+      | .testError nonError reference => do Memory.testError nonError (← reference.eval env)
+      | .unwrapError payload reference => do Memory.unwrapError payload (← reference.eval env)
+      | .wrapError allowed reference => do Memory.wrapError allowed (← reference.eval env)
+      | .wrapScalarError child allowed reference => do Memory.wrapScalarError child allowed (← reference.eval env)
       | .unreachable => .error (.scalar .illegalBehavior)
       | .pointerCast target pointer => do Memory.pointerCast state target (← pointer.eval env)
       | .sliceCast target reference => do MemoryAir.sliceCast target (← reference.eval env)
@@ -127,17 +157,33 @@ def Prim.transition (prim : Prim) (args : List Value) (env : Env) (state : State
       | .checkBounds start finish upper => do
         checkSliceBounds (← start.natural env) (← finish.natural env) (← upper.eval env)
         .ok (.scalar .unit)
-      | .alloc _ | .store .. | .wordByteStore .. | .copyBytes .. => .error .malformed
+      | .checkCopyLengths destination source =>
+        if (← destination.natural env) = (← source.natural env) then .ok (.scalar .unit)
+        else .error .sourceBounds
+      | .alloc _ | .store .. | .wordByteStore .. | .copyBytes .. | .moveBytes .. | .invalidateSlice _ =>
+        .error .malformed
     .ok (value, state)
+
+def evalByteTransfer (transfer : State → Value → Value → Except Fault Unit × State)
+    (target source : Ref) (env : Env) (state : State) : Except Fault Value × State :=
+  match target.eval env, source.eval env with
+  | .ok target, .ok source =>
+    let (result, after) := transfer state target source
+    (result.map (fun _ => .scalar .unit), after)
+  | .error fault, _ | _, .error fault => (.error fault, state)
+
+def evalSliceInvalidation (target : Ref) (env : Env) (state : State) : Except Fault Value × State :=
+  match target.eval env with
+  | .ok target =>
+    let (result, after) := SliceInvalidation.run state target
+    (result.map (fun _ => .scalar .unit), after)
+  | .error fault => (.error fault, state)
 
 def Prim.eval (prim : Prim) (args : List Value) (env : Env) (state : State) : Except Fault Value × State :=
   match prim with
-  | .copyBytes target source =>
-    match target.eval env, source.eval env with
-    | .ok target, .ok source =>
-      let (result, after) := ByteRange.copy state target source
-      (result.map (fun _ => .scalar .unit), after)
-    | .error fault, _ | _, .error fault => (.error fault, state)
+  | .copyBytes target source => evalByteTransfer ByteRange.copy target source env state
+  | .moveBytes target source => evalByteTransfer ByteRange.move target source env state
+  | .invalidateSlice target => evalSliceInvalidation target env state
   | _ =>
     match prim.transition args env state with
     | .ok (value, after) => (.ok value, after)

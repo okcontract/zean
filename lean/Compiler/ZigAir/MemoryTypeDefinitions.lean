@@ -16,6 +16,11 @@ structure Layout where
   alignment : Nat
   deriving DecidableEq, Repr
 
+inductive ErrorValueKind where
+  | tag
+  | result
+  deriving DecidableEq, Repr
+
 mutual
 /-- The closed field vocabulary of native Expression descriptors and their
 representative-list headers. Pointer and record-slice targets retain their
@@ -32,6 +37,11 @@ inductive Field where
 
 inductive Ty where
   | scalar (type : Scalar.Ty)
+  /-- By-value concrete error sets and error unions with void payload.
+  No ABI storage or numeric discriminant is supplied by this type. -/
+  | errorValue (kind : ErrorValueKind) (allowed : List String)
+  /-- By-value named errors with a scalar success payload and no ABI layout. -/
+  | errorScalar (child : Scalar.Ty) (allowed : List String)
   /-- Atomic typed optional scalar. Its captured extent gives no rule for
   projecting payload/discriminator bytes; only admitted children have layouts. -/
   | optionalScalar (child : Scalar.Ty)

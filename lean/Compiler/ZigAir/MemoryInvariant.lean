@@ -34,11 +34,15 @@ private theorem valid_iff (state : State) : state.valid = true ↔
 theorem layout_alignment_positive (type : Ty) (layout : Layout)
     (shaped : type.layout = some layout) : 0 < layout.alignment := by
   cases type with
+  | errorValue | errorScalar => cases shaped
   | scalar type =>
     cases type with
     | int signed width =>
       unfold Ty.layout Ty.leafLayout at shaped
       split at shaped <;> simp_all <;> subst layout <;> decide
+    | enumeration decl =>
+      simp only [Ty.layout, Ty.leafLayout] at shaped
+      split at shaped <;> cases shaped <;> decide
     | bool => cases shaped; decide
     | unit => cases shaped; decide
   | optionalScalar child =>
@@ -47,7 +51,7 @@ theorem layout_alignment_positive (type : Ty) (layout : Layout)
       cases signed <;> simp only [Ty.layout, Ty.leafLayout] at shaped
       · split at shaped <;> simp_all <;> subst layout <;> decide
       · split at shaped <;> simp_all <;> subst layout <;> decide
-    | bool | unit => cases shaped
+    | bool | unit | enumeration _ => cases shaped
   | optionalObject child captured =>
     have checked : ∀ payload, optionalLayout payload captured = some layout → 0 < layout.alignment := by
       intro payload accepted
@@ -254,26 +258,24 @@ theorem copyByte_valid (state after : State) (source target : Address) (index : 
   · exact invalidate_valid _ _ _ _ _ initial forgotten
 
 theorem copyLoop_valid (state : State) (source target : Address) (index count : Nat)
-    (initial : state.valid = true) : (copyLoop state source target index count).2.valid = true := by
-  induction count generalizing state index with
-  | zero => exact initial
-  | succ count ih =>
-    rw [copyLoop]
-    cases copied : copyByte state source target index with
-    | error fault => exact initial
-    | ok after => exact ih after (index + 1) (copyByte_valid _ _ _ _ _ initial copied)
+    (initial : state.valid = true) : (copyLoop state source target index count).2.valid = true :=
+  copyLoop_preserves (fun s => s.valid = true) (fun valid copied => copyByte_valid _ _ _ _ _ valid copied)
+    state source target index count initial
 
 theorem copy_valid (state : State) (target input : Value) (initial : state.valid = true) :
-    (copy state target input).2.valid = true := by
-  unfold copy
-  split
-  · exact initial
-  · split
-    · exact initial
-    · split
-      · exact initial
-      · exact copyLoop_valid _ _ _ _ _ initial
+    (copy state target input).2.valid = true :=
+  copy_preserves (fun s => s.valid = true) (fun valid copied => copyByte_valid _ _ _ _ _ valid copied)
+    state target input initial
 
+theorem copyBackward_valid (state : State) (source target : Address) (count : Nat)
+    (initial : state.valid = true) : (copyBackward state source target count).2.valid = true :=
+  copyBackward_preserves (fun s => s.valid = true) (fun valid copied => copyByte_valid _ _ _ _ _ valid copied)
+    state source target count initial
+
+theorem move_valid (state : State) (target input : Value) (initial : state.valid = true) :
+    (move state target input).2.valid = true :=
+  move_preserves (fun s => s.valid = true) (fun valid copied => copyByte_valid _ _ _ _ _ valid copied)
+    state target input initial
 
 end ByteRange
 
@@ -314,22 +316,28 @@ theorem Prim.transition_preserves_valid (prim : Prim) (args : List Value) (env :
 
 theorem Prim.preserves_valid (prim : Prim) (args : List Value) (env : Env)
     (state : State) (initial : state.valid = true) : (prim.eval args env state).2.valid = true := by
-  by_cases bulk : ∃ target source, prim = .copyBytes target source
-  · obtain ⟨target, source, rfl⟩ := bulk
-    simp only [Prim.eval]
+  cases prim with
+  | copyBytes target source =>
+    simp only [Prim.eval, evalByteTransfer]
     cases target.eval env <;> cases source.eval env <;> simp only
     all_goals first | exact initial | exact ByteRange.copy_valid _ _ _ initial
-  have atomic : ∀ target source, prim ≠ .copyBytes target source := by simpa using bulk
-  have equation : prim.eval args env state =
-      match prim.transition args env state with
-      | .ok (value, after) => (.ok value, after)
-      | .error fault => (.error fault, state) := by cases prim <;> first | rfl | exact False.elim (atomic _ _ rfl)
-  rw [equation]
-  cases step : prim.transition args env state with
-  | error fault => exact initial
-  | ok result =>
-    rcases result with ⟨value, after⟩
-    exact prim.transition_preserves_valid args env state value after initial step
+  | moveBytes target source =>
+    simp only [Prim.eval, evalByteTransfer]
+    cases target.eval env <;> cases source.eval env <;> simp only
+    all_goals first | exact initial | exact ByteRange.move_valid _ _ _ initial
+  | invalidateSlice target =>
+    simp only [Prim.eval, evalSliceInvalidation]
+    cases target.eval env with
+    | error => exact initial
+    | ok value =>
+      exact SliceInvalidation.preserves (fun state => state.valid = true)
+        (fun valid erased => invalidate_valid _ _ _ _ _ valid erased) state value initial
+  | _ =>
+    simp only [Prim.eval]
+    split
+    · rename_i value after success
+      exact Prim.transition_preserves_valid _ args env state value after initial success
+    · exact initial
 
 /-- All finite bind/branch/block/jump/return paths, including every fault. -/
 theorem Code.preserves_valid (code : Code) (args : List Value) (env : Env)

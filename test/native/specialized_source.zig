@@ -64,11 +64,18 @@ fn historicalImplicit(ctx: *z.common.Context) !z.common.Value {
 }
 
 fn callParameters(ctx: *z.common.Context, raw: z.common.Value, bytes: []const u8) !z.specialization.Mapping {
-    var file = try z.declaration_source.File.init(ctx, "fixture.zig", bytes);
-    defer file.declarations.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.writeFile(io, .{ .sub_path = "fixture.zig", .data = bytes });
+    try tmp.dir.writeFile(io, .{ .sub_path = "handlers.zig", .data = handler_source });
+    var retained: z.declaration_source.Retained = .{ .ctx = ctx, .io = io, .directory = try tmp.dir.realPathFileAlloc(io, ".", ctx.allocator) };
+    defer retained.deinit();
+    const file = try retained.get("fixture.zig");
     var sources: z.common.Value = .{ .object = .empty };
     try sources.object.put(ctx.allocator, file.filename, .{ .string = &file.sha });
-    return z.specialized_source.selectForCall(ctx, raw, &file, sources);
+    try sources.object.put(ctx.allocator, "handlers.zig", .{ .string = &z.common.digest(handler_source) });
+    return z.specialized_source.selectForCall(ctx, raw, .calls, file, sources, &retained);
 }
 
 fn comptimeAnytype(ctx: *z.common.Context) !z.common.Value {
@@ -78,31 +85,93 @@ fn comptimeAnytype(ctx: *z.common.Context) !z.common.Value {
     return raw;
 }
 
+const callback_source = "fn handle(value: u8) u8 { return value; } " ++
+    "pub fn choose(comptime transform: fn (u8) u8, data: [*]const u8, len: usize) usize { _ = transform; _ = data[0..len]; return 1; }";
+const noncallback_source = "pub fn choose(comptime value: u8, data: [*]const u8, len: usize) usize { _ = value; _ = data[0..len]; return 1; }";
+const handler_source = "pub const Handlers = struct { pub fn run(x: u8) u8 { return x; } };";
+
+const enum_source = "const Flavor = enum { windows, uefi, posix }; " ++
+    "pub fn choose(comptime flavor: Flavor, data: [*]const u8, len: usize) usize { _ = flavor; _ = data[0..len]; return 1; }";
+
+fn enumRecord(ctx: *z.common.Context, bytes: []const u8, identity: []const u8, tag: u8) !z.common.Value {
+    const raw = try record(ctx, bytes);
+    const args = try ctx.field(try ctx.field(raw, "specialization"), "arguments");
+    args.array.items[0] = try ctx.parse(try ctx.json(.{
+        .kind = "value",
+        .value = .{ .kind = "enumTag", .value = tag, .type = .{
+            .kind = "finiteEnum",
+            .identity = .{ .name = identity, .sourceFile = "fixture.zig", .sourceSha256 = &z.common.digest(bytes) },
+            .backingType = .{ .kind = "int", .bits = 2, .signedness = "unsigned" },
+            .nonexhaustive = false,
+            .layout = .{ .kind = "abi", .bytes = 1, .alignment = 1 },
+            .fields = .{ .{ .index = 0, .name = "windows", .value = 0 }, .{ .index = 1, .name = "uefi", .value = 1 }, .{ .index = 2, .name = "posix", .value = 2 } },
+        } },
+    }));
+    return raw;
+}
+
+fn callbackRecord(ctx: *z.common.Context, bytes: []const u8, file: []const u8, name: []const u8) !z.common.Value {
+    const raw = try record(ctx, bytes);
+    const spec = try ctx.field(raw, "specialization");
+    const args = try ctx.field(spec, "arguments");
+    args.array.items[0] = try ctx.parse(try ctx.json(.{
+        .kind = "value",
+        .value = .{ .kind = "function", .identity = .{
+            .name = name,
+            .sourceFile = file,
+            .sourceSha256 = if (std.mem.eql(u8, file, "handlers.zig")) &z.common.digest(handler_source) else try ctx.str(try ctx.field(raw, "sourceSha256")),
+        } },
+    }));
+    return raw;
+}
+
 pub fn controls() !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var ctx: z.common.Context = .{ .allocator = arena.allocator() };
     const raw = try record(&ctx, source);
-    const selected = try z.specialized_source.select(&ctx, raw, "fixture.zig", source);
+    const selected = try z.specialized_source.select(&ctx, raw, .memory, "fixture.zig", source);
     try std.testing.expectEqualSlices(usize, &.{ 1, 2 }, selected.indices);
     var decoder = try z.air.Decoder.initWith(&ctx, raw, .memory, .{ .source_parameters = selected.indices, .explicit_type_specialization = true });
     try std.testing.expectEqualStrings((try f.load(ctx.allocator, golden.air_memory_program_2_output_30)).string, try decoder.program());
     try std.testing.expectError(error.InvalidInput, z.air.Decoder.init(&ctx, raw, .memory));
-    try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, raw, "other.zig", source));
+    try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, raw, .memory, "other.zig", source));
     for ([_]bool{ true, false }) |explicit_type| {
         const bytes = if (explicit_type) mixed_source else implicit_source;
         const instance = try runtimeRecord(&ctx, explicit_type);
-        try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, instance, "fixture.zig", bytes));
+        try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, instance, .memory, "fixture.zig", bytes));
         const parameters = try callParameters(&ctx, instance, bytes);
         const indices: []const usize = if (explicit_type) &.{ 1, 2 } else &.{ 0, 1 };
         try std.testing.expectEqualSlices(usize, indices, parameters.indices);
     }
+    const callback = try callbackRecord(&ctx, callback_source, "fixture.zig", "fixture.handle");
+    const path_enum = try enumRecord(&ctx, enum_source, "fixture.Flavor", 2);
+    const enum_mapping = try callParameters(&ctx, path_enum, enum_source);
+    try std.testing.expectEqualSlices(usize, &.{ 1, 2 }, enum_mapping.indices);
+    const windows_mapping = try callParameters(&ctx, try enumRecord(&ctx, enum_source, "fixture.Flavor", 0), enum_source);
+    try std.testing.expect(!std.mem.eql(u8, enum_mapping.sha.?, windows_mapping.sha.?));
+    try std.testing.expectError(error.InvalidInput, callParameters(&ctx, try enumRecord(&ctx, enum_source, "fixture.Other", 2), enum_source));
+    try std.testing.expectError(error.InvalidInput, callParameters(&ctx, try enumRecord(&ctx, enum_source, "fixture.Flavor", 3), enum_source));
+    const reordered = "const Flavor = enum { windows, posix, uefi }; pub fn choose(comptime f: Flavor, data: [*]const u8, len: usize) usize { _ = f; _ = data[0..len]; return 1; }";
+    try std.testing.expectError(error.InvalidInput, callParameters(&ctx, try enumRecord(&ctx, reordered, "fixture.Flavor", 2), reordered));
+    try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, path_enum, .memory, "fixture.zig", enum_source));
+    const callback_parameters = try callParameters(&ctx, callback, callback_source);
+    try std.testing.expectEqualSlices(usize, &.{ 1, 2 }, callback_parameters.indices);
+    const imported = try callbackRecord(&ctx, callback_source, "handlers.zig", "handlers.Handlers.run");
+    _ = try callParameters(&ctx, imported, callback_source);
+    try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, callback, .memory, "fixture.zig", callback_source));
+    try std.testing.expectError(error.InvalidInput, callParameters(&ctx, try callbackRecord(&ctx, callback_source, "outside.zig", "fixture.handle"), callback_source));
+    try std.testing.expectError(error.InvalidInput, callParameters(&ctx, try callbackRecord(&ctx, noncallback_source, "fixture.zig", "fixture.handle"), noncallback_source));
+    for ([_][]const u8{ "fixture.missing", "decoy.handle", "fixture.Nested.handle" }) |name| {
+        const modified = try callbackRecord(&ctx, callback_source, "fixture.zig", name);
+        try std.testing.expectError(error.InvalidInput, callParameters(&ctx, modified, callback_source));
+    }
     const old_implicit = try historicalImplicit(&ctx);
     _ = try callParameters(&ctx, old_implicit, implicit_source);
-    try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, old_implicit, "fixture.zig", implicit_source));
+    try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, old_implicit, .memory, "fixture.zig", implicit_source));
     const historical = try record(&ctx, mixed_source);
     _ = try callParameters(&ctx, historical, mixed_source);
-    try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, historical, "fixture.zig", mixed_source));
+    try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, historical, .memory, "fixture.zig", mixed_source));
     const bad_sources = [_][]const u8{
         "pub fn choose(T: type, data: [*]const T, len: usize) usize { return 0; } const Decoy = struct { " ++ source ++ " };",
         "const Decoy = struct { " ++ source ++ " };",
@@ -110,20 +179,20 @@ pub fn controls() !void {
         "pub fn choose(comptime T: type, noalias data: [*]const T, len: usize) usize { return 0; }",
         "pub fn choose(comptime T: type, data: [*]const T) usize { return 0; }",
     };
-    for (bad_sources) |bytes| try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, try record(&ctx, bytes), "fixture.zig", bytes));
+    for (bad_sources) |bytes| try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, try record(&ctx, bytes), .memory, "fixture.zig", bytes));
     const bad_metadata = [_][]const u8{ "sourceParameterCount", "sourceComptimeBits", "sourceNoaliasBits" };
     for (bad_metadata) |field| {
         var modified = try record(&ctx, source);
         var spec = try ctx.field(modified, "specialization");
         try spec.object.put(ctx.allocator, field, .{ .integer = 2 });
         try modified.object.put(ctx.allocator, "specialization", spec);
-        try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, modified, "fixture.zig", source));
+        try std.testing.expectError(error.InvalidInput, z.specialized_source.select(&ctx, modified, .memory, "fixture.zig", source));
     }
 }
 
 pub fn emitted(ctx: *z.common.Context) ![]const u8 {
     const raw = try record(ctx, source);
-    const selected = try z.specialized_source.select(ctx, raw, "fixture.zig", source);
+    const selected = try z.specialized_source.select(ctx, raw, .memory, "fixture.zig", source);
     var decoder = try z.air.Decoder.initWith(ctx, raw, .memory, .{ .source_parameters = selected.indices, .explicit_type_specialization = true });
     return ctx.fmt(
         \\import Compiler.ZigAir.CapturedCallMachine
@@ -143,6 +212,14 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
         \\example : Captured.decode false mixedInstance = none := by rfl'
         \\example : (CapturedCallMachine.decode [implicitInstance]).isSome = true := by rfl'
         \\example : (CapturedCallMachine.decode [mixedInstance]).isSome = true := by rfl'
+        \\def callbackInstance : Captured.Raw := {s}
+        \\example : Captured.decode false callbackInstance = none := by rfl'
+        \\example : (CapturedCallMachine.decode [callbackInstance]).isSome = true := by rfl'
+        \\def enumInstance : Captured.Raw := {s}
+        \\def invalidTag : Captured.Raw := {s}
+        \\example : Captured.decode false enumInstance = none := by rfl'
+        \\example : (CapturedCallMachine.decode [enumInstance]).isSome = true := by rfl'
+        \\example : CapturedCallMachine.decode [invalidTag] = none := by rfl'
         \\
-    , .{ try decoder.program(), try z.certificate.declaration(ctx, raw, "program", false), try z.certificate.lift(ctx, try runtimeRecord(ctx, false), 0), try z.certificate.lift(ctx, try runtimeRecord(ctx, true), 0), try z.certificate.lift(ctx, try comptimeAnytype(ctx), 0), try z.certificate.lift(ctx, try historicalImplicit(ctx), 0) });
+    , .{ try decoder.program(), try z.certificate.declaration(ctx, raw, "program", false), try z.certificate.lift(ctx, try runtimeRecord(ctx, false), 0), try z.certificate.lift(ctx, try runtimeRecord(ctx, true), 0), try z.certificate.lift(ctx, try comptimeAnytype(ctx), 0), try z.certificate.lift(ctx, try historicalImplicit(ctx), 0), try z.certificate.lift(ctx, try callbackRecord(ctx, callback_source, "fixture.zig", "fixture.handle"), 0), try z.certificate.lift(ctx, try enumRecord(ctx, enum_source, "fixture.Flavor", 2), 0), try z.certificate.lift(ctx, try enumRecord(ctx, enum_source, "fixture.Flavor", 3), 0) });
 }

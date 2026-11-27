@@ -39,7 +39,8 @@ zig build release-check -Doptimize=fast \
 
 The gate runs portable checks, fresh memory and validity audits, tutorial
 recaptures and proof replays, and the recursive-call client. It also checks
-ASCII call rejections and fixed-length slice admission. The final step
+the ASCII call chains, fixed-length slice admission, and reserved append
+with and without capacity. The final step
 captures `publish` and `readEntry`, checks them against the dispatch-table
 model, and requires six AIR mutations to fail correspondence. Find those
 reports under `atomic-publication/capture` and `atomic-publication/proof`.

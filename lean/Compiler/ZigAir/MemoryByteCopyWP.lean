@@ -38,7 +38,7 @@ def copyEffect (target source : Value) : EStateM Fault State Value := fun state 
   constructor
   intro state h
   rw [wp_atomic]
-  simp only [semantics, Prim.eval]
+  simp only [semantics, Prim.eval, evalByteTransfer]
   rw [wp_reference] at h
   cases targetRead : target.eval env with
   | error fault => simpa only [targetRead] using h

@@ -259,6 +259,12 @@ pub fn build(b: *std.Build) void {
     replace_native_run.has_side_effects = true;
     test_step.dependOn(&replace_native_run.step);
     replace_step.dependOn(&replace_native_run.step);
+    const allocator_native = b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("examples/allocator/client.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) }));
+    test_step.dependOn(&allocator_native.step);
     const lake = b.option([]const u8, "lake", "Lake executable matching lean-toolchain; default uses the pinned elan toolchain");
     const publication = b.step("atomic-publication", "Run the dispatch-table tests and check the release/acquire proof and counterexamples");
     const publication_check = publicationChecker(b, executable, lake);
@@ -285,20 +291,26 @@ pub fn build(b: *std.Build) void {
     b.step("lean-examples", "Check tutorial and standard-library proof clients").dependOn(&examples_lean.step);
     const regressions_lean = leanScope(b, lake, &.{ "Compiler/Captures", "Compiler/Cases", "Compiler/Tests", "Compiler/Baselines" }) catch @panic("cannot enumerate Lean regressions");
     b.step("lean-regressions", "Check retained captures, case studies, controls and historical baselines").dependOn(&regressions_lean.step);
-    const declaration_source = b.addWriteFiles().add("DeclarationEncodingTests.lean", @import("test/lean/declaration_encoding.zig").source);
-    const declaration_checks = if (lake) |path| b.addSystemCommand(&.{ path, "env", "lean" }) else b.addSystemCommand(&.{ "elan", "run", lean_toolchain, "lake", "env", "lean" });
-    declaration_checks.addFileArg(declaration_source);
-    // Lake manages the imported modules outside Zig's file cache.
-    declaration_checks.has_side_effects = true;
-    declaration_checks.setEnvironmentVariable("LEAN_NUM_THREADS", "2");
-    declaration_checks.step.dependOn(&lean.step);
-    b.step("lean", "Check the full Lean library and admission controls with two workers").dependOn(&declaration_checks.step);
+    var lean_checks = lean;
+    inline for (.{
+        .{ "DeclarationEncodingTests.lean", @import("test/lean/declaration_encoding.zig").source },
+        .{ "ProofAuditTests.lean", @import("test/lean/proof_audit.zig").source },
+    }) |lean_fixture| {
+        const check_fixture = if (lake) |path| b.addSystemCommand(&.{ path, "env", "lean" }) else b.addSystemCommand(&.{ "elan", "run", lean_toolchain, "lake", "env", "lean" });
+        check_fixture.addFileArg(b.addWriteFiles().add(lean_fixture[0], lean_fixture[1]));
+        // Lake manages the imported modules outside Zig's file cache.
+        check_fixture.has_side_effects = true;
+        check_fixture.setEnvironmentVariable("LEAN_NUM_THREADS", "2");
+        check_fixture.step.dependOn(&lean_checks.step);
+        lean_checks = check_fixture;
+    }
+    b.step("lean", "Check the full Lean library and admission controls with two workers").dependOn(&lean_checks.step);
     const benchmark = b.addRunArtifact(executable);
     benchmark.addArg("benchmark");
     if (lake) |path| benchmark.addArgs(&.{ "--lake", path });
     benchmark.addPassthruArgs();
     benchmark.has_side_effects = true;
-    benchmark.step.dependOn(&declaration_checks.step);
+    benchmark.step.dependOn(&lean_checks.step);
     b.step("benchmark", "Measure serial proof re-elaboration with warm dependencies and retained receipts").dependOn(&benchmark.step);
     const wp_lean = if (lake) |path| b.addSystemCommand(&.{ path, "build", "Compiler.Tests.ZigAir.MemoryFiniteWPControls", "Compiler.Tests.ZigAir.MemoryResourceControls", "Compiler.Tests.ZigAir.MemoryCallControls", "Compiler.Tests.ZigAir.ControlWPControls", "Compiler.Tests.ZigAir.MemoryVerificationControls", "Compiler.Tests.ZigAir.ControlFragmentWPControls" }) else b.addSystemCommand(&.{ "elan", "run", lean_toolchain, "lake", "build", "Compiler.Tests.ZigAir.MemoryFiniteWPControls", "Compiler.Tests.ZigAir.MemoryResourceControls", "Compiler.Tests.ZigAir.MemoryCallControls", "Compiler.Tests.ZigAir.ControlWPControls", "Compiler.Tests.ZigAir.MemoryVerificationControls", "Compiler.Tests.ZigAir.ControlFragmentWPControls" });
     wp_lean.setEnvironmentVariable("LEAN_NUM_THREADS", "2");
@@ -351,13 +363,13 @@ pub fn build(b: *std.Build) void {
     emitted.addArgs(if (lake) |path| &.{ path, "env", "lean" } else &.{ "elan", "run", lean_toolchain, "lake", "env", "lean" });
     emitted.has_side_effects = true;
     // Serialize Lean processes, including their two worker pools.
-    emitted.step.dependOn(&declaration_checks.step);
+    emitted.step.dependOn(&lean_checks.step);
     b.step("emitted-lean", "Compile actual emitted AIR, hash, source and layout controls").dependOn(&emitted.step);
     const emitted_control = b.addRunArtifact(emitted_exe);
     emitted_control.addArgs(&.{ "--only", b.option([]const u8, "emitted-control", "Single control for the emitted-control development check") orelse "certificate" });
     emitted_control.addArgs(if (lake) |path| &.{ path, "env", "lean" } else &.{ "elan", "run", lean_toolchain, "lake", "env", "lean" });
     emitted_control.has_side_effects = true;
-    emitted_control.step.dependOn(&leanBuild(b, lake, &.{ "Compiler.ZigAir.CapturedScalar", "Compiler.ZigAir.CapturedNestedCalls", "Compiler.ZigAir.CapturedCallMachine" }).step);
+    emitted_control.step.dependOn(&leanBuild(b, lake, &.{ "Compiler.ZigAir.CapturedScalar", "Compiler.ZigAir.CapturedNestedCalls", "Compiler.ZigAir.CapturedCallMachine", "Compiler.ZigAir.AggregateAir" }).step);
     b.step("emitted-control", "Compile one emitted control and its checked decoder dependencies").dependOn(&emitted_control.step);
     const counter_lean = if (lake) |path| b.addSystemCommand(&.{ path, "build", "Compiler.Tutorial.Counter.Comparison" }) else b.addSystemCommand(&.{ "elan", "run", lean_toolchain, "lake", "build", "Compiler.Tutorial.Counter.Comparison" });
     counter_lean.setEnvironmentVariable("LEAN_NUM_THREADS", "2");
@@ -418,7 +430,14 @@ pub fn build(b: *std.Build) void {
     const check_ziglings_bounds = rejectExampleProof(b, lake, "examples/ziglings/BoundsProof.lean", &check_ziglings_init.step);
     check.dependOn(&check_ziglings_bounds.step);
     const release_output = b.option([]const u8, "release-output", "New external evidence directory for release-check");
-    const compatibility = b.step("compatibility-check", "Check held-out call rejections and certified fixed-length slice admission");
+    const compatibility = b.step("compatibility-check", "Check certified ASCII call chains and fixed-length slices");
+    const ascii_tests = b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("examples/compatibility/ascii_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) }));
+    test_step.dependOn(&ascii_tests.step);
+    compatibility.dependOn(&ascii_tests.step);
     var compatibility_first: ?*std.Build.Step = null;
     if (toolchain_report != null and release_output != null) {
         const probe = b.addRunArtifact(executable);
@@ -438,13 +457,24 @@ pub fn build(b: *std.Build) void {
             rejection.step.dependOn(previous);
             previous = &rejection.step;
         }
+        const ascii_translation = b.addRunArtifact(executable);
+        ascii_translation.addArgs(&.{
+            "translate",                                                       "--capture",                                                 b.fmt("{s}/report.json", .{capture_path}),
+            "--root",                                                          "ascii_driver.upper",                                        "--root",
+            "ascii_driver.lower",                                              "--profile",                                                 "nested-calls",
+            "--output",                                                        b.fmt("{s}/compatibility/ascii-model", .{release_output.?}), "--certify",
+            b.fmt("{s}/compatibility/ascii-certificate", .{release_output.?}),
+        });
+        if (lake) |path| ascii_translation.addArgs(&.{ "--lake", path });
+        ascii_translation.has_side_effects = true;
+        ascii_translation.step.dependOn(previous);
         const fixed_probe = b.addRunArtifact(executable);
         const fixed_capture = b.fmt("{s}/compatibility/ziglings-slice", .{release_output.?});
         fixed_probe.addArgs(&.{ "capture", "--toolchain", toolchain_report.?, "--source" });
         fixed_probe.addFileArg(b.path("examples/compatibility/ziglings_slice.zig"));
         fixed_probe.addArgs(&.{ "--root", "ziglings_slice.select", "--output", fixed_capture });
         fixed_probe.has_side_effects = true;
-        fixed_probe.step.dependOn(previous);
+        fixed_probe.step.dependOn(&ascii_translation.step);
         const fixed_translation = b.addRunArtifact(executable);
         fixed_translation.addArgs(&.{ "translate", "--capture", b.fmt("{s}/report.json", .{fixed_capture}), "--root", "ziglings_slice.select", "--profile", "memory", "--output", b.fmt("{s}/compatibility/ziglings-slice-model", .{release_output.?}), "--certify", b.fmt("{s}/compatibility/ziglings-slice-certificate", .{release_output.?}) });
         if (lake) |path| fixed_translation.addArgs(&.{ "--lake", path });
@@ -500,13 +530,20 @@ pub fn build(b: *std.Build) void {
         ziglings_replay.has_side_effects = true;
         ziglings_replay.step.dependOn(&replace_replay.step);
         compatibility_first.?.dependOn(&ziglings_replay.step);
+        const reserved_append = b.addRunArtifact(executable);
+        reserved_append.addArgs(&.{ "verify-client", "--manifest" });
+        reserved_append.addFileArg(b.path("examples/allocator/reserved.json"));
+        reserved_append.addArgs(&.{ "--toolchain", toolchain_report.?, "--output", b.fmt("{s}/reserved-append", .{release_output.?}) });
+        if (lake) |path| reserved_append.addArgs(&.{ "--lake", path });
+        reserved_append.has_side_effects = true;
+        reserved_append.step.dependOn(compatibility);
         const publication_dir = b.fmt("{s}/atomic-publication/capture", .{release_output.?});
         const publication_capture = b.addRunArtifact(executable);
         publication_capture.addArgs(&.{ "capture", "--toolchain", toolchain_report.?, "--source" });
         publication_capture.addFileArg(b.path("examples/atomic_publication/publication.zig"));
         publication_capture.addArgs(&.{ "--root", "publication.publish", "--root", "publication.readEntry", "--output", publication_dir });
         publication_capture.has_side_effects = true;
-        publication_capture.step.dependOn(compatibility);
+        publication_capture.step.dependOn(&reserved_append.step);
         const publication_replay = publicationChecker(b, executable, lake);
         publication_replay.addArgs(&.{ "--capture", b.fmt("{s}/report.json", .{publication_dir}), "--output", b.fmt("{s}/atomic-publication/proof", .{release_output.?}) });
         publication_replay.step.dependOn(&publication_capture.step);

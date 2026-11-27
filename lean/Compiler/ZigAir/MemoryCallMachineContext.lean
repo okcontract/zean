@@ -135,4 +135,37 @@ theorem step_call (program : Program) (config : Config) (id : Nat) (type : Ty)
   repeat' (split <;> try simp_all only [])
   all_goals rfl
 
+/-- Attach caller frames to a known finite execution. Reachability stops
+at the corresponding continuation, even if the isolated run used extra
+fuel after returning. -/
+theorem Steps.attach (reached : Steps program first last) (consistent : Uses policy first)
+    (outer : List Caller) :
+    Steps program (MemoryCallMachine.attach policy outer first) (MemoryCallMachine.attach policy outer last) := by
+  induction reached with
+  | refl => exact .refl _
+  | step config _ ih =>
+    have same : config.resources = policy := consistent
+    subst policy
+    change Steps _ (.suspended { config with callers := config.callers ++ outer }) _
+    apply Steps.step
+    rw [step_attach]
+    exact ih (uses_step _ _)
+
+/-- Resume a real call instruction after a successful isolated execution of
+its actual target. Both the argument resolution and result binding are checked. -/
+theorem Steps.call_returned {register : Nat} (atCall : config.active.control.code = .bind register type (.call target refs) next)
+    (resolved : refs.mapM (fun ref => ref.eval config.active.control.env) = .ok args)
+    (reached : Steps program (start program target args config.active.control.state config.resources)
+      (.finished (.ok value) after))
+    (typed : value.hasType type = true) :
+    Steps program (.suspended config)
+      (.suspended { config with active := { config.active with control :=
+        { config.active.control with
+          code := next, env := config.active.control.env.set register value, state := after } } }) := by
+  apply Steps.step
+  rw [step_call _ _ _ _ _ _ _ atCall, resolved]
+  have attached := reached.attach (uses_start program target args _ _)
+    (⟨{ config.active with control := { config.active.control with code := next } }, register, type⟩ :: config.callers)
+  simpa only [MemoryCallMachine.attach, typed, ↓reduceIte] using attached
+
 end Compiler.ZigAir.MemoryCallMachine

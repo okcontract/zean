@@ -31,7 +31,12 @@ the working directory. Capture accepts `--mode Debug`, `ReleaseSafe`, and
 `ReleaseFast`. Translation currently admits ReleaseFast AIR.
 
 Translation publishes `Generated.lean` and `manifest.json` together after
-every selected root passes. The default namespace is `Zean.Generated`.
+every selected root passes. Read the executable functions at the top of
+`Generated.lean`. Each binding occupies one line, and indentation shows
+branch and block bodies. Consecutive switch cases line up vertically. The
+argument after a branch's `<|` handles a mismatch. The captured AIR and its
+correspondence theorems follow the executable definitions. The default
+namespace is `Zean.Generated`.
 With `zig build run` from the Zean checkout, `--certify` checks the emitted
 theorem before publication. Standalone project generation emits certificates
 for the caller to check with Lake. [Admission](admission.md)

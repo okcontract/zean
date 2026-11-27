@@ -161,4 +161,14 @@ theorem ambiguous_bindings_reject :
     Bindings.argument (.branch (.constant (.scalar (.bool true))) select.body negation.body) 0 = none ∧
     Bindings.singleLoop (.loop rfl 10 spinning.body) = none := ⟨rfl, rfl⟩
 
+private def invoke (result target : Nat) : Code :=
+  .bind result (.scalar .bool) (.call target []) (.ret (.local result))
+
+example (result : Nat) :
+    Bindings.callResult (.branch (.local 0) (invoke 9 1) (invoke result 2)) 2 =
+      some ⟨result, .scalar .bool⟩ := rfl
+
+example : Bindings.callResult (invoke 9 1) 2 = none := rfl
+example : Bindings.callResult (.branch (.local 0) (invoke 9 2) (invoke 9 2)) 2 = none := rfl
+
 end Compiler.Tests.ZigAir.MemoryCallMachineLoopControls

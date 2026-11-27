@@ -46,11 +46,29 @@ fn resolvedEnum(ty: Type, zcu: *Zcu) ?InternPool.LoadedEnumType {
     return loaded;
 }
 
+fn runtimeEnum(loaded: InternPool.LoadedEnumType, backing: Type, zcu: *Zcu) bool {
+    if (loaded.nonexhaustive or loaded.field_names.len == 0 or loaded.field_names.len > 64 or backing.zigTypeTag(zcu) != .int)
+        return false;
+    const info = backing.intInfo(zcu);
+    return info.signedness == .unsigned and info.bits >= 2 and info.bits <= 8;
+}
+
+fn optionalByte(ty: Type, zcu: *Zcu) bool {
+    return ty.optionalChild(zcu).toIntern() == .u8_type;
+}
+
+fn admittedErrorPayload(payload: Type, zcu: *Zcu) bool {
+    if (payload.zigTypeTag(zcu) != .int) return false;
+    const bits = payload.intInfo(zcu).bits;
+    return bits > 0 and bits <= 64;
+}
+
 fn layoutKnown(ty: Type, zcu: *Zcu, depth: u8, remaining: *usize) bool {
     if (depth >= 16 or remaining.* == 0) return false;
     remaining.* -= 1;
     return switch (ty.zigTypeTag(zcu)) {
         .int, .bool, .void, .pointer => true,
+        .optional => optionalByte(ty, zcu),
         .@"enum" => known: {
             const loaded = resolvedEnum(ty, zcu) orelse break :known false;
             break :known layoutKnown(.fromInterned(loaded.int_tag_type), zcu, depth + 1, remaining);
@@ -87,6 +105,45 @@ fn writeTypeDepth(w: *Writer, ty: Type, zcu: *Zcu, depth: u8, remaining: *usize)
         .bool => try json(w, .{ .kind = "bool" }),
         .void => try json(w, .{ .kind = "void" }),
         .noreturn => try json(w, .{ .kind = "noreturn" }),
+        .optional => {
+            if (!optionalByte(ty, zcu))
+                return json(w, .{ .kind = "unsupported", .zigTypeTag = "optional" });
+            try w.writeAll("{\"kind\":\"optionalScalar\",\"child\":");
+            try writeTypeDepth(w, ty.optionalChild(zcu), zcu, depth + 1, remaining);
+            try w.writeAll(",\"layout\":");
+            try writeLayout(w, ty, zcu);
+            try w.writeByte('}');
+        },
+        .error_set => {
+            const errors = switch (zcu.intern_pool.indexToKey(ty.toIntern())) {
+                .error_set_type => |set| set.names,
+                else => return json(w, .{ .kind = "unsupported", .reason = "nonconcrete-error-set" }),
+            };
+            if (errors.len > 64)
+                return json(w, .{ .kind = "unsupported", .reason = "error-set-size" });
+            try w.writeAll("{\"kind\":\"errorSet\",\"names\":[");
+            for (errors.get(&zcu.intern_pool), 0..) |name, i| {
+                if (i != 0) try w.writeByte(',');
+                try json(w, name.toSlice(&zcu.intern_pool));
+            }
+            try w.writeAll("]}");
+        },
+        .error_union => {
+            const payload = ty.errorUnionPayload(zcu);
+            const scalar = admittedErrorPayload(payload, zcu);
+            if (payload.zigTypeTag(zcu) != .void and !scalar)
+                return json(w, .{ .kind = "unsupported", .reason = "nonvoid-error-union" });
+            try w.writeAll(if (scalar)
+                "{\"kind\":\"errorScalar\",\"errors\":"
+            else
+                "{\"kind\":\"errorStatus\",\"errors\":");
+            try writeTypeDepth(w, ty.errorUnionSet(zcu), zcu, depth + 1, remaining);
+            if (scalar) {
+                try w.writeAll(",\"child\":");
+                try writeTypeDepth(w, payload, zcu, depth + 1, remaining);
+            }
+            try w.writeByte('}');
+        },
         .@"enum" => {
             const loaded = resolvedEnum(ty, zcu) orelse
                 return json(w, .{ .kind = "unsupported", .reason = "unresolved-enum" });
@@ -107,7 +164,10 @@ fn writeTypeDepth(w: *Writer, ty: Type, zcu: *Zcu, depth: u8, remaining: *usize)
             var hash: [32]u8 = undefined;
             std.crypto.hash.sha2.Sha256.hash(source, &hash, .{});
             const hex = std.fmt.bytesToHex(hash, .lower);
-            try w.writeAll("{\"kind\":\"enum\",\"identity\":");
+            try w.writeAll(if (runtimeEnum(loaded, tag_type, zcu))
+                "{\"kind\":\"finiteEnum\",\"identity\":"
+            else
+                "{\"kind\":\"enum\",\"identity\":");
             try json(w, .{ .name = loaded.fqn.toSlice(ip), .sourceFile = file.sub_file_path, .sourceSha256 = @as([]const u8, &hex) });
             try w.writeAll(",\"backingType\":");
             try writeTypeDepth(w, tag_type, zcu, depth + 1, remaining);
@@ -207,6 +267,13 @@ fn writeRef(w: *Writer, ref: Air.Inst.Ref, zcu: *Zcu) Writer.Error!void {
     return writeValue(w, .fromInterned(ref.toInterned().?), zcu, 0, &remaining);
 }
 
+fn writeCopyLength(w: *Writer, length: Air.Inst.Ref, operand: Air.Inst.Ref, zcu: *Zcu) Writer.Error!void {
+    if (length != .none) return writeRef(w, length, zcu);
+    try w.writeAll("{\"kind\":\"manyPointer\",\"operand\":");
+    try writeRef(w, operand, zcu);
+    try w.writeByte('}');
+}
+
 // Preserve the actual anonymous zero-sized object behind an empty slice.
 // A zero length alone does not admit null, undefined or arbitrary pointers.
 fn emptySliceOrigin(value: Value, zcu: *Zcu) ?InternPool.Key.Ptr.BaseAddr.Uav {
@@ -256,6 +323,72 @@ fn writeValue(w: *Writer, value: Value, zcu: *Zcu, depth: u8, remaining: *usize)
         return w.writeByte('}');
     }
     if (ty.zigTypeTag(zcu) == .void) return json(w, .{ .kind = "unit" });
+    if (ty.zigTypeTag(zcu) == .optional and optionalByte(ty, zcu)) {
+        if (zcu.intern_pool.indexToKey(value.toIntern()) != .opt)
+            return json(w, .{ .kind = "unsupported", .reason = "optional-constant-storage" });
+        try w.writeAll("{\"kind\":\"optionalValue\",\"type\":");
+        try writeType(w, ty, zcu);
+        try w.writeAll(",\"payload\":");
+        if (value.optionalValue(zcu)) |payload|
+            try writeValue(w, payload, zcu, depth + 1, remaining)
+        else
+            try w.writeAll("null");
+        return w.writeByte('}');
+    }
+    if (ty.zigTypeTag(zcu) == .error_union and admittedErrorPayload(ty.errorUnionPayload(zcu), zcu)) {
+        const result = switch (zcu.intern_pool.indexToKey(value.toIntern())) {
+            .error_union => |result| result.val,
+            else => return json(w, .{ .kind = "unsupported", .reason = "error-constant-storage" }),
+        };
+        try w.writeAll("{\"kind\":\"errorScalar\",\"type\":");
+        try writeType(w, ty, zcu);
+        switch (result) {
+            .err_name => |name| {
+                try w.writeAll(",\"name\":");
+                try json(w, name.toSlice(&zcu.intern_pool));
+                try w.writeAll(",\"payload\":null");
+            },
+            .payload => |payload| {
+                try w.writeAll(",\"name\":null,\"payload\":");
+                try writeValue(w, .fromInterned(payload), zcu, depth + 1, remaining);
+            },
+        }
+        return w.writeByte('}');
+    }
+    if (ty.zigTypeTag(zcu) == .error_set or ty.zigTypeTag(zcu) == .error_union) {
+        const kind: []const u8 = switch (zcu.intern_pool.indexToKey(value.toIntern())) {
+            .err => "errorValue",
+            .error_union => "errorStatus",
+            else => return json(w, .{ .kind = "unsupported", .reason = "error-constant-storage" }),
+        };
+        try w.writeAll("{\"kind\":");
+        try json(w, kind);
+        try w.writeAll(",\"type\":");
+        try writeType(w, ty, zcu);
+        try w.writeAll(",\"name\":");
+        if (value.getErrorName(zcu).unwrap()) |name|
+            try json(w, name.toSlice(&zcu.intern_pool))
+        else
+            try w.writeAll("null");
+        return w.writeByte('}');
+    }
+    if (ty.zigTypeTag(zcu) == .@"enum") {
+        const loaded = resolvedEnum(ty, zcu) orelse
+            return json(w, .{ .kind = "unsupported", .reason = "constant-type" });
+        const backing: Type = .fromInterned(loaded.int_tag_type);
+        if (loaded.nonexhaustive or backing.zigTypeTag(zcu) != .int or
+            zcu.intern_pool.indexToKey(value.toIntern()) != .enum_tag)
+            return json(w, .{ .kind = "unsupported", .reason = "constant-type" });
+        const info = backing.intInfo(zcu);
+        const tag = value.backingInt(zcu).getUnsignedInt(zcu) orelse
+            return json(w, .{ .kind = "unsupported", .reason = "enum-constant-value" });
+        const singleton = info.bits == 0 and info.signedness == .unsigned and loaded.field_names.len == 1 and tag == 0;
+        if (!singleton and !runtimeEnum(loaded, backing, zcu))
+            return json(w, .{ .kind = "unsupported", .reason = "constant-type" });
+        try w.print("{{\"kind\":\"enumTag\",\"value\":{d},\"type\":", .{tag});
+        try writeType(w, ty, zcu);
+        return w.writeByte('}');
+    }
     if (ty.zigTypeTag(zcu) == .@"struct") {
         const loaded = resolvedStruct(ty, zcu) orelse
             return json(w, .{ .kind = "unsupported", .reason = "aggregate-type" });
@@ -431,10 +564,16 @@ fn collectBodyEntries(air: *const Air, gpa: std.mem.Allocator) !std.bit_set.Dyna
         visited.set(i);
         switch (air.instructions.items(.tag)[i]) {
             .block, .loop => try pending.appendSlice(gpa, air.unwrapBlock(index).body),
+            .@"try", .try_cold => try pending.appendSlice(gpa, air.unwrapTry(index).else_body),
             .cond_br => {
                 const branch = air.unwrapCondBr(index);
                 try pending.appendSlice(gpa, branch.then_body);
                 try pending.appendSlice(gpa, branch.else_body);
+            },
+            .switch_br => {
+                var cases = air.unwrapSwitch(index).iterateCases();
+                while (cases.next()) |arm| try pending.appendSlice(gpa, arm.body);
+                try pending.appendSlice(gpa, cases.elseBody());
             },
             // Other containers are unsupported. Their unvisited descendants
             // cannot be treated as unreachable by a semantic consumer.
@@ -491,6 +630,7 @@ fn writeInstruction(w: *Writer, air: *const Air, index: Air.Inst.Index, visited:
         .mul,
         .mul_safe,
         .mul_wrap,
+        .div_trunc,
         .min,
         .max,
         .bit_and,
@@ -506,7 +646,8 @@ fn writeInstruction(w: *Writer, air: *const Air, index: Air.Inst.Index, visited:
         .cmp_gte,
         .store,
         .store_safe,
-        .memcpy,
+        .memset,
+        .memset_safe,
         .slice_elem_val,
         .ptr_elem_val,
         => {
@@ -515,11 +656,30 @@ fn writeInstruction(w: *Writer, air: *const Air, index: Air.Inst.Index, visited:
             try w.writeAll(",\"rhs\":");
             try writeRef(w, inst.data.bin_op.rhs, zcu);
         },
-        .ret, .ret_safe, .ret_load => {
+        .memcpy, .memmove => {
+            try w.writeAll(",\"lhs\":");
+            try writeRef(w, inst.data.bin_op.lhs, zcu);
+            try w.writeAll(",\"rhs\":");
+            try writeRef(w, inst.data.bin_op.rhs, zcu);
+            for (air.semantic_export_copies.items) |item| {
+                if (item.instruction != index) continue;
+                try w.writeAll(",\"copyLengths\":{\"destination\":");
+                try writeCopyLength(w, item.destination_length, item.destination, zcu);
+                try w.writeAll(",\"source\":");
+                try writeCopyLength(w, item.source_length, item.source, zcu);
+                try w.writeByte('}');
+                break;
+            }
+        },
+        .ret, .ret_safe, .ret_load, .is_err, .is_non_err, .is_null, .is_non_null => {
             try w.writeAll(",\"operand\":");
             try writeRef(w, inst.data.un_op, zcu);
         },
         .int_cast, .int_cast_safe, .bit_cast, .ptr_cast, .array_to_slice, .trunc, .load, .slice_len, .slice_ptr, .ptr_slice_len_ptr, .ptr_slice_ptr_ptr, .not => {
+            try w.writeAll(",\"operand\":");
+            try writeRef(w, inst.data.ty_op.operand, zcu);
+        },
+        .unwrap_errunion_payload, .unwrap_errunion_err, .wrap_errunion_payload, .wrap_errunion_err, .optional_payload, .wrap_optional => {
             try w.writeAll(",\"operand\":");
             try writeRef(w, inst.data.ty_op.operand, zcu);
         },
@@ -568,12 +728,51 @@ fn writeInstruction(w: *Writer, air: *const Air, index: Air.Inst.Index, visited:
             try w.writeAll(",\"elseBody\":");
             try writeIndices(w, branch.else_body);
         },
+        .@"try", .try_cold => {
+            const branch = air.unwrapTry(index);
+            try w.writeAll(",\"operand\":");
+            try writeRef(w, branch.error_union, zcu);
+            try w.writeAll(",\"errorBody\":");
+            try writeIndices(w, branch.else_body);
+        },
+        .switch_br => {
+            const branch = air.unwrapSwitch(index);
+            try w.writeAll(",\"operand\":");
+            try writeRef(w, branch.operand, zcu);
+            try w.writeAll(",\"cases\":[");
+            var cases = branch.iterateCases();
+            while (cases.next()) |arm| {
+                if (arm.idx != 0) try w.writeByte(',');
+                try w.writeAll("{\"ranges\":[");
+                for (arm.items, 0..) |item, i| {
+                    if (i != 0) try w.writeByte(',');
+                    try writeSwitchRange(w, item, item, zcu);
+                }
+                for (arm.ranges, 0..) |range, i| {
+                    if (i != 0 or arm.items.len != 0) try w.writeByte(',');
+                    try writeSwitchRange(w, range[0], range[1], zcu);
+                }
+                try w.writeAll("],\"body\":");
+                try writeIndices(w, arm.body);
+                try w.writeByte('}');
+            }
+            try w.writeAll("],\"elseBody\":");
+            try writeIndices(w, cases.elseBody());
+        },
         .dbg_stmt, .dbg_var_val, .dbg_var_ptr, .dbg_arg_inline => {
             try w.writeAll(",\"debugOnly\":true");
         },
         else => try w.writeAll(",\"unsupportedPayload\":true"),
     }
     try w.writeByte('}');
+}
+
+fn writeSwitchRange(w: *Writer, low: Air.Inst.Ref, high: Air.Inst.Ref, zcu: *Zcu) Writer.Error!void {
+    try w.writeByte('[');
+    try writeRef(w, low, zcu);
+    try w.writeByte(',');
+    try writeRef(w, high, zcu);
+    try w.writeByte(']');
 }
 
 pub fn captureFunction(pt: Zcu.PerThread, func_index: InternPool.Index, air: *const Air) !void {
@@ -665,7 +864,24 @@ pub fn captureFunction(pt: Zcu.PerThread, func_index: InternPool.Index, air: *co
         if (i != 0) try w.writeByte(',');
         try writeSliceValidity(w, item, visited, zcu);
     }
-    try w.writeAll("]},\"body\":");
+    try w.writeByte(']');
+    if (air.semantic_export_zir.contains(.memcpy) or air.semantic_export_zir.contains(.memmove) or
+        air.semantic_export_copies.items.len != 0)
+    {
+        var anchored = true;
+        for (air.semantic_export_copies.items) |item| {
+            const index = item.instruction orelse {
+                anchored = false;
+                break;
+            };
+            if (!visited.isSet(@backingInt(index))) {
+                anchored = false;
+                break;
+            }
+        }
+        try w.print(",\"copyLengthsAnchored\":{}", .{anchored});
+    }
+    try w.writeAll("},\"body\":");
     try writeIndices(w, air.getMainBody());
     try w.writeAll(",\"bodyTraversal\":\"supported-structured-containers-only\",\"instructions\":[");
     for (0..air.instructions.len) |i| {

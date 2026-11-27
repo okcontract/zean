@@ -59,6 +59,13 @@ def slices (code : Code) : List Binding :=
     | .slice .. => some binding
     | _ => none
 
+/-- The result binding of the only call to this function in the supplied code.
+Both arms of a branch count, even when they use the same destination. -/
+def callResult (code : Code) (callee : Nat) : Option Binding :=
+  unique ((primitives code).filterMap fun (binding, operation) => match operation with
+    | .call target _ => if target = callee then some binding else none
+    | .memory _ => none)
+
 def calls (code : Code) : List Binding :=
   (primitives code).filterMap fun (binding, operation) => match operation with
     | .call .. => some binding

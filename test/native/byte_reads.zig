@@ -35,6 +35,21 @@ pub fn controls() !void {
         const decoded = try z.air.decode(&ctx, try f.load(ctx.allocator, input), .memory);
         try std.testing.expect(std.mem.indexOf(u8, decoded, "(.load (.local 6))") != null);
     }
+    const constant_kind = f.derive(&read, &.{f.set("/instructions/3/operand", f.obj(&.{.{ "kind", f.s("emptySlice") }}))});
+    try std.testing.expectError(error.InvalidInput, z.air.decode(&ctx, try f.load(ctx.allocator, constant_kind), .memory));
+    try std.testing.expectEqualStrings("AIR instruction 3 (ret) rejected. unsupported AIR constant kind 'emptySlice'", ctx.diagnostic);
+
+    const unsupported_type = f.derive(&read, &.{f.set("/instructions/2/type", f.obj(&.{
+        .{ "kind", f.s("unsupported") }, .{ "zigTypeTag", f.s("optional") },
+    }))});
+    try std.testing.expectError(error.InvalidInput, z.air.decode(&ctx, try f.load(ctx.allocator, unsupported_type), .memory));
+    try std.testing.expectEqualStrings("AIR instruction 2 (slice_elem_val) rejected. unsupported Zig AIR type 'optional'", ctx.diagnostic);
+    const unsupported_layout = f.derive(&read, &.{f.set("/instructions/2/type", f.obj(&.{
+        .{ "kind", f.s("unsupported") }, .{ "reason", f.s("unresolved-enum") },
+    }))});
+    try std.testing.expectError(error.InvalidInput, z.air.decode(&ctx, try f.load(ctx.allocator, unsupported_layout), .memory));
+    try std.testing.expectEqualStrings("AIR instruction 2 (slice_elem_val) rejected. unsupported Zig AIR type (unresolved-enum)", ctx.diagnostic);
+
     for ([_]f.Value{
         f.derive(&read, &.{f.set("/instructions/2/type", size)}),
         f.derive(&read, &.{f.set("/instructions/2/rhs/index", f.n("0"))}),
@@ -50,7 +65,8 @@ pub fn emitted(ctx: *z.common.Context) ![]const u8 {
     return ctx.fmt(
         \\import Compiler.ZigAir.Captured
         \\open Compiler.ZigAir Compiler.ZigAir.MemoryAir Compiler.ZigAir.Memory
-        \\def readByte : Program := {s}
+        \\def readByte : Program :=
+        \\{s}
         \\{s}
         \\def heap : State := ⟨[(0, ⟨1, .array 2 (.scalar (.int false 8)), [(0, .scalar (.int false 8 42))], true, false⟩)], 1, 3⟩
         \\def view : Value := .slice (.slice false (.scalar (.int false 8))) ⟨0, 0⟩ 1

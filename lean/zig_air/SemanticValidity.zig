@@ -19,6 +19,32 @@ pub const Slice = struct {
     unsupported: ?enum { sentinel, c_pointer } = null,
 };
 
+pub const Copy = struct {
+    instruction: ?Air.Inst.Index,
+    destination_length: Air.Inst.Ref,
+    source_length: Air.Inst.Ref,
+    destination: Air.Inst.Ref = .none,
+    source: Air.Inst.Ref = .none,
+};
+
+/// The original lengths survive slice decay and static array-pointer upgrades.
+pub fn recordCopy(sema: *Sema, result: Air.Inst.Ref, destination: Air.Inst.Ref, source: Air.Inst.Ref, destination_length: Air.Inst.Ref, source_length: Air.Inst.Ref) std.mem.Allocator.Error!void {
+    if (sema.pt.zcu.comp.semantic_export_dir == null) return;
+    try sema.semantic_export_copies.append(sema.gpa, .{
+        .instruction = result.toIndex(),
+        .destination_length = destination_length,
+        .source_length = source_length,
+        .destination = destination,
+        .source = source,
+    });
+}
+
+pub fn recordErasedCopy(sema: *Sema, comptime_block: bool, destination: Air.Inst.Ref, source: Air.Inst.Ref) std.mem.Allocator.Error!void {
+    if (comptime_block or destination == .none or source == .none or destination == source) return;
+    if (destination.toIndex() != null or source.toIndex() != null)
+        try recordCopy(sema, .none, .none, .none, destination, source);
+}
+
 pub fn recordSlice(
     sema: *Sema,
     comptime_block: bool,

@@ -27,6 +27,8 @@ It is not a rule for computing ABI layouts on arbitrary targets. -/
   | .scalar (.int _ 32) => some ⟨4, 4⟩
   | .scalar (.int _ 64) => some ⟨8, 8⟩
   | .scalar (.int false 256) => some ⟨32, 16⟩
+  | .scalar (.enumeration decl) =>
+    if 2 ≤ decl.width ∧ decl.width ≤ 8 then some ⟨1, 1⟩ else none
   -- Captured ?Instruction, ?usize, ?i64 and ?u256; no general optional ABI rule.
   | .optionalScalar (.int false 8) => some ⟨2, 1⟩
   | .optionalScalar (.int false 64) => some ⟨16, 8⟩
@@ -116,6 +118,8 @@ def Ty.fieldAt (layout : Layout) (fields : List (Nat × Field)) (offset : Nat) :
 
 def Value.type : Value → Ty
   | .scalar value => .scalar value.type
+  | .errorValue kind allowed _ => .errorValue kind allowed
+  | .errorScalar child allowed _ => .errorScalar child allowed
   | .optionalScalar child _ => .optionalScalar child
   | .pointer ty _ | .slice ty _ _ => ty
   | .optionalObject child layout _ => .optionalObject child layout
@@ -123,6 +127,12 @@ def Value.type : Value → Ty
 mutual
 def Value.valid : Value → Bool
   | .scalar value => value.valid
+  | .errorValue kind allowed name => match name with
+    | none => kind == .result
+    | some name => allowed.contains name
+  | .errorScalar child allowed result => match result with
+    | .inl name => allowed.contains name
+    | .inr value => value.hasType child
   | .optionalScalar child payload => match payload with
     | none => true
     | some value => decide (value.type = child) && value.valid

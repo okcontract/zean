@@ -20,7 +20,7 @@ private def sameIdentity (raw expected : Raw) : Bool :=
 def decode : Nat → List Raw → Raw → Option Program
   | 0, _, _ => none
   | fuel + 1, closure, raw => do
-    let input ← prepare raw
+    let input ← prepare raw .directCall
     let operation (inst : Raw) : Option MemoryPartialCall.Prim := do
       if ["call", "call_never_inline", "call_never_tail"].contains (← inst.textAt "tag") then
         let callee ← inst.get "callee"
@@ -35,7 +35,7 @@ def decode : Nat → List Raw → Raw → Option Program
           else do
             let nested ← decode fuel closure record
             pure (nested.target, nested.parameters, nested.returnType)
-        let arguments ← (← inst.listAt "arguments").mapM reference
+        let arguments ← callArguments inst (← (← record.get "signature").listAt "parameters")
         require (arguments.length == parameters.length && (← typeOf 17 (← inst.get "type")) == returnType)
         pure (.call target arguments)
       else pure (.memory (← primitive input.mapping inst input.table))

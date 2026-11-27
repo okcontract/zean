@@ -121,6 +121,17 @@ def fieldPointer (state : State) (source : Value) (offset : Nat) : Except Fault 
   let some field := fieldType owner offset | .error .unsupported
   .ok (.pointer (.pointer writable false field) ⟨address.allocation, address.offset + offset⟩)
 
+/-- A declared zero-storage field can sit at the end of its owner. The
+admitted, unused pointer still requires a live parent and a representable
+address. Checking it touches no initialized leaves. -/
+def checkZeroField (state : State) (source : Value) (offset : Nat) : Except Fault Unit := do
+  let .pointer (.pointer _ false owner) address := source | .error .malformed
+  let some layout := owner.layout | .error .unsupported
+  let allocation ← access state address layout false
+  if !acceptsView allocation.type address.offset owner || offset > layout.bytes then .error .unsupported
+  else if allocation.base + address.offset + offset ≥ addressLimit then .error .memoryValidity
+  else .ok ()
+
 def pointerCast (state : State) (target : Ty) (value : Value) : Except Fault Value := do
   let .pointer (.pointer writable _ child) address := value | .error .malformed
   let .pointer destWritable many destChild := target | .error .malformed

@@ -1847,7 +1847,7 @@ pub const cases = blk: {
         // Control 95
         f.derive(&memory_3, &.{
             f.set("/input/instructions/0/type/bits", f.n("256")),
-            f.set("/input/instructions/1/rhs/type/bits", f.n("8")),
+            f.set("/input/instructions/1/rhs/type/bits", f.n("7")),
             f.set("/input/instructions/1/rhs/value", f.n("1")),
             f.set("/input/instructions/1/tag", f.s("shl")),
             f.set("/input/instructions/1/type/bits", f.n("256")),

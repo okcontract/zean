@@ -177,7 +177,11 @@ pub fn inspectRecords(ctx: *c.Context, io: std.Io, directory: []const u8, roots:
         const name = try ctx.str(try ctx.field(record, "name"));
         try ctx.require(name.len > 0 and !result.object.contains(name), "missing or duplicate captured function");
         const validity = try ctx.field(record, "sourceValidity");
-        try ctx.fields(validity, "schema coverage complete slices");
+        const fields = "schema coverage complete slices";
+        if (c.get(validity, "copyLengthsAnchored")) |anchored| {
+            try ctx.fields(validity, fields ++ " copyLengthsAnchored");
+            try ctx.require(anchored == .bool, "invalid copy-length coverage");
+        } else try ctx.fields(validity, fields);
         try ctx.require(c.tag(validity, "schema", "oksolc.source-validity.v1") and c.tag(validity, "coverage", "runtime-slice-results") and c.flag(validity, "complete", false), "unsupported source-validity inventory");
         const tags = try ctx.field(record, "sourceOperationTags");
         try validateSourceOperationTags(ctx, tags, null);

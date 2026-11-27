@@ -1049,21 +1049,21 @@ pub const cases = blk: {
         f.derive(&scalar_program_1, &.{
             f.set("/input/instructions/4/tag", f.s("sub")),
             f.text("/output", &.{
-                .{ .at = 286, .old = "add", .new = "sub" },
+                .{ .at = 335, .old = "add", .new = "sub" },
             }),
         }),
         // Control 60
         f.derive(&scalar_program_1, &.{
             f.set("/input/instructions/4/tag", f.s("add_safe")),
             f.text("/output", &.{
-                .{ .at = 291, .old = "un", .new = "" },
+                .{ .at = 340, .old = "un", .new = "" },
             }),
         }),
         // Control 61
         f.derive(&scalar_program_1, &.{
             f.set("/input/instructions/4/tag", f.s("add_wrap")),
             f.text("/output", &.{
-                .{ .at = 291, .old = "unchecked", .new = "wrapping" },
+                .{ .at = 340, .old = "unchecked", .new = "wrapping" },
             }),
         }),
         // Control 62
@@ -1122,7 +1122,7 @@ pub const cases = blk: {
         f.derive(&scalar_program_1, &.{
             f.set("/input/instructions/5/operand/index", f.n("0")),
             f.text("/output", &.{
-                .{ .at = 363, .old = "4", .new = "0" },
+                .{ .at = 425, .old = "4", .new = "0" },
             }),
         }),
         // Control 70
@@ -1384,12 +1384,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("1")),
             f.set("/input/signature/returnType/bits", f.n("1")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 1)], returnType := (.int false 1), body :=
-                \\  (.bind 0 (.int false 1)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 1)
-                \\  (.bitAnd (.local 0) (.constant (.int false 1 (0))))
-                \\  (.ret (.local 1)))) }
+                \\  { parameters := [(.int false 1)],
+                \\    returnType := (.int false 1),
+                \\    body :=
+                \\      .bind 0 (.int false 1) (.argument 0) <|
+                \\      .bind 1 (.int false 1) (.bitAnd (.local 0) (.constant (.int false 1 (0)))) <|
+                \\      (.ret (.local 1))
+                \\  }
             )),
         }),
         // Control 111
@@ -1400,12 +1401,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("8")),
             f.set("/input/signature/returnType/bits", f.n("8")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 8)], returnType := (.int false 8), body :=
-                \\  (.bind 0 (.int false 8)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 8)
-                \\  (.bitAnd (.local 0) (.constant (.int false 8 (0))))
-                \\  (.ret (.local 1)))) }
+                \\  { parameters := [(.int false 8)],
+                \\    returnType := (.int false 8),
+                \\    body :=
+                \\      .bind 0 (.int false 8) (.argument 0) <|
+                \\      .bind 1 (.int false 8) (.bitAnd (.local 0) (.constant (.int false 8 (0)))) <|
+                \\      (.ret (.local 1))
+                \\  }
             )),
         }),
         // Control 112
@@ -1416,12 +1418,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("64")),
             f.set("/input/signature/returnType/bits", f.n("64")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 64)], returnType := (.int false 64), body :=
-                \\  (.bind 0 (.int false 64)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 64)
-                \\  (.bitAnd (.local 0) (.constant (.int false 64 (0))))
-                \\  (.ret (.local 1)))) }
+                \\  { parameters := [(.int false 64)],
+                \\    returnType := (.int false 64),
+                \\    body :=
+                \\      .bind 0 (.int false 64) (.argument 0) <|
+                \\      .bind 1 (.int false 64) (.bitAnd (.local 0) (.constant (.int false 64 (0)))) <|
+                \\      (.ret (.local 1))
+                \\  }
             )),
         }),
         // Control 113
@@ -1432,12 +1435,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("256")),
             f.set("/input/signature/returnType/bits", f.n("256")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 256)], returnType := (.int false 256), body :=
-                \\  (.bind 0 (.int false 256)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 256)
-                \\  (.bitAnd (.local 0) (.constant (.int false 256 (0))))
-                \\  (.ret (.local 1)))) }
+                \\  { parameters := [(.int false 256)],
+                \\    returnType := (.int false 256),
+                \\    body :=
+                \\      .bind 0 (.int false 256) (.argument 0) <|
+                \\      .bind 1 (.int false 256) (.bitAnd (.local 0) (.constant (.int false 256 (0)))) <|
+                \\      (.ret (.local 1))
+                \\  }
             )),
         }),
         // Control 114
@@ -1448,12 +1452,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("512")),
             f.set("/input/signature/returnType/bits", f.n("512")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 512)], returnType := (.int false 512), body :=
-                \\  (.bind 0 (.int false 512)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 512)
-                \\  (.bitAnd (.local 0) (.constant (.int false 512 (0))))
-                \\  (.ret (.local 1)))) }
+                \\  { parameters := [(.int false 512)],
+                \\    returnType := (.int false 512),
+                \\    body :=
+                \\      .bind 0 (.int false 512) (.argument 0) <|
+                \\      .bind 1 (.int false 512) (.bitAnd (.local 0) (.constant (.int false 512 (0)))) <|
+                \\      (.ret (.local 1))
+                \\  }
             )),
         }),
         // Control 115
@@ -1624,12 +1629,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("1")),
             f.set("/input/signature/returnType/bits", f.n("1")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 1)], returnType := (.int false 1), body :=
-                \\  (.bind 0 (.int false 1)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 1)
-                \\  (.shiftRight (.local 0) (.constant (.int false 0 (0))))
-                \\  (.ret (.local 1)))) }
+                \\  { parameters := [(.int false 1)],
+                \\    returnType := (.int false 1),
+                \\    body :=
+                \\      .bind 0 (.int false 1) (.argument 0) <|
+                \\      .bind 1 (.int false 1) (.shiftRight (.local 0) (.constant (.int false 0 (0)))) <|
+                \\      (.ret (.local 1))
+                \\  }
             )),
         }),
         // Control 129
@@ -1643,12 +1649,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("3")),
             f.set("/input/signature/returnType/bits", f.n("3")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 3)], returnType := (.int false 3), body :=
-                \\  (.bind 0 (.int false 3)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 3)
-                \\  (.shiftRight (.local 0) (.constant (.int false 2 (0))))
-                \\  (.ret (.local 1)))) }
+                \\  { parameters := [(.int false 3)],
+                \\    returnType := (.int false 3),
+                \\    body :=
+                \\      .bind 0 (.int false 3) (.argument 0) <|
+                \\      .bind 1 (.int false 3) (.shiftRight (.local 0) (.constant (.int false 2 (0)))) <|
+                \\      (.ret (.local 1))
+                \\  }
             )),
         }),
         // Control 131
@@ -1660,12 +1667,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("3")),
             f.set("/input/signature/returnType/bits", f.n("3")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 3)], returnType := (.int false 3), body :=
-                \\  (.bind 0 (.int false 3)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 3)
-                \\  (.shiftRight (.local 0) (.constant (.int false 2 (0))))
-                \\  (.ret (.constant (.int false 3 (0)))))) }
+                \\  { parameters := [(.int false 3)],
+                \\    returnType := (.int false 3),
+                \\    body :=
+                \\      .bind 0 (.int false 3) (.argument 0) <|
+                \\      .bind 1 (.int false 3) (.shiftRight (.local 0) (.constant (.int false 2 (0)))) <|
+                \\      (.ret (.constant (.int false 3 (0))))
+                \\  }
             )),
         }),
         // Control 132
@@ -1677,12 +1685,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("8")),
             f.set("/input/signature/returnType/bits", f.n("8")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 8)], returnType := (.int false 8), body :=
-                \\  (.bind 0 (.int false 8)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 8)
-                \\  (.shiftRight (.local 0) (.constant (.int false 3 (0))))
-                \\  (.ret (.local 1)))) }
+                \\  { parameters := [(.int false 8)],
+                \\    returnType := (.int false 8),
+                \\    body :=
+                \\      .bind 0 (.int false 8) (.argument 0) <|
+                \\      .bind 1 (.int false 8) (.shiftRight (.local 0) (.constant (.int false 3 (0)))) <|
+                \\      (.ret (.local 1))
+                \\  }
             )),
         }),
         // Control 133
@@ -1694,12 +1703,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("8")),
             f.set("/input/signature/returnType/bits", f.n("8")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 8)], returnType := (.int false 8), body :=
-                \\  (.bind 0 (.int false 8)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 8)
-                \\  (.shiftRight (.local 0) (.constant (.int false 3 (0))))
-                \\  (.ret (.constant (.int false 8 (0)))))) }
+                \\  { parameters := [(.int false 8)],
+                \\    returnType := (.int false 8),
+                \\    body :=
+                \\      .bind 0 (.int false 8) (.argument 0) <|
+                \\      .bind 1 (.int false 8) (.shiftRight (.local 0) (.constant (.int false 3 (0)))) <|
+                \\      (.ret (.constant (.int false 8 (0))))
+                \\  }
             )),
         }),
         // Control 134
@@ -1711,12 +1721,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("64")),
             f.set("/input/signature/returnType/bits", f.n("64")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 64)], returnType := (.int false 64), body :=
-                \\  (.bind 0 (.int false 64)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 64)
-                \\  (.shiftRight (.local 0) (.constant (.int false 6 (0))))
-                \\  (.ret (.local 1)))) }
+                \\  { parameters := [(.int false 64)],
+                \\    returnType := (.int false 64),
+                \\    body :=
+                \\      .bind 0 (.int false 64) (.argument 0) <|
+                \\      .bind 1 (.int false 64) (.shiftRight (.local 0) (.constant (.int false 6 (0)))) <|
+                \\      (.ret (.local 1))
+                \\  }
             )),
         }),
         // Control 135
@@ -1728,12 +1739,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("64")),
             f.set("/input/signature/returnType/bits", f.n("64")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 64)], returnType := (.int false 64), body :=
-                \\  (.bind 0 (.int false 64)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 64)
-                \\  (.shiftRight (.local 0) (.constant (.int false 6 (0))))
-                \\  (.ret (.constant (.int false 64 (0)))))) }
+                \\  { parameters := [(.int false 64)],
+                \\    returnType := (.int false 64),
+                \\    body :=
+                \\      .bind 0 (.int false 64) (.argument 0) <|
+                \\      .bind 1 (.int false 64) (.shiftRight (.local 0) (.constant (.int false 6 (0)))) <|
+                \\      (.ret (.constant (.int false 64 (0))))
+                \\  }
             )),
         }),
         // Control 136
@@ -1745,12 +1757,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("256")),
             f.set("/input/signature/returnType/bits", f.n("256")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 256)], returnType := (.int false 256), body :=
-                \\  (.bind 0 (.int false 256)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 256)
-                \\  (.shiftRight (.local 0) (.constant (.int false 8 (0))))
-                \\  (.ret (.local 1)))) }
+                \\  { parameters := [(.int false 256)],
+                \\    returnType := (.int false 256),
+                \\    body :=
+                \\      .bind 0 (.int false 256) (.argument 0) <|
+                \\      .bind 1 (.int false 256) (.shiftRight (.local 0) (.constant (.int false 8 (0)))) <|
+                \\      (.ret (.local 1))
+                \\  }
             )),
         }),
         // Control 137
@@ -1762,12 +1775,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("256")),
             f.set("/input/signature/returnType/bits", f.n("256")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 256)], returnType := (.int false 256), body :=
-                \\  (.bind 0 (.int false 256)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 256)
-                \\  (.shiftRight (.local 0) (.constant (.int false 8 (0))))
-                \\  (.ret (.constant (.int false 256 (0)))))) }
+                \\  { parameters := [(.int false 256)],
+                \\    returnType := (.int false 256),
+                \\    body :=
+                \\      .bind 0 (.int false 256) (.argument 0) <|
+                \\      .bind 1 (.int false 256) (.shiftRight (.local 0) (.constant (.int false 8 (0)))) <|
+                \\      (.ret (.constant (.int false 256 (0))))
+                \\  }
             )),
         }),
         // Control 138
@@ -1779,12 +1793,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("512")),
             f.set("/input/signature/returnType/bits", f.n("512")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 512)], returnType := (.int false 512), body :=
-                \\  (.bind 0 (.int false 512)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 512)
-                \\  (.shiftRight (.local 0) (.constant (.int false 9 (0))))
-                \\  (.ret (.local 1)))) }
+                \\  { parameters := [(.int false 512)],
+                \\    returnType := (.int false 512),
+                \\    body :=
+                \\      .bind 0 (.int false 512) (.argument 0) <|
+                \\      .bind 1 (.int false 512) (.shiftRight (.local 0) (.constant (.int false 9 (0)))) <|
+                \\      (.ret (.local 1))
+                \\  }
             )),
         }),
         // Control 139
@@ -1796,12 +1811,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("512")),
             f.set("/input/signature/returnType/bits", f.n("512")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 512)], returnType := (.int false 512), body :=
-                \\  (.bind 0 (.int false 512)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 512)
-                \\  (.shiftRight (.local 0) (.constant (.int false 9 (0))))
-                \\  (.ret (.constant (.int false 512 (0)))))) }
+                \\  { parameters := [(.int false 512)],
+                \\    returnType := (.int false 512),
+                \\    body :=
+                \\      .bind 0 (.int false 512) (.argument 0) <|
+                \\      .bind 1 (.int false 512) (.shiftRight (.local 0) (.constant (.int false 9 (0)))) <|
+                \\      (.ret (.constant (.int false 512 (0))))
+                \\  }
             )),
         }),
         // Control 140
@@ -1814,12 +1830,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("3")),
             f.set("/input/signature/returnType/bits", f.n("3")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 3)], returnType := (.int false 3), body :=
-                \\  (.bind 0 (.int false 3)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 3)
-                \\  (.shiftRight (.local 0) (.constant (.int false 2 (3))))
-                \\  (.ret (.local 1)))) }
+                \\  { parameters := [(.int false 3)],
+                \\    returnType := (.int false 3),
+                \\    body :=
+                \\      .bind 0 (.int false 3) (.argument 0) <|
+                \\      .bind 1 (.int false 3) (.shiftRight (.local 0) (.constant (.int false 2 (3)))) <|
+                \\      (.ret (.local 1))
+                \\  }
             )),
         }),
         // Control 141
@@ -1916,6 +1933,7 @@ pub const cases = blk: {
             f.remove("/input/instructions/1/lhs/value"),
             f.add("/input/instructions/1/lhs/index", f.n("0")),
             f.set("/input/instructions/1/tag", f.s("shl")),
+            f.set("/input/instructions/1/rhs/type/bits", f.n("7")),
         }),
         // Control 153
         f.derive(&scalar_program_14, &.{
@@ -1939,7 +1957,7 @@ pub const cases = blk: {
         f.derive(&scalar_program_12, &.{
             f.set("/input/instructions/1/tag", f.s("xor")),
             f.text("/output", &.{
-                .{ .at = 147, .old = "And", .new = "Xor" },
+                .{ .at = 162, .old = "And", .new = "Xor" },
             }),
         }),
         // Control 156
@@ -1954,7 +1972,7 @@ pub const cases = blk: {
             })),
             f.add("/input/instructions/2/operand/value", f.n("0")),
             f.text("/output", &.{
-                .{ .at = 147, .old = "And (.local 0) (.constant (.int false 0 (0))))\n  (.ret (.local 1", .new = "Xor (.local 0) (.constant (.int false 0 (0))))\n  (.ret (.constant (.int false 0 (0))" },
+                .{ .at = 162, .old = "And (.local 0) (.constant (.int false 0 (0)))) <|\n      (.ret (.local 1", .new = "Xor (.local 0) (.constant (.int false 0 (0)))) <|\n      (.ret (.constant (.int false 0 (0))" },
             }),
         }),
         // Control 157
@@ -1966,7 +1984,7 @@ pub const cases = blk: {
             f.remove("/input/instructions/2/operand/value"),
             f.add("/input/instructions/2/operand/index", f.n("1")),
             f.text("/output", &.{
-                .{ .at = 144, .old = "shiftRight (.local 0) (.constant (.int false 0 (0))))\n  (.ret (.constant (.int false 1 (0))", .new = "bitXor (.local 0) (.constant (.int false 1 (0))))\n  (.ret (.local 1" },
+                .{ .at = 159, .old = "shiftRight (.local 0) (.constant (.int false 0 (0)))) <|\n      (.ret (.constant (.int false 1 (0))", .new = "bitXor (.local 0) (.constant (.int false 1 (0)))) <|\n      (.ret (.local 1" },
             }),
         }),
         // Control 158
@@ -1974,7 +1992,7 @@ pub const cases = blk: {
             f.set("/input/instructions/1/rhs/type/bits", f.n("1")),
             f.set("/input/instructions/1/tag", f.s("xor")),
             f.text("/output", &.{
-                .{ .at = 144, .old = "shiftRight (.local 0) (.constant (.int false 0", .new = "bitXor (.local 0) (.constant (.int false 1" },
+                .{ .at = 159, .old = "shiftRight (.local 0) (.constant (.int false 0", .new = "bitXor (.local 0) (.constant (.int false 1" },
             }),
         }),
         // Control 159
@@ -1986,12 +2004,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("8")),
             f.set("/input/signature/returnType/bits", f.n("8")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 8)], returnType := (.int false 8), body :=
-                \\  (.bind 0 (.int false 8)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 8)
-                \\  (.bitXor (.local 0) (.constant (.int false 8 (0))))
-                \\  (.ret (.local 1)))) }
+                \\  { parameters := [(.int false 8)],
+                \\    returnType := (.int false 8),
+                \\    body :=
+                \\      .bind 0 (.int false 8) (.argument 0) <|
+                \\      .bind 1 (.int false 8) (.bitXor (.local 0) (.constant (.int false 8 (0)))) <|
+                \\      (.ret (.local 1))
+                \\  }
             )),
         }),
         // Control 160
@@ -2004,12 +2023,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("8")),
             f.set("/input/signature/returnType/bits", f.n("8")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 8)], returnType := (.int false 8), body :=
-                \\  (.bind 0 (.int false 8)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 8)
-                \\  (.bitXor (.local 0) (.constant (.int false 8 (0))))
-                \\  (.ret (.constant (.int false 8 (0)))))) }
+                \\  { parameters := [(.int false 8)],
+                \\    returnType := (.int false 8),
+                \\    body :=
+                \\      .bind 0 (.int false 8) (.argument 0) <|
+                \\      .bind 1 (.int false 8) (.bitXor (.local 0) (.constant (.int false 8 (0)))) <|
+                \\      (.ret (.constant (.int false 8 (0))))
+                \\  }
             )),
         }),
         // Control 161
@@ -2021,12 +2041,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("64")),
             f.set("/input/signature/returnType/bits", f.n("64")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 64)], returnType := (.int false 64), body :=
-                \\  (.bind 0 (.int false 64)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 64)
-                \\  (.bitXor (.local 0) (.constant (.int false 64 (0))))
-                \\  (.ret (.local 1)))) }
+                \\  { parameters := [(.int false 64)],
+                \\    returnType := (.int false 64),
+                \\    body :=
+                \\      .bind 0 (.int false 64) (.argument 0) <|
+                \\      .bind 1 (.int false 64) (.bitXor (.local 0) (.constant (.int false 64 (0)))) <|
+                \\      (.ret (.local 1))
+                \\  }
             )),
         }),
         // Control 162
@@ -2039,12 +2060,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("64")),
             f.set("/input/signature/returnType/bits", f.n("64")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 64)], returnType := (.int false 64), body :=
-                \\  (.bind 0 (.int false 64)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 64)
-                \\  (.bitXor (.local 0) (.constant (.int false 64 (0))))
-                \\  (.ret (.constant (.int false 64 (0)))))) }
+                \\  { parameters := [(.int false 64)],
+                \\    returnType := (.int false 64),
+                \\    body :=
+                \\      .bind 0 (.int false 64) (.argument 0) <|
+                \\      .bind 1 (.int false 64) (.bitXor (.local 0) (.constant (.int false 64 (0)))) <|
+                \\      (.ret (.constant (.int false 64 (0))))
+                \\  }
             )),
         }),
         // Control 163
@@ -2056,12 +2078,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("128")),
             f.set("/input/signature/returnType/bits", f.n("128")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 128)], returnType := (.int false 128), body :=
-                \\  (.bind 0 (.int false 128)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 128)
-                \\  (.bitXor (.local 0) (.constant (.int false 128 (0))))
-                \\  (.ret (.local 1)))) }
+                \\  { parameters := [(.int false 128)],
+                \\    returnType := (.int false 128),
+                \\    body :=
+                \\      .bind 0 (.int false 128) (.argument 0) <|
+                \\      .bind 1 (.int false 128) (.bitXor (.local 0) (.constant (.int false 128 (0)))) <|
+                \\      (.ret (.local 1))
+                \\  }
             )),
         }),
         // Control 164
@@ -2074,12 +2097,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("128")),
             f.set("/input/signature/returnType/bits", f.n("128")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 128)], returnType := (.int false 128), body :=
-                \\  (.bind 0 (.int false 128)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 128)
-                \\  (.bitXor (.local 0) (.constant (.int false 128 (0))))
-                \\  (.ret (.constant (.int false 128 (0)))))) }
+                \\  { parameters := [(.int false 128)],
+                \\    returnType := (.int false 128),
+                \\    body :=
+                \\      .bind 0 (.int false 128) (.argument 0) <|
+                \\      .bind 1 (.int false 128) (.bitXor (.local 0) (.constant (.int false 128 (0)))) <|
+                \\      (.ret (.constant (.int false 128 (0))))
+                \\  }
             )),
         }),
         // Control 165
@@ -2091,12 +2115,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("256")),
             f.set("/input/signature/returnType/bits", f.n("256")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 256)], returnType := (.int false 256), body :=
-                \\  (.bind 0 (.int false 256)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 256)
-                \\  (.bitXor (.local 0) (.constant (.int false 256 (0))))
-                \\  (.ret (.local 1)))) }
+                \\  { parameters := [(.int false 256)],
+                \\    returnType := (.int false 256),
+                \\    body :=
+                \\      .bind 0 (.int false 256) (.argument 0) <|
+                \\      .bind 1 (.int false 256) (.bitXor (.local 0) (.constant (.int false 256 (0)))) <|
+                \\      (.ret (.local 1))
+                \\  }
             )),
         }),
         // Control 166
@@ -2109,12 +2134,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("256")),
             f.set("/input/signature/returnType/bits", f.n("256")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 256)], returnType := (.int false 256), body :=
-                \\  (.bind 0 (.int false 256)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 256)
-                \\  (.bitXor (.local 0) (.constant (.int false 256 (0))))
-                \\  (.ret (.constant (.int false 256 (0)))))) }
+                \\  { parameters := [(.int false 256)],
+                \\    returnType := (.int false 256),
+                \\    body :=
+                \\      .bind 0 (.int false 256) (.argument 0) <|
+                \\      .bind 1 (.int false 256) (.bitXor (.local 0) (.constant (.int false 256 (0)))) <|
+                \\      (.ret (.constant (.int false 256 (0))))
+                \\  }
             )),
         }),
         // Control 167
@@ -2126,12 +2152,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("512")),
             f.set("/input/signature/returnType/bits", f.n("512")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 512)], returnType := (.int false 512), body :=
-                \\  (.bind 0 (.int false 512)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 512)
-                \\  (.bitXor (.local 0) (.constant (.int false 512 (0))))
-                \\  (.ret (.local 1)))) }
+                \\  { parameters := [(.int false 512)],
+                \\    returnType := (.int false 512),
+                \\    body :=
+                \\      .bind 0 (.int false 512) (.argument 0) <|
+                \\      .bind 1 (.int false 512) (.bitXor (.local 0) (.constant (.int false 512 (0)))) <|
+                \\      (.ret (.local 1))
+                \\  }
             )),
         }),
         // Control 168
@@ -2144,12 +2171,13 @@ pub const cases = blk: {
             f.set("/input/signature/parameters/0/bits", f.n("512")),
             f.set("/input/signature/returnType/bits", f.n("512")),
             f.set("/output", f.s(
-                \\{ parameters := [(.int false 512)], returnType := (.int false 512), body :=
-                \\  (.bind 0 (.int false 512)
-                \\  (.argument 0)
-                \\  (.bind 1 (.int false 512)
-                \\  (.bitXor (.local 0) (.constant (.int false 512 (0))))
-                \\  (.ret (.constant (.int false 512 (0)))))) }
+                \\  { parameters := [(.int false 512)],
+                \\    returnType := (.int false 512),
+                \\    body :=
+                \\      .bind 0 (.int false 512) (.argument 0) <|
+                \\      .bind 1 (.int false 512) (.bitXor (.local 0) (.constant (.int false 512 (0)))) <|
+                \\      (.ret (.constant (.int false 512 (0))))
+                \\  }
             )),
         }),
         // Control 169
@@ -2321,14 +2349,14 @@ pub const cases = blk: {
             f.set("/input/instructions/2/lhs/index", f.n("0")),
             f.set("/reject", f.b(false)),
             f.add("/output", f.s(
-                \\{ parameters := [(.slice false (.scalar (.int false 8))), (.scalar (.int false 64))], returnType := (.pointer false false (.scalar (.int false 8))), body :=
-                \\  (.bind 0 (.slice false (.scalar (.int false 8)))
-                \\  (.argument 0)
-                \\  (.bind 1 (.scalar (.int false 64))
-                \\  (.argument 1)
-                \\  (.bind 2 (.pointer false false (.scalar (.int false 8)))
-                \\  (.sliceElementPointer (.local 0) (.local 1))
-                \\  (.ret (.local 2))))) }
+                \\  { parameters := [(.slice false (.scalar (.int false 8))), (.scalar (.int false 64))],
+                \\    returnType := (.pointer false false (.scalar (.int false 8))),
+                \\    body :=
+                \\      .bind 0 (.slice false (.scalar (.int false 8))) (.argument 0) <|
+                \\      .bind 1 (.scalar (.int false 64)) (.argument 1) <|
+                \\      .bind 2 (.pointer false false (.scalar (.int false 8))) (.sliceElementPointer (.local 0) (.local 1)) <|
+                \\      (.ret (.local 2))
+                \\  }
             )),
         }),
         // Control 198
@@ -2857,7 +2885,7 @@ pub const cases = blk: {
             f.set("/input/instructions/10/tag", f.s("slice_len")),
             f.set("/input/instructions/10/type/bits", f.n("64")),
             f.text("/output", &.{
-                .{ .at = 1144, .old = "8))\n  (.wordByteLoad .little (.local 9", .new = "64))\n  (.sliceLen (.local 8" },
+                .{ .at = 1197, .old = "8)) (.wordByteLoad .little (.local 9", .new = "64)) (.sliceLen (.local 8" },
             }),
         }),
         // Control 245
@@ -2885,7 +2913,7 @@ pub const cases = blk: {
             })),
             f.add("/input/instructions/10/type/sentinel", .null),
             f.text("/output", &.{
-                .{ .at = 1125, .old = "scalar (.int false 8))\n  (.wordByteLoad .little (.local 9", .new = "pointer true true (.scalar (.int false 8)))\n  (.slicePtr (.local 8" },
+                .{ .at = 1178, .old = "scalar (.int false 8)) (.wordByteLoad .little (.local 9", .new = "pointer true true (.scalar (.int false 8))) (.slicePtr (.local 8" },
             }),
         }),
         // Control 246
@@ -3050,7 +3078,7 @@ pub const cases = blk: {
                 .{ "kind", f.s("instruction") },
             })),
             f.text("/output", &.{
-                .{ .at = 1132, .old = "(.int false 8))\n  (.wordByteLoad .little (.local 9", .new = ".unit)\n  (.wordByteStore .little (.local 9) (.local 2" },
+                .{ .at = 1185, .old = "(.int false 8)) (.wordByteLoad .little (.local 9", .new = ".unit) (.wordByteStore .little (.local 9) (.local 2" },
             }),
         }),
         // Control 254
@@ -3328,8 +3356,8 @@ pub const cases = blk: {
                 .{ "kind", f.s("instruction") },
             })),
             f.text("/output", &.{
-                .{ .at = 726, .old = "calar .unit)\n  (.store (.local 5) (.local 4", .new = "lice true (.scalar (.int false 8)))\n  (.load (.local 5" },
-                .{ .at = 1132, .old = "(.int false 8))\n  (.wordByteLoad .little (.local 9", .new = ".unit)\n  (.wordByteStore .little (.local 9) (.local 2" },
+                .{ .at = 763, .old = "calar .unit) (.store (.local 5) (.local 4", .new = "lice true (.scalar (.int false 8))) (.load (.local 5" },
+                .{ .at = 1185, .old = "(.int false 8)) (.wordByteLoad .little (.local 9", .new = ".unit) (.wordByteStore .little (.local 9) (.local 2" },
             }),
         }),
         // Control 269
