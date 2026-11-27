@@ -843,7 +843,7 @@ inductive SpecializationPolicy where
   deriving BEq
 
 /-- Preserve source parameter indices after specialization. Direct calls can
-also bind concrete runtime anytype parameters and named comptime callbacks.
+also bind concrete runtime anytype parameters, file-local enum tags and named comptime callbacks.
 Native admission checks the original declaration. -/
 def parameterMapping (raw signature : Raw) (runtimeCount : Nat)
     (policy : SpecializationPolicy := .standalone) : Option (List Nat) := do
@@ -874,9 +874,14 @@ def parameterMapping (raw signature : Raw) (runtimeCount : Nat)
         pure (count, indices)
       | "value" =>
         require (policy == .directCall && bits.testBit index)
-        let callback ← arg.get "value"
-        require ((← callback.textAt "kind") == "function")
-        let _ ← identityName callback
+        let value ← arg.get "value"
+        match ← value.textAt "kind" with
+        | "function" => discard <| identityName value
+        | "enumTag" =>
+          let some (.constant (.scalar (.enumTag decl _))) := reference value | none
+          require (decl.sourceFile == (← owner.textAt "sourceFile") &&
+            decl.sourceDigest == (← owner.textAt "sourceSha256"))
+        | _ => none
         pure (count, indices)
       | _ => none) (0, [])
     require (count == runtimeCount)

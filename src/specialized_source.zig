@@ -11,6 +11,42 @@ const Profile = @import("types.zig").Profile;
 
 const Selection = enum { standalone, direct_call };
 
+/// Bind a named file-local enum to its literal source declaration. The AIR
+/// constant decoder has already checked the selected value against its tag table.
+fn enumArgument(ctx: *c.Context, file: *const declaration_source.File, owner: []const u8, parameter_type: std.zig.Ast.Node.Index, value: c.Value) !void {
+    const tree = &file.declarations.tree;
+    try ctx.require(source.plainIdentifier(owner) and tree.nodeTag(parameter_type) == .identifier, "comptime enum requires a file-level callee and a named parameter type");
+    const name = tree.tokenSlice(tree.nodeMainToken(parameter_type));
+    const ty = try ctx.field(value, "type");
+    const identity = try ctx.field(ty, "identity");
+    try ctx.require(source.plainIdentifier(name) and c.tag(identity, "name", try ctx.fmt("{s}{s}", .{ file.prefix, name })) and
+        c.tag(identity, "sourceFile", file.filename) and c.tag(identity, "sourceSha256", &file.sha), "comptime enum source identity mismatch");
+    const scope = try file.declarations.root().containerNamed(name);
+    var buffer: [2]std.zig.Ast.Node.Index = undefined;
+    const decl = tree.fullContainerDecl(&buffer, scope.node).?;
+    try ctx.require(tree.tokenTag(decl.ast.main_token) == .keyword_enum and decl.layout_token == null, "expected a literal enum declaration");
+    const tags = try ctx.array(try ctx.field(ty, "fields"));
+    const backing = try ctx.nat(try ctx.field(try ctx.field(ty, "backingType"), "bits"), 8);
+    if (decl.ast.arg.unwrap()) |arg| {
+        try ctx.require(tree.nodeTag(arg) == .identifier and std.mem.eql(u8, tree.tokenSlice(tree.nodeMainToken(arg)), try ctx.fmt("u{d}", .{backing})), "comptime enum backing type mismatch");
+    } else try ctx.require(backing == std.math.log2_int_ceil(usize, tags.len), "comptime enum inferred width mismatch");
+    var index: usize = 0;
+    var next: u64 = 0;
+    for (decl.ast.members) |member| {
+        const field = tree.fullContainerField(member) orelse continue;
+        const spelling = tree.tokenSlice(field.ast.main_token);
+        try ctx.require(index < tags.len and source.plainIdentifier(spelling) and !std.mem.eql(u8, spelling, "_") and c.tag(tags[index], "name", spelling), "comptime enum source tag mismatch");
+        if (field.ast.value_expr.unwrap()) |expr| {
+            try ctx.require(tree.nodeTag(expr) == .number_literal, "unsupported comptime enum tag expression");
+            next = std.fmt.parseInt(u8, tree.tokenSlice(tree.nodeMainToken(expr)), 0) catch return ctx.fail("unsupported comptime enum tag literal", .{});
+        }
+        try ctx.require(next == try ctx.nat(try ctx.field(tags[index], "value"), 255), "comptime enum source value mismatch");
+        index += 1;
+        next += 1;
+    }
+    try ctx.require(index == tags.len, "comptime enum source field count mismatch");
+}
+
 pub fn select(ctx: *c.Context, record: c.Value, profile: Profile, filename: []const u8, bytes: []const u8) !specialization.Mapping {
     var file = try declaration_source.File.init(ctx, filename, bytes);
     defer file.declarations.deinit();
@@ -64,7 +100,9 @@ fn bind(ctx: *c.Context, record: c.Value, profile: Profile, file: *const declara
             var callback_buffer: [1]std.zig.Ast.Node.Index = undefined;
             const callback = selection == .direct_call and c.tag(arg, "kind", "value") and
                 c.tag(try ctx.field(arg, "value"), "kind", "function") and tree.fullFnProto(&callback_buffer, ty) != null;
-            try ctx.require(type_argument or callback, "expected an explicit comptime type or a named callback in a direct call");
+            if (selection == .direct_call and c.tag(arg, "kind", "value") and c.tag(try ctx.field(arg, "value"), "kind", "enumTag")) {
+                try enumArgument(ctx, file, relative, ty, try ctx.field(arg, "value"));
+            } else try ctx.require(type_argument or callback, "expected an explicit comptime type, named enum value or named callback");
             comptime_bits |= @as(u64, 1) << @intCast(count);
         } else {
             const arg = arguments[count];

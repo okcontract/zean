@@ -34,6 +34,11 @@ normalized and contained. Traversal, links, and conflicting identities reject.
   parameter shape. A type passed through comptime `anytype` is marked
   `anytypeType` and rejects in both decoders. Only ordinary declarations
   can serve as call-profile roots.
+- A file-level direct callee may take a compile-time value of a named
+  file-local exhaustive enum. Admission checks its declaration, backing
+  width, field names and literal tag values against the hashed source.
+  The specialization fingerprint includes the selected tag. The Lean
+  decoder checks membership and the source identity of the enum.
 
 Indirect calls, tail-call requests, missing bodies, foreign calls, and native
 allocator vtables reject. Recursion requires `recursive-calls`. The sequential
