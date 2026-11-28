@@ -24,16 +24,21 @@ pub const Review = struct {
 const Binding = struct { path: Str, sha256: Str };
 const Source = struct { path: Str, context: []const Binding = &.{}, calls: []const Str = &.{}, copies: []const Str = &.{}, returns: []const Str = &.{}, reviews: []const Review = &.{} };
 const Intent = struct { schema: Str, sources: []const Source };
-const Operation = struct { name: Str, token: Ast.TokenIndex, obligations: []const Str };
+const Operation = struct { name: Str, token: Ast.TokenIndex, callee: ?Str = null, unexamined: bool = false, obligations: []const Str };
 const Obligation = struct {
     kind: Str,
-    state: enum { open, proved, external, unsupported, stale } = .open,
+    state: enum { open, proved, external, unsupported, stale, unexamined } = .open,
     detail: ?Str = null,
     manifest: ?Str = null,
     theorem: ?Str = null,
     replaySha256: ?Str = null,
 };
 pub const Site = struct {
+    id: Str = "",
+    declarationOrdinal: usize,
+    callee: ?Str,
+    expressionStart: usize,
+    expressionEnd: usize,
     function: Str,
     declarationSha256: Str,
     operation: Str,
@@ -49,6 +54,20 @@ const copy_obligations: []const Str = &.{ "source-bounds", "destination-bounds",
 
 fn operation(tree: Ast, node: Ast.Node.Index, calls: []const Str, copies: []const Str, returns_view: bool) ?Operation {
     const main = tree.nodeMainToken(node);
+    const tag = tree.nodeTag(node);
+    const builtin_name = tree.tokenSlice(main);
+    switch (tag) {
+        .array_access => return .{ .name = "index", .token = main, .obligations = &.{ "bounds", "live-ranges", "access-permission" } },
+        .deref => return .{ .name = "deref", .token = main, .obligations = &.{ "provenance", "alignment", "live-ranges", "access-permission" } },
+        .address_of => return .{ .name = "address-of", .token = main, .obligations = &.{"lifetime"} },
+        .field_access => return .{ .name = "member", .token = main, .obligations = &.{"receiver-type"}, .unexamined = true },
+        .assign, .assign_mul, .assign_add, .assign_sub, .assign_div, .assign_mod, .assign_bit_and, .assign_bit_or, .assign_bit_xor, .assign_shl, .assign_shr, .assign_add_wrap, .assign_mul_wrap, .assign_sub_wrap, .assign_add_sat, .assign_sub_sat, .assign_mul_sat, .assign_shl_sat => return .{ .name = "write", .token = main, .obligations = &.{"write-target"}, .unexamined = true },
+        .add, .sub => return .{ .name = "offset-or-integer", .token = main, .obligations = &.{"operand-type"}, .unexamined = true },
+        .for_simple, .@"for" => return .{ .name = "iteration", .token = main, .obligations = &.{"iteration-lifetime"} },
+        .asm_simple, .@"asm" => return .{ .name = "assembly", .token = main, .obligations = &.{"foreign-effects"}, .unexamined = true },
+        .identifier => if (std.mem.eql(u8, builtin_name, "undefined")) return .{ .name = "undefined", .token = main, .obligations = &.{"initialized-before-read"} },
+        else => {},
+    }
     if (tree.fullSlice(node) != null) return .{ .name = "slice", .token = main, .obligations = &.{ "bounds", "lifetime" } };
     if (tree.nodeTag(node) == .@"return" and returns_view) {
         const value = tree.nodeData(node).opt_node.unwrap() orelse return null;
@@ -60,22 +79,34 @@ fn operation(tree: Ast, node: Ast.Node.Index, calls: []const Str, copies: []cons
         const name = tree.tokenSlice(main);
         if (std.mem.eql(u8, name, "@memcpy")) return .{ .name = name, .token = main, .obligations = copy_obligations };
         if (std.mem.eql(u8, name, "@memmove")) return .{ .name = name, .token = main, .obligations = &.{ "source-bounds", "destination-bounds", "initialized", "live-ranges", "contents", "frame" } };
+        const kinds: []const Str = if (c.oneOf(name, &.{ "@ptrCast", "@ptrFromInt", "@fieldParentPtr", "@intFromPtr", "@constCast", "@volatileCast", "@addrSpaceCast" }))
+            &.{ "provenance", "live-ranges", "access-permission" }
+        else if (std.mem.eql(u8, name, "@alignCast")) &.{ "alignment", "provenance" }
+        else if (c.oneOf(name, &.{ "@atomicLoad", "@atomicStore", "@atomicRmw", "@cmpxchgStrong", "@cmpxchgWeak", "@fence" })) &.{ "synchronization", "live-ranges" }
+        else if (c.oneOf(name, &.{ "@memset", "@memmove" })) &.{ "destination-bounds", "live-ranges" }
+        else if (c.oneOf(name, &.{ "@extern", "@cImport", "@call" })) &.{"foreign-effects"}
+        else return .{ .name = name, .token = main, .obligations = &.{"builtin-effects"}, .unexamined = true };
+        return .{ .name = name, .token = main, .obligations = kinds };
     }
     var buf: [1]Ast.Node.Index = undefined;
     const call = tree.fullCall(&buf, node) orelse return null;
     const callee = call.ast.fn_expr;
-    if (tree.nodeTag(callee) != .field_access and tree.nodeTag(callee) != .identifier) return null;
+    if (tree.nodeTag(callee) != .field_access and tree.nodeTag(callee) != .identifier) return .{ .name = "indirect-call", .token = main, .obligations = &.{"callee-effects"}, .unexamined = true };
     const token = tree.lastToken(callee);
     const name = tree.tokenSlice(token);
+    const spelling = tree.getNodeSource(callee);
+    const target = if (spelling.len <= 160) spelling else null;
     const obligations: []const Str = if (c.oneOf(name, copies)) copy_obligations else if (c.oneOf(name, &.{ "alloc", "create", "dupe", "realloc", "resize", "ensureUnusedCapacity", "ensureTotalCapacity", "toOwnedSlice", "concat" }))
         &.{ "ownership", "allocation-failure" }
     else if (c.oneOf(name, &.{ "free", "destroy", "deinit" }))
         &.{ "owns-on-release", "released-once" }
+    else if (c.oneOf(name, &.{ "spawn", "join", "lock", "unlock", "wait", "signal", "broadcast" }))
+        &.{ "synchronization", "lifetime" }
     else if (c.oneOf(name, calls))
         &.{ "callee-contract", "lifetime" }
     else
-        return null;
-    return .{ .name = name, .token = token, .obligations = obligations };
+        return .{ .name = name, .token = token, .callee = target, .obligations = &.{"callee-effects"}, .unexamined = true };
+    return .{ .name = name, .token = token, .callee = target, .obligations = obligations };
 }
 
 fn earlier(_: void, a: Site, b: Site) bool {
@@ -87,6 +118,15 @@ pub fn discover(ctx: *c.Context, bytes: Str, calls: []const Str, copies: []const
     defer parsed.deinit();
     const tree = parsed.tree;
     const declarations = try z.component.functionRanges(ctx, tree);
+    const file_scope: z.component.FunctionRange = .{ .name = "<file>", .start = 0, .end = bytes.len, .sha = try ctx.allocator.dupe(u8, &c.digest(bytes)), .returns_view = false };
+    var ordinals = std.AutoHashMap(usize, usize).init(ctx.allocator);
+    var names = std.StringHashMap(usize).init(ctx.allocator);
+    for (declarations) |decl| {
+        const entry = try names.getOrPut(decl.name);
+        if (!entry.found_existing) entry.value_ptr.* = 0;
+        try ordinals.put(decl.start, entry.value_ptr.*);
+        entry.value_ptr.* += 1;
+    }
     var sites: std.ArrayList(Site) = .empty;
     for (0..tree.nodes.len) |index| {
         const node: Ast.Node.Index = @fromBackingInt(@intCast(index));
@@ -96,13 +136,17 @@ pub fn discover(ctx: *c.Context, bytes: Str, calls: []const Str, copies: []const
         for (declarations) |decl| {
             if (decl.start <= pos and pos < decl.end and (owner == null or decl.end - decl.start < owner.?.end - owner.?.start)) owner = decl;
         }
-        const decl = owner orelse continue;
+        const decl = owner orelse file_scope;
         const op = operation(tree, node, calls, copies, decl.returns_view or c.oneOf(decl.name, returns)) orelse continue;
         const location = tree.tokenLocation(0, op.token);
         const obligations = try ctx.allocator.alloc(Obligation, op.obligations.len);
-        for (op.obligations, obligations) |kind, *item| item.* = .{ .kind = kind };
+        for (op.obligations, obligations) |kind, *item| item.* = .{ .kind = kind, .state = if (op.unexamined) .unexamined else .open };
         try sites.append(ctx.allocator, .{
             .function = decl.name,
+            .declarationOrdinal = if (owner != null) ordinals.get(decl.start).? else 0,
+            .callee = op.callee,
+            .expressionStart = tree.tokenStart(tree.firstToken(node)),
+            .expressionEnd = tree.tokenStart(tree.lastToken(node)) + tree.tokenSlice(tree.lastToken(node)).len,
             .declarationSha256 = decl.sha,
             .operation = op.name,
             .occurrence = 0,
@@ -116,7 +160,7 @@ pub fn discover(ctx: *c.Context, bytes: Str, calls: []const Str, copies: []const
     std.mem.sort(Site, sites.items, {}, earlier);
     var counts = std.StringHashMap(usize).init(ctx.allocator);
     for (sites.items) |*site| {
-        const entry = try counts.getOrPut(try ctx.fmt("{d}:{s}", .{ site.declarationStart, site.operation }));
+        const entry = try counts.getOrPut(try ctx.json(.{ site.function, site.declarationOrdinal, site.operation }));
         if (!entry.found_existing) entry.value_ptr.* = 0;
         site.occurrence = entry.value_ptr.*;
         entry.value_ptr.* += 1;
@@ -225,6 +269,10 @@ pub fn run(ctx: *c.Context, io: std.Io, directory: Str, intent_path: ?Str, sourc
         try ctx.require(!inventory.object.contains(source.path), "duplicate memory source");
         const bytes = try files.readContained(ctx, io, repo, source.path);
         const sites = try discover(ctx, bytes, source.calls, source.copies, source.returns);
+        for (sites) |*site| {
+            const identity = try ctx.json(.{ source.path, site.function, site.declarationOrdinal, site.operation, site.occurrence });
+            site.id = try ctx.allocator.dupe(u8, &c.digest(identity));
+        }
         var stale: std.ArrayList(Review) = .empty;
         var context_current = true;
         for (source.context) |binding| {
@@ -289,5 +337,5 @@ pub fn run(ctx: *c.Context, io: std.Io, directory: Str, intent_path: ?Str, sourc
         try inventory.object.put(ctx.allocator, source.path, try ctx.parse(try ctx.json(.{ .sha256 = &c.digest(bytes), .sites = sites, .stale = stale.items })));
     }
     const target = c.get(try ctx.parse(project), "captureTarget") orelse c.Value.null;
-    return ctx.parse(try ctx.json(.{ .schema = "zean.memory-report.v1", .sourceSafetyVerified = false, .nativeRefinementVerified = false, .target = target, .files = inventory }));
+    return ctx.parse(try ctx.json(.{ .schema = "zean.memory-report.v1", .discovery = "zig-ast-v2", .coverageComplete = false, .sourceSafetyVerified = false, .nativeRefinementVerified = false, .target = target, .files = inventory }));
 }

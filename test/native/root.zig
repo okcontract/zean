@@ -682,7 +682,7 @@ test "memory sites keep independent source obligations and lexical owners" {
         \\fn view(s: []u8) []u8 { return s; }
         \\fn install(dst: []u8, src: []const u8) void { copy(dst, src, src.len); }
     , &.{}, &.{"copy"}, &.{});
-    try std.testing.expectEqual(@as(usize, 5), sites.len);
+    try std.testing.expectEqual(@as(usize, 6), sites.len);
     try std.testing.expectEqualStrings("@memcpy", sites[0].operation);
     try std.testing.expectEqual(@as(usize, 3), sites[0].line);
     try std.testing.expectEqualStrings("disjoint", sites[0].obligations[2].kind);
@@ -695,6 +695,21 @@ test "memory sites keep independent source obligations and lexical owners" {
     for (sites[0].obligations, sites[4].obligations) |primitive, caller| {
         try std.testing.expectEqualStrings(primitive.kind, caller.kind);
         try std.testing.expectEqual(.open, caller.state);
+    }
+}
+
+test "casts, memory accesses and unexamined calls each retain a source site" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx: z.common.Context = .{ .allocator = arena.allocator() };
+    const sites = try z.memory_report.discover(&ctx, "fn read(p: *Reader, i: usize) void { const d: *Decoder = @alignCast(@fieldParentPtr(\"reader\", p)); d.items[i].* = callback(p); }", &.{}, &.{}, &.{});
+    const expected = [_][]const u8{ "@alignCast", "@fieldParentPtr", "index", "deref", "write", "callback" };
+    for (expected) |name| {
+        for (sites) |site| {
+            if (!std.mem.eql(u8, name, site.operation)) continue;
+            if (std.mem.eql(u8, name, "callback")) try std.testing.expectEqual(.unexamined, site.obligations[0].state);
+            break;
+        } else return error.MissingMemorySite;
     }
 }
 
