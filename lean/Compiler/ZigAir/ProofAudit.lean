@@ -40,3 +40,40 @@ def Compiler.ZigAir.ProofAudit.theoremAxioms (groups : Array (Array String × Ar
       let axioms ← auditProof theoremName.toName (some owners)
       result := result.setObjVal! theoremName (toJson ((axioms.map Name.toString).qsort (· < ·)))
   return result
+
+/-- Fresh replay modules intentionally have random names. Restore only the private-name
+    prefix of an actual module in this replay, preserving both its owner and local name. -/
+private def stableName (modules : List (String × String)) : Name → Name
+  | .str (.str .anonymous "_private") m =>
+    match modules.lookup m with
+    | some owner => `_private ++ owner.toName
+    | none => Name.str `_private m
+  | .str p s => .str (stableName modules p) s
+  | .num p i => .num (stableName modules p) i
+  | .anonymous => .anonymous
+
+/-- Encode the closed kernel type independently of local binder names, layout and pretty-printer
+    settings. Constants and universe levels remain explicit. A change to a referenced definition
+    is covered separately by the replay's input and library identities. -/
+private partial def statementTree (normalize : Name → Name) : Expr → Except String Json
+  | .bvar n => pure <| toJson ("bound", n)
+  | .sort u => pure <| toJson ("sort", reprStr u)
+  | .const n us => pure <| toJson ("const", reprStr (normalize n), us.map reprStr)
+  | .app f x => return Json.arr #["app", ← statementTree normalize f, ← statementTree normalize x]
+  | .lam _ t b i => return Json.arr #["lam", toJson (reprStr i), ← statementTree normalize t, ← statementTree normalize b]
+  | .forallE _ t b i => return Json.arr #["forall", toJson (reprStr i), ← statementTree normalize t, ← statementTree normalize b]
+  | .letE _ t v b d => return Json.arr #["let", ← statementTree normalize t, ← statementTree normalize v, ← statementTree normalize b, toJson d]
+  | .lit l => pure <| toJson ("literal", reprStr l)
+  | .proj n i x => return Json.arr #["proj", toJson (reprStr (normalize n)), toJson i, ← statementTree normalize x]
+  | .mdata _ x => statementTree normalize x
+  | .mvar _ | .fvar _ => throw "theorem type contains a free variable"
+
+/-- The consumer hashes these encodings and retains the separately audited axiom set. -/
+def Compiler.ZigAir.ProofAudit.theoremStatements (names : List String)
+    (modules : List (String × String) := []) : CommandElabM Json := do
+  let mut statements := Json.mkObj []
+  for name in names do
+    let some (.thmInfo info) := (← getEnv).find? name.toName | throwError "unknown theorem {name}"
+    let .ok tree := statementTree (stableName modules) info.type | throwError "invalid kernel type for {name}"
+    statements := statements.setObjVal! name (toJson (info.levelParams.map reprStr, tree))
+  return statements

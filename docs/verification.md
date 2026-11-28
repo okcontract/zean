@@ -35,6 +35,9 @@ all_goals air_vcgen
 air_word_finish [Spec.exhausted, Spec.rejected, Spec.replaced]
 ```
 
+For source locations, named copy premises and reviewed caller obligations, see
+the [memory report workflow](memory-report.md).
+
 For byte copies, use `air_byte_vcgen` and `air_byte_finish [yourFacts]`.
 `air_byte_reads`, `air_byte_writes`, and `air_byte_subviews` apply rules to
 initialized reads, writes, and checked subviews. Fallback specifications use

@@ -26,7 +26,7 @@ const Config = struct {
     capture_target: ?capture.Target = null,
 };
 
-fn parseConfig(ctx: *c.Context, bytes: []const u8) !Config {
+pub fn parseConfig(ctx: *c.Context, bytes: []const u8) !Config {
     const value = try ctx.parse(bytes);
     try ctx.require(c.tag(value, "schema", "zean.project.v1"), "zean.json requires schema zean.project.v1");
     for (value.object.keys()) |key| {
@@ -70,9 +70,9 @@ fn parseConfig(ctx: *c.Context, bytes: []const u8) !Config {
     return config;
 }
 
-const ReplayVisit = enum { visiting, done };
+pub const ReplayVisit = enum { visiting, done };
 
-fn collectReplayPlans(ctx: *c.Context, io: std.Io, repo: Dir, config: *Config, path: []const u8, ordered: *std.ArrayList(client.Plan), seen: *std.StringHashMap(ReplayVisit)) anyerror!void {
+pub fn collectReplayPlans(ctx: *c.Context, io: std.Io, repo: Dir, config: *Config, path: []const u8, ordered: *std.ArrayList(client.Plan), seen: *std.StringHashMap(ReplayVisit)) anyerror!void {
     if (seen.get(path)) |mark| {
         if (mark == .visiting) return ctx.fail("cyclic client dependency at {s}", .{path});
         return;
@@ -378,7 +378,7 @@ fn publishModel(ctx: *c.Context, io: std.Io, repo: Dir, model: Model) !void {
     if (exists) try file.replace(io) else try file.link(io);
 }
 
-fn sameModel(previous: []const u8, fresh: []const u8) bool {
+pub fn sameModel(previous: []const u8, fresh: []const u8) bool {
     var old_lines = std.mem.splitScalar(u8, previous, '\n');
     var new_lines = std.mem.splitScalar(u8, fresh, '\n');
     while (old_lines.next()) |old| {
