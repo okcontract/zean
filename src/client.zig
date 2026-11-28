@@ -325,7 +325,7 @@ fn captureArtifacts(ctx: *c.Context, io: std.Io, directory: []const u8, generate
     }
 }
 
-const ProofModule = struct { fresh: []const u8, source: []const u8, body: []const u8, generated: bool };
+const ProofModule = struct { original: []const u8, fresh: []const u8, source: []const u8, body: []const u8, generated: bool };
 const ProofPlan = struct { modules: []const ProofModule, obligations: []const []const u8 };
 
 pub fn planProofs(ctx: *c.Context, inputs: []const ReplayInput, prefix: []const u8) !ProofPlan {
@@ -353,7 +353,7 @@ pub fn planProofs(ctx: *c.Context, inputs: []const ReplayInput, prefix: []const 
                     return ctx.fail("conflicting replay module {s}", .{original});
             } else {
                 const fresh = try ctx.fmt("{s}_{d}", .{ prefix, entry.index });
-                entry.value_ptr.* = .{ .fresh = fresh, .source = source, .body = body, .generated = generated };
+                entry.value_ptr.* = .{ .original = original, .fresh = fresh, .source = source, .body = body, .generated = generated };
             }
             const fresh = entry.value_ptr.fresh;
             try visible.put(ctx.allocator, original, .{ .original = original, .fresh = fresh });
@@ -401,16 +401,20 @@ fn checkProofs(ctx: *c.Context, io: std.Io, options: RunOptions, environment: *c
     try audit.append(ctx.allocator, "import Compiler.ZigAir.ProofAudit\n");
     for (plan.modules) |module| try audit.append(ctx.allocator, try ctx.fmt("import {s}\n", .{module.fresh}));
     const axioms_path = try files.join(ctx, &.{ output, "theorem-axioms.json" });
+    var identities: std.ArrayList([]const u8) = .empty;
+    for (plan.modules) |module| try identities.append(ctx.allocator, try ctx.fmt("({s}, {s})", .{
+        try z.certificate.string(ctx, module.fresh), try z.certificate.string(ctx, module.original),
+    }));
     const statements_path = try files.join(ctx, &.{ output, "theorem-statements.json" });
     try audit.append(ctx.allocator, try ctx.fmt(
         \\run_cmd do
         \\  let groups : Array (Array String × Array String) := #[{s}]
         \\  let axioms ← Compiler.ZigAir.ProofAudit.theoremAxioms groups
-        \\  let statements ← Compiler.ZigAir.ProofAudit.theoremStatements (groups.toList.flatMap fun group => group.1.toList)
+        \\  let statements ← Compiler.ZigAir.ProofAudit.theoremStatements (groups.toList.flatMap fun group => group.1.toList) [{s}]
         \\  IO.FS.writeFile {s} axioms.compress
         \\  IO.FS.writeFile {s} statements.compress
         \\
-    , .{ try std.mem.join(ctx.allocator, ",\n    ", plan.obligations), try z.certificate.string(ctx, axioms_path), try z.certificate.string(ctx, statements_path) }));
+    , .{ try std.mem.join(ctx.allocator, ",\n    ", plan.obligations), try std.mem.join(ctx.allocator, ", ", identities.items), try z.certificate.string(ctx, axioms_path), try z.certificate.string(ctx, statements_path) }));
     const auditPath = try files.join(ctx, &.{ output, "Audit.lean" });
     const auditBytes = try std.mem.concat(ctx.allocator, u8, audit.items);
     try files.write(io, auditPath, auditBytes);
