@@ -32,6 +32,27 @@ to obtain the installed bytes and heap frame. The copy automation control withho
 the remaining `disjoint` goal. The empty-copy path and each capture adapter's
 argument ABI have their own entry conditions.
 
+A complete caller proof is shown below. Delete the `disjoint` argument to
+inspect the remaining `case disjoint` goal at `air_copy_ranges`.
+
+```lean
+import Compiler.ZigAir.Verify.Bytes
+
+open Compiler.ZigAir.Memory Compiler.ZigAir.Memory.ByteArray
+
+example (valid : s.valid = true) (nonempty : 0 < count)
+    (writable : Region s dst true) (readable : Region s src false)
+    (dstBound : atDst + count ≤ dst.length) (srcBound : atSrc + count ≤ src.length)
+    (initialized : Represents s (src.window atSrc count) bytes)
+    (disjoint : Disjoint (src.window atSrc count) (dst.window atDst count)) :
+    ∃ after_, ByteRange.copy s ((dst.window atDst count).slice true)
+      ((src.window atSrc count).pointer false true) = (.ok (), after_) ∧
+      after_.valid = true ∧ Represents after_ (dst.window atDst count) bytes ∧
+      HeapFrame (dst.window atDst count) s after_ := by
+  have ranges : CopyRanges s dst src atDst atSrc count bytes := by air_copy_ranges
+  exact ranges.copy valid nonempty
+```
+
 ## Review a candidate
 
 Copy the declaration digest, function and operation from the initial scan.
