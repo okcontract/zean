@@ -22,7 +22,7 @@ pub const Review = struct {
 };
 
 const Binding = struct { path: Str, sha256: Str };
-const Source = struct { path: Str, context: []const Binding = &.{}, calls: []const Str = &.{}, returns: []const Str = &.{}, reviews: []const Review = &.{} };
+const Source = struct { path: Str, context: []const Binding = &.{}, calls: []const Str = &.{}, copies: []const Str = &.{}, returns: []const Str = &.{}, reviews: []const Review = &.{} };
 const Intent = struct { schema: Str, sources: []const Source };
 const Operation = struct { name: Str, token: Ast.TokenIndex, obligations: []const Str };
 const Obligation = struct {
@@ -45,7 +45,9 @@ pub const Site = struct {
     obligations: []Obligation,
 };
 
-fn operation(tree: Ast, node: Ast.Node.Index, calls: []const Str, returns_view: bool) ?Operation {
+const copy_obligations: []const Str = &.{ "source-bounds", "destination-bounds", "disjoint", "initialized", "live-ranges", "contents", "frame" };
+
+fn operation(tree: Ast, node: Ast.Node.Index, calls: []const Str, copies: []const Str, returns_view: bool) ?Operation {
     const main = tree.nodeMainToken(node);
     if (tree.fullSlice(node) != null) return .{ .name = "slice", .token = main, .obligations = &.{ "bounds", "lifetime" } };
     if (tree.nodeTag(node) == .@"return" and returns_view) {
@@ -56,7 +58,7 @@ fn operation(tree: Ast, node: Ast.Node.Index, calls: []const Str, returns_view: 
     var builtin: [2]Ast.Node.Index = undefined;
     if (tree.builtinCallParams(&builtin, node) != null) {
         const name = tree.tokenSlice(main);
-        if (std.mem.eql(u8, name, "@memcpy")) return .{ .name = name, .token = main, .obligations = &.{ "source-bounds", "destination-bounds", "disjoint", "initialized", "live-ranges", "contents", "frame" } };
+        if (std.mem.eql(u8, name, "@memcpy")) return .{ .name = name, .token = main, .obligations = copy_obligations };
         if (std.mem.eql(u8, name, "@memmove")) return .{ .name = name, .token = main, .obligations = &.{ "source-bounds", "destination-bounds", "initialized", "live-ranges", "contents", "frame" } };
     }
     var buf: [1]Ast.Node.Index = undefined;
@@ -65,7 +67,7 @@ fn operation(tree: Ast, node: Ast.Node.Index, calls: []const Str, returns_view: 
     if (tree.nodeTag(callee) != .field_access and tree.nodeTag(callee) != .identifier) return null;
     const token = tree.lastToken(callee);
     const name = tree.tokenSlice(token);
-    const obligations: []const Str = if (c.oneOf(name, &.{ "alloc", "create", "dupe", "realloc", "resize", "ensureUnusedCapacity", "ensureTotalCapacity", "toOwnedSlice", "concat" }))
+    const obligations: []const Str = if (c.oneOf(name, copies)) copy_obligations else if (c.oneOf(name, &.{ "alloc", "create", "dupe", "realloc", "resize", "ensureUnusedCapacity", "ensureTotalCapacity", "toOwnedSlice", "concat" }))
         &.{ "ownership", "allocation-failure" }
     else if (c.oneOf(name, &.{ "free", "destroy", "deinit" }))
         &.{ "owns-on-release", "released-once" }
@@ -80,7 +82,7 @@ fn earlier(_: void, a: Site, b: Site) bool {
     return a.startByte < b.startByte;
 }
 
-pub fn discover(ctx: *c.Context, bytes: Str, calls: []const Str, returns: []const Str) ![]Site {
+pub fn discover(ctx: *c.Context, bytes: Str, calls: []const Str, copies: []const Str, returns: []const Str) ![]Site {
     var parsed = try z.source.Declarations.init(ctx, bytes);
     defer parsed.deinit();
     const tree = parsed.tree;
@@ -95,7 +97,7 @@ pub fn discover(ctx: *c.Context, bytes: Str, calls: []const Str, returns: []cons
             if (decl.start <= pos and pos < decl.end and (owner == null or decl.end - decl.start < owner.?.end - owner.?.start)) owner = decl;
         }
         const decl = owner orelse continue;
-        const op = operation(tree, node, calls, decl.returns_view or c.oneOf(decl.name, returns)) orelse continue;
+        const op = operation(tree, node, calls, copies, decl.returns_view or c.oneOf(decl.name, returns)) orelse continue;
         const location = tree.tokenLocation(0, op.token);
         const obligations = try ctx.allocator.alloc(Obligation, op.obligations.len);
         for (op.obligations, obligations) |kind, *item| item.* = .{ .kind = kind };
@@ -222,7 +224,7 @@ pub fn run(ctx: *c.Context, io: std.Io, directory: Str, intent_path: ?Str, sourc
     for (paths.items) |source| {
         try ctx.require(!inventory.object.contains(source.path), "duplicate memory source");
         const bytes = try files.readContained(ctx, io, repo, source.path);
-        const sites = try discover(ctx, bytes, source.calls, source.returns);
+        const sites = try discover(ctx, bytes, source.calls, source.copies, source.returns);
         var stale: std.ArrayList(Review) = .empty;
         var context_current = true;
         for (source.context) |binding| {
@@ -265,8 +267,27 @@ pub fn run(ctx: *c.Context, io: std.Io, directory: Str, intent_path: ?Str, sourc
             }
             if (!matched) try stale.append(ctx.allocator, review);
         }
+        // Keep obsolete reviews visible on a surviving, unambiguous source site.
+        // Removed or ambiguous sites remain in the file-level list.
+        for (stale.items) |review| {
+            var candidate: ?*Obligation = null;
+            var count: usize = 0;
+            for (sites) |site| {
+                if (!std.mem.eql(u8, site.operation, review.operation) or !std.mem.eql(u8, site.function, review.function) or
+                    site.occurrence != review.occurrence) continue;
+                for (site.obligations) |*item| {
+                    if (!std.mem.eql(u8, item.kind, review.obligation)) continue;
+                    count += 1;
+                    candidate = item;
+                }
+            }
+            if (count == 1 and candidate.?.detail == null) {
+                candidate.?.state = .stale;
+                candidate.?.detail = review.detail;
+            }
+        }
         try inventory.object.put(ctx.allocator, source.path, try ctx.parse(try ctx.json(.{ .sha256 = &c.digest(bytes), .sites = sites, .stale = stale.items })));
     }
     const target = c.get(try ctx.parse(project), "captureTarget") orelse c.Value.null;
-    return ctx.parse(try ctx.json(.{ .schema = "zean.memory-report.v1", .target = target, .files = inventory }));
+    return ctx.parse(try ctx.json(.{ .schema = "zean.memory-report.v1", .sourceSafetyVerified = false, .nativeRefinementVerified = false, .target = target, .files = inventory }));
 }

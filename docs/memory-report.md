@@ -16,7 +16,8 @@ destination bounds, separation, initialization, live ranges, contents and
 frame obligations. A memmove permits overlap. Allocation, release and returns
 from declarations with syntactically visible pointer/slice result types have
 their own obligations. Method spellings are candidates. Project intent can
-name additional call spellings in `calls` and aggregate-returning functions in
+name initialized memcpy wrappers in `copies` to enumerate the same premises at
+each caller, additional call spellings in `calls`, and aggregate-returning functions in
 `returns`. Each entry under `sources` selects one project-relative Zig file.
 
 ## Describe a copy

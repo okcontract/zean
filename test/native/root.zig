@@ -680,14 +680,22 @@ test "memory sites keep independent source obligations and lexical owners" {
         \\    @memcpy(dst[0..n], src[0..n]);
         \\}
         \\fn view(s: []u8) []u8 { return s; }
-    , &.{}, &.{});
-    try std.testing.expectEqual(@as(usize, 4), sites.len);
+        \\fn install(dst: []u8, src: []const u8) void { copy(dst, src, src.len); }
+    , &.{}, &.{"copy"}, &.{});
+    try std.testing.expectEqual(@as(usize, 5), sites.len);
     try std.testing.expectEqualStrings("@memcpy", sites[0].operation);
     try std.testing.expectEqual(@as(usize, 3), sites[0].line);
     try std.testing.expectEqualStrings("disjoint", sites[0].obligations[2].kind);
     try std.testing.expectEqual(.open, sites[0].obligations[2].state);
     try std.testing.expectEqualStrings("view", sites[3].function);
     try std.testing.expectEqualStrings("return", sites[3].operation);
+    try std.testing.expectEqualStrings("install", sites[4].function);
+    try std.testing.expectEqualStrings("copy", sites[4].operation);
+    try std.testing.expectEqual(sites[0].obligations.len, sites[4].obligations.len);
+    for (sites[0].obligations, sites[4].obligations) |primitive, caller| {
+        try std.testing.expectEqualStrings(primitive.kind, caller.kind);
+        try std.testing.expectEqual(.open, caller.state);
+    }
 }
 
 test "withholding disjointness leaves exactly that memcpy premise open" {
@@ -725,4 +733,8 @@ test "withholding disjointness leaves exactly that memcpy premise open" {
     const changed = try z.memory_report.run(&ctx, io, directory, "intent.json", &.{}, &.{});
     const file = try ctx.field(try ctx.field(changed, "files"), path);
     try std.testing.expectEqual(@as(usize, 6), (try ctx.array(try ctx.field(file, "stale"))).len);
+    const copy = (try ctx.array(try ctx.field(file, "sites")))[0];
+    for (try ctx.array(try ctx.field(copy, "obligations"))) |item| {
+        try std.testing.expect(z.common.tag(item, "state", if (z.common.tag(item, "kind", "disjoint")) "open" else "stale"));
+    }
 }
