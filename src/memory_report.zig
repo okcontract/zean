@@ -33,6 +33,8 @@ const Obligation = struct {
     manifest: ?Str = null,
     theorem: ?Str = null,
     replaySha256: ?Str = null,
+    statementSha256: ?Str = null,
+    theoremAxioms: ?[]const Str = null,
 };
 pub const Site = struct {
     id: Str = "",
@@ -170,7 +172,7 @@ pub fn discover(ctx: *c.Context, bytes: Str, calls: []const Str, copies: []const
 }
 
 const Replay = struct { path: Str, bytes: Str, report: c.Value };
-const Evidence = struct { state: @FieldType(Obligation, "state"), sha: ?Str = null };
+const Evidence = struct { state: @FieldType(Obligation, "state"), sha: ?Str = null, statement: ?Str = null, axioms: ?[]const Str = null };
 const Checker = struct {
     ctx: *c.Context,
     io: std.Io,
@@ -198,9 +200,13 @@ const Checker = struct {
             }
             const sha = try ctx.allocator.dupe(u8, &c.digest(replay.bytes));
             const axioms = c.get(replay.report, "theoremAxioms") orelse .null;
+            const statement = c.get(c.get(replay.report, "theoremStatementSha256") orelse .null, theorem);
+            const digest: ?Str = if (statement) |v| (if (v == .string and c.isDigest(v.string)) v.string else null) else null;
+            const names = c.get(axioms, theorem);
+            const audited = if (names) |v| try z.client.strings(ctx, v) else null;
             var current = named and c.tag(replay.report, "schema", "zean.client-replay.v1") and
                 c.tag(replay.report, "projectSha256", &c.digest(self.project)) and
-                c.flag(replay.report, "modelProofsChecked", true) and c.get(axioms, theorem) != null and
+                c.flag(replay.report, "modelProofsChecked", true) and audited != null and digest != null and
                 try self.matches(plan, replay.report, replay.path, config.lean_dir);
             var plans: std.ArrayList(z.client.Plan) = .empty;
             var seen = std.StringHashMap(z.project.ReplayVisit).init(ctx.allocator);
@@ -221,7 +227,7 @@ const Checker = struct {
                 const child = try ctx.read(self.io, child_path, c.max_json_bytes);
                 current = c.tag(reference, "sha256", &c.digest(child)) and try self.matches(dep, try ctx.parse(child), child_path, config.lean_dir);
             }
-            evidence = .{ .state = if (current) .proved else .stale, .sha = sha };
+            evidence = .{ .state = if (current) .proved else .stale, .sha = sha, .statement = digest, .axioms = audited };
             if (current) break;
         }
         try self.cache.put(key, evidence);
@@ -310,6 +316,8 @@ pub fn run(ctx: *c.Context, io: std.Io, directory: Str, intent_path: ?Str, sourc
                     if (review.theorem) |name| {
                         const result = try checker.check(review.manifest.?, name);
                         item.replaySha256 = result.sha;
+                        item.statementSha256 = result.statement;
+                        item.theoremAxioms = result.axioms;
                         item.state = result.state;
                     }
                 }
