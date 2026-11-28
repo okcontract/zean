@@ -7,13 +7,10 @@ const z = @import("root.zig");
 const c = z.common;
 const files = @import("files.zig");
 
-pub fn declarations(ctx: *c.Context, bytes: []const u8) !c.Value {
-    var parsed = try z.source.Declarations.init(ctx, bytes);
-    defer parsed.deinit();
-    const tree = parsed.tree;
-    var entries: c.Value = .{ .array = std.array_list.Managed(c.Value).init(ctx.allocator) };
-    // Inventory every named function node, including private methods, generic
-    // containers and nested declarations. Byte spans disambiguate same names.
+pub const FunctionRange = struct { name: []const u8, start: usize, end: usize, sha: []const u8, returns_view: bool };
+
+pub fn functionRanges(ctx: *c.Context, tree: std.zig.Ast) ![]FunctionRange {
+    var ranges: std.ArrayList(FunctionRange) = .empty;
     for (0..tree.nodes.len) |raw_index| {
         const node: std.zig.Ast.Node.Index = @fromBackingInt(@intCast(raw_index));
         if (tree.nodeTag(node) != .fn_decl) continue;
@@ -23,8 +20,25 @@ pub fn declarations(ctx: *c.Context, bytes: []const u8) !c.Value {
         const first = tree.tokenStart(tree.firstToken(node));
         const last = tree.lastToken(node);
         const end = tree.tokenStart(last) + tree.tokenSlice(last).len;
-        try entries.array.append(try ctx.parse(try ctx.json(.{ .name = tree.tokenSlice(name), .startByte = first, .endByte = end, .declarationSha256 = &c.digest(bytes[first..end]) })));
+        var view = false;
+        if (function.ast.return_type.unwrap()) |ty| {
+            var token = tree.firstToken(ty);
+            while (token <= tree.lastToken(ty)) : (token += 1) {
+                if (tree.tokenTag(token) == .asterisk or
+                    (tree.tokenTag(token) == .l_bracket and tree.tokenTag(token + 1) == .r_bracket)) view = true;
+            }
+        }
+        try ranges.append(ctx.allocator, .{ .name = tree.tokenSlice(name), .start = first, .end = end, .sha = try ctx.allocator.dupe(u8, &c.digest(tree.source[first..end])), .returns_view = view });
     }
+    return ranges.items;
+}
+
+pub fn declarations(ctx: *c.Context, bytes: []const u8) !c.Value {
+    var parsed = try z.source.Declarations.init(ctx, bytes);
+    defer parsed.deinit();
+    var entries: c.Value = .{ .array = std.array_list.Managed(c.Value).init(ctx.allocator) };
+    for (try functionRanges(ctx, parsed.tree)) |range|
+        try entries.array.append(try ctx.parse(try ctx.json(.{ .name = range.name, .startByte = range.start, .endByte = range.end, .declarationSha256 = range.sha })));
     return entries;
 }
 

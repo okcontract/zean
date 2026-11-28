@@ -72,7 +72,7 @@ pub fn build(b: *std.Build) void {
     const run = b.addRunArtifact(executable);
     run.addPassthruArgs();
     b.step("run", "Run the native Zig-to-Lean tool").dependOn(&run.step);
-    inline for (.{ "capture", "toolchain", "check-patch", "audit", "admission", "verify-client", "allocator-evaluate" }) |command| {
+    inline for (.{ "capture", "toolchain", "check-patch", "audit", "admission", "verify-client", "allocator-evaluate", "memory" }) |command| {
         const command_run = b.addRunArtifact(executable);
         command_run.addArg(command);
         command_run.addPassthruArgs();

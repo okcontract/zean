@@ -52,3 +52,5 @@ pub const evidence = @import("evidence.zig");
 pub const files = @import("files.zig");
 pub const call_closure = @import("call_closure.zig");
 pub const lean_toolchain = @import("build_options").lean_toolchain;
+
+pub const memory_report = @import("memory_report.zig");

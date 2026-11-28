@@ -669,3 +669,60 @@ test "interruption reaps the entire child group and retains actual terminal stat
     const receipt = try ctx.parse(try ctx.read(std.testing.io, try std.fs.path.join(ctx.allocator, &.{ path, "interrupt.process.json" }), 65536));
     try std.testing.expect(z.common.tag(receipt, "status", "failed") and z.common.tag(receipt, "error", "Interrupted") and try ctx.integer(try ctx.field(receipt, "exitCode")) < 0);
 }
+
+test "memory sites keep independent source obligations and lexical owners" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx: z.common.Context = .{ .allocator = arena.allocator() };
+    const sites = try z.memory_report.discover(&ctx,
+        \\fn copy(dst: []u8, src: []const u8, n: usize) void {
+        \\    // @memcpy here is a comment
+        \\    @memcpy(dst[0..n], src[0..n]);
+        \\}
+        \\fn view(s: []u8) []u8 { return s; }
+    , &.{}, &.{});
+    try std.testing.expectEqual(@as(usize, 4), sites.len);
+    try std.testing.expectEqualStrings("@memcpy", sites[0].operation);
+    try std.testing.expectEqual(@as(usize, 3), sites[0].line);
+    try std.testing.expectEqualStrings("disjoint", sites[0].obligations[2].kind);
+    try std.testing.expectEqual(.open, sites[0].obligations[2].state);
+    try std.testing.expectEqualStrings("view", sites[3].function);
+    try std.testing.expectEqualStrings("return", sites[3].operation);
+}
+
+test "withholding disjointness leaves exactly that memcpy premise open" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx: z.common.Context = .{ .allocator = arena.allocator() };
+    const source = "fn copy(d: []u8, s: []const u8, n: usize) void { @memcpy(d[0..n], s[0..n]); }";
+    const path = "copy.zig";
+    try tmp.dir.writeFile(io, .{ .sub_path = path, .data = source });
+    try tmp.dir.writeFile(io, .{ .sub_path = "zean.json", .data = "{}" });
+    const directory = try tmp.dir.realPathFileAlloc(io, ".", ctx.allocator);
+    var reviews: std.ArrayList(z.memory_report.Review) = .empty;
+    const sha = z.common.digest(source);
+    for ([_][]const u8{ "source-bounds", "destination-bounds", "initialized", "live-ranges", "contents", "frame", "disjoint" }) |kind| {
+        try reviews.append(ctx.allocator, .{ .function = "copy", .operation = "@memcpy", .declarationSha256 = &sha, .obligation = kind, .detail = "fixture premise", .external = true });
+    }
+    for ([_]usize{ 7, 6 }) |supplied| {
+        const intent = try ctx.json(.{ .schema = "zean.memory-intent.v1", .sources = .{.{ .path = path, .reviews = reviews.items[0..supplied] }} });
+        try tmp.dir.writeFile(io, .{ .sub_path = "intent.json", .data = intent });
+        const report = try z.memory_report.run(&ctx, io, directory, "intent.json", &.{}, &.{});
+        const file = try ctx.field(try ctx.field(report, "files"), path);
+        const copy = (try ctx.array(try ctx.field(file, "sites")))[0];
+        try std.testing.expect(z.common.tag(copy, "operation", "@memcpy"));
+        try std.testing.expectEqual(@as(u64, 1), try ctx.nat(try ctx.field(copy, "line"), 10));
+        for (try ctx.array(try ctx.field(copy, "obligations"))) |item| {
+            const missing = supplied == 6 and z.common.tag(item, "kind", "disjoint");
+            try std.testing.expect(z.common.tag(item, "state", if (missing) "open" else "external"));
+        }
+    }
+    // A changed declaration, even at the identical location, loses its reviewed premises.
+    try tmp.dir.writeFile(io, .{ .sub_path = path, .data = "fn copy(d: []u8, s: []const u8, n: usize) void { @memcpy(d[1..n], s[0..n]); }" });
+    const changed = try z.memory_report.run(&ctx, io, directory, "intent.json", &.{}, &.{});
+    const file = try ctx.field(try ctx.field(changed, "files"), path);
+    try std.testing.expectEqual(@as(usize, 6), (try ctx.array(try ctx.field(file, "stale"))).len);
+}
