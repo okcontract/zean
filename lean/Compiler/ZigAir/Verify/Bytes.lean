@@ -26,6 +26,32 @@ structure CopyRanges (s : State) (dst src : View) (atDst atSrc count : Nat)
   initialized : Represents s (src.window atSrc count) contents
   disjoint : Disjoint (src.window atSrc count) (dst.window atDst count)
 
+theorem Region.window {write : Bool} (h : Region s v write) (inside : start < v.length) (bound : start + count ≤ v.length) :
+    Region s (v.window start count) write := by
+  obtain ⟨layout, cell, found, shape, permission, low, high, declared⟩ := h
+  refine ⟨layout, cell, found, shape, permission, ?_, ?_, ?_⟩
+  · simp only [View.window, View.at]; omega
+  · simp only [View.window, View.at]; omega
+  · intro i hi
+    have byte := declared (start+i) (by change i < count at hi; omega)
+    simpa only [View.window, View.at, Nat.add_assoc] using byte
+
+/-- The byte transfer for a bounded, initialized source window. All addresses
+and offsets are expressed as views. The frame covers every read outside the
+selected destination, including the remainder of the same allocation. -/
+theorem CopyRanges.copy (ranges : CopyRanges s dst src atDst atSrc count contents)
+    (valid : s.valid = true) (nonempty : 0 < count) :
+    let d := dst.window atDst count
+    let r := src.window atSrc count
+    ∃ after_, ByteRange.copy s (d.slice true) (r.pointer false true) = (.ok (), after_) ∧
+      after_.valid = true ∧ Represents after_ d contents ∧ HeapFrame d s after_ := by
+  have db := ranges.dstBound
+  have sb := ranges.srcBound
+  obtain ⟨after_, ran, safe, _, _, _, filled, frame⟩ := copy_refines valid
+    (ranges.readable.window (by omega) sb) (ranges.writable.window (by omega) db)
+    ranges.initialized ranges.disjoint (count := count) (Nat.le_refl _) (Nat.le_refl _)
+  exact ⟨after_,ran,safe,filled,frame⟩
+
 /-- Split a source-level copy contract into named premises and discharge facts
 already in scope. Missing premises retain their field names in the goal view. -/
 macro "air_copy_ranges" : tactic => `(tactic|
