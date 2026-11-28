@@ -152,4 +152,18 @@ theorem counter_frame (before after : State) (older newer : Nat) (a b : Int)
   air_byte_prepare
   assumption
 
+/-- Removing separation leaves precisely that obligation on a routine copy. -/
+example (write : Region s dst true) (read : Region s src false)
+    (dstBound : atDst + n ≤ dst.length) (srcBound : atSrc + n ≤ src.length)
+    (bytes : Represents s (src.window atSrc n) contents) :
+    Disjoint (src.window atSrc n) (dst.window atDst n) → CopyRanges s dst src atDst atSrc n contents := by
+  intro apart
+  have delayed : Unit → Disjoint (src.window atSrc n) (dst.window atDst n) := fun _ => apart
+  clear apart
+  fail_if_success (solve | air_copy_ranges)
+  air_copy_ranges
+  case disjoint =>
+    guard_target = Disjoint (src.window atSrc n) (dst.window atDst n)
+    exact delayed ()
+
 end Compiler.Tests.ZigAir.MemoryByteAutomationControls
