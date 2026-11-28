@@ -5,6 +5,7 @@ const std = @import("std");
 const c = @import("common.zig");
 const files = @import("files.zig");
 const z = @import("root.zig");
+pub const compilerObservations = @import("memory_capture.zig").collect;
 const Ast = std.zig.Ast;
 const Str = []const u8;
 
@@ -334,7 +335,7 @@ pub fn run(ctx: *c.Context, io: std.Io, directory: Str, intent_path: ?Str, sourc
                 candidate.?.detail = review.detail;
             }
         }
-        try inventory.object.put(ctx.allocator, source.path, try ctx.parse(try ctx.json(.{ .sha256 = &c.digest(bytes), .sites = sites, .stale = stale.items })));
+        try inventory.object.put(ctx.allocator, source.path, try ctx.parse(try ctx.json(.{ .sha256 = &c.digest(bytes), .declarations = try z.component.declarations(ctx, bytes), .sites = sites, .stale = stale.items })));
     }
     const target = c.get(try ctx.parse(project), "captureTarget") orelse c.Value.null;
     return ctx.parse(try ctx.json(.{ .schema = "zean.memory-report.v1", .discovery = "zig-ast-v2", .coverageComplete = false, .sourceSafetyVerified = false, .nativeRefinementVerified = false, .target = target, .files = inventory }));

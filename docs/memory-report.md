@@ -90,3 +90,20 @@ appears in the file's stale list. A stale report cannot discharge a site.
 A review connects a theorem's meaning to the operation. An AST match supplies
 the location. A proof over a reviewed caller model depends on the model's
 relationship to the Zig code. AIR correspondence applies to the captured roots.
+
+## Coverage and compiler observations
+
+The AST inventory includes indexing, pointer casts and dereferences, writes,
+iteration, atomic operations and foreign boundaries. Type-dependent member
+access, arithmetic, and unresolved calls carry unexamined obligations.
+Operations outside function declarations use the file scope. Site identifiers
+bind the path, lexical declaration name and ordinal, operation and occurrence.
+Reviews also bind the declaration contents. The identity of an obligation is
+the site identifier together with its kind.
+
+Pass a captured compiler report with `--capture /path/to/capture/report.json`.
+Each compilation records its specialization name, target, build mode, AIR
+instruction counts by tag and source-validity slice observations. An exact
+source digest and all three span coordinates must match a unique AST site.
+Unmatched observations retain their original source span. These observations
+are evidence of lowering. The emitted `coverageComplete` flag is false.

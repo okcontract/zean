@@ -25,7 +25,7 @@ const help =
     \\Commands: translate, decode, capture, toolchain, check-patch, audit, admission, verify-client, allocator-evaluate, counter-regenerate, buffer-regenerate, copy-regenerate, calls-regenerate, stdlib-replace-regenerate, ziglings-regenerate, benchmark
     \\  zig build capture -- --toolchain REPORT --source FILE --root NAME --output DIRECTORY
     \\  zig build atomic-publication-check -- --capture REPORT --output DIRECTORY
-    \\  zig build memory -- --project DIRECTORY [--intent FILE] [--source PATH] [--replay REPORT]
+    \\  zig build memory -- --project DIRECTORY [--intent FILE] [--source PATH] [--replay REPORT] [--capture REPORT]
     \\  zig build admission         Report operation obligations and coverage limits
     \\  zig build verify-client -- [--project DIRECTORY] --manifest FILE --toolchain REPORT --output DIRECTORY
     \\  zig build allocator-evaluate -- --toolchain REPORT --output DIRECTORY
@@ -52,8 +52,12 @@ fn execute(ctx: *z.common.Context, init: std.process.Init) !void {
     const tail = args[2..];
     if (tail.len == 1 and z.common.oneOf(tail[0], &.{ "--help", "-h" })) return output.interface.writeAll(help);
     if (std.mem.eql(u8, command, "memory")) {
-        const a = try Arguments.parse(ctx, tail, &.{ "--project", "--intent", "--source", "--replay" }, &.{});
-        const report = try z.memory_report.run(ctx, init.io, try a.default("--project", "."), try a.optional("--intent"), a.many("--source"), a.many("--replay"));
+        const a = try Arguments.parse(ctx, tail, &.{ "--project", "--intent", "--source", "--replay", "--capture" }, &.{});
+        var report = try z.memory_report.run(ctx, init.io, try a.default("--project", "."), try a.optional("--intent"), a.many("--source"), a.many("--replay"));
+        if (a.many("--capture").len != 0) {
+            const evidence = try z.memory_report.compilerObservations(ctx, init.io, try ctx.field(report, "files"), a.many("--capture"));
+            try report.object.put(ctx.allocator, "compilations", evidence);
+        }
         return output.interface.print("{s}\n", .{try ctx.json(report)});
     }
     if (std.mem.eql(u8, command, "admission")) {
